@@ -202,10 +202,18 @@ export async function updateUserProfileDetails(
     updatedAt: serverTimestamp(),
   });
 
-  if (auth?.currentUser && data.displayName) {
-    await updateProfile(auth.currentUser, {
-      displayName: data.displayName,
-    });
+  if (auth?.currentUser) {
+    const authProfileUpdates: { displayName?: string; photoURL?: string | null } = {};
+    if (data.displayName !== undefined) authProfileUpdates.displayName = data.displayName;
+    if (data.photoURL !== undefined) authProfileUpdates.photoURL = data.photoURL;
+
+    if (Object.keys(authProfileUpdates).length > 0) {
+      try {
+        await updateProfile(auth.currentUser, authProfileUpdates);
+      } catch (authErr) {
+        console.warn('Firebase Auth updateProfile uyarısı:', authErr);
+      }
+    }
   }
 }
 

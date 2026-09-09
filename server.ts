@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 
@@ -12,8 +13,14 @@ async function startServer() {
   // JSON gövdeleri için middleware (görseller için 20mb limit)
   app.use(express.json({ limit: "20mb" }));
 
+  // 📂 Yerel Yükleme Dizini (Kendi sunucumuzdan kesintisiz, engelsiz görsel sunumu)
+  const uploadsDir = path.join(process.cwd(), "public", "uploads");
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+  app.use("/uploads", express.static(uploadsDir));
+
   // 📸 GÖRSEL YÜKLEME PROXY VE KESİNTİSİZ YEDEK SERVİSİ
-  // ImgBB hatası (400 Bad Request, geçersiz anahtar veya kota dolumu) durumunda FreeImage.host CDN yedeği devreye girer
   app.post("/api/upload", async (req, res) => {
     try {
       const { image, name } = req.body;
@@ -21,40 +28,44 @@ async function startServer() {
         return res.status(400).json({ error: "Görsel verisi eksik." });
       }
 
-      // Base64 başlığını temizle (örn. data:image/png;base64,...)
-      const cleanBase64 = image.includes(",") ? image.split(",")[1] : image;
+      // Base64 başlığını temizle ve mime type'ı belirle
+      let mimeType = "image/jpeg";
+      let ext = "jpg";
+      let cleanBase64 = image;
 
-      // 1. ÖNCELİK: Ortamda geçerli bir ImgBB API anahtarı varsa dene
-      const imgbbKey = (process.env.VITE_IMGBB_API_KEY || process.env.IMGBB_API_KEY)?.trim();
-      if (imgbbKey && imgbbKey.length >= 20) {
-        try {
-          const imgbbForm = new URLSearchParams();
-          imgbbForm.append("image", cleanBase64);
-          if (name) imgbbForm.append("name", name);
-
-          const imgbbRes = await fetch(`https://api.imgbb.com/1/upload?key=${encodeURIComponent(imgbbKey)}`, {
-            method: "POST",
-            body: imgbbForm,
-          });
-
-          if (imgbbRes.ok) {
-            const data: any = await imgbbRes.json();
-            const directUrl = data?.data?.display_url || data?.data?.url;
-            if (data?.success && directUrl) {
-              return res.json({
-                url: directUrl,
-                provider: "imgbb",
-              });
-            }
-          } else {
-            console.warn(`ImgBB yükleme başarısız oldu (${imgbbRes.status}), FreeImage CDN yedeğine geçiliyor...`);
-          }
-        } catch (imgbbErr) {
-          console.warn("ImgBB isteği sırasında hata:", imgbbErr);
+      if (image.startsWith("data:")) {
+        const matches = image.match(/^data:([a-zA-Z0-9/+.-]+);base64,(.+)$/);
+        if (matches) {
+          mimeType = matches[1];
+          cleanBase64 = matches[2];
+          if (mimeType.includes("png")) ext = "png";
+          else if (mimeType.includes("webp")) ext = "webp";
+          else if (mimeType.includes("gif")) ext = "gif";
+          else if (mimeType.includes("svg")) ext = "svg";
         }
+      } else if (image.includes(",")) {
+        cleanBase64 = image.split(",")[1];
       }
 
-      // 2. ÖNCELİK / KESİNTİSİZ YEDEK: FreeImage.host Ücretsiz CDN Servisi
+      // 1. ÖNCELİK: Kendi yerel sunucumuzda sakla (/uploads/...)
+      // Bu sayede hiçbir harici CDN'e, sansüre veya 400 hatasına takılmaz
+      const uniqueFileName = `rc_${Date.now()}_${Math.random().toString(36).substring(2, 9)}.${ext}`;
+      const localFilePath = path.join(uploadsDir, uniqueFileName);
+
+      try {
+        const buffer = Buffer.from(cleanBase64, "base64");
+        fs.writeFileSync(localFilePath, buffer);
+
+        const localUrl = `/uploads/${uniqueFileName}`;
+        return res.json({
+          url: localUrl,
+          provider: "local_server",
+        });
+      } catch (fsErr) {
+        console.warn("Yerel dosya kaydetme hatası, CDN yedeği deneniyor...", fsErr);
+      }
+
+      // 2. YEDEK: FreeImage.host CDN Servisi
       try {
         const freeImageForm = new URLSearchParams();
         freeImageForm.append("key", "6d207e02198a847aa98d0a2a901485a5");
@@ -76,17 +87,15 @@ async function startServer() {
               provider: "freeimage",
             });
           }
-        } else {
-          console.warn(`FreeImage.host yanıtı (${freeImageRes.status})`);
         }
       } catch (freeErr) {
         console.warn("FreeImage isteği sırasında hata:", freeErr);
       }
 
-      // 3. ÖNCELİK: Eğer görsel makul boyuttaysa (1.5 MB altı), data URL olarak doğrudan döndür
-      if (image.startsWith("data:image/") && image.length < 2 * 1024 * 1024) {
+      // 3. YEDEK: Optimize Data URL
+      if (cleanBase64.length < 2 * 1024 * 1024) {
         return res.json({
-          url: image,
+          url: `data:${mimeType};base64,${cleanBase64}`,
           provider: "direct_data_url",
         });
       }

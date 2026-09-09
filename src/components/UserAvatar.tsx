@@ -44,7 +44,8 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
       trimmed.startsWith('http://') ||
       trimmed.startsWith('https://') ||
       trimmed.startsWith('data:image/') ||
-      trimmed.startsWith('blob:')
+      trimmed.startsWith('blob:') ||
+      trimmed.startsWith('/')
     ) {
       return trimmed;
     }

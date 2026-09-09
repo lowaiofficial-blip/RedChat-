@@ -2079,7 +2079,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                       {/* Metin İçeriği */}
                       {msg.text && (
-                        <p className="text-xs text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap break-words leading-relaxed">
+                        <p className="text-xs text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap break-words break-all [overflow-wrap:anywhere] [word-break:break-word] leading-relaxed">
                           {msg.text}
                         </p>
                       )}

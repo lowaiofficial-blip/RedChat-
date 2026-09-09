@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import type { UserProfile } from '../types';
 import { updateUserProfileDetails, logoutUser } from '../services/authService';
 import { formatLastSeen } from '../services/chatService';
-import { uploadImageToImgBB } from '../services/imageUploadService';
+import { uploadImageToImgBB, uploadProfilePhoto } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
 import { isRedChatAI } from '../services/aiService';
@@ -140,8 +140,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     setIsUploadingPhoto(true);
     setError(null);
     try {
-      // 1. Gerçek ImgBB API'ye yükle
-      const downloadUrl = await uploadImageToImgBB(selectedFile);
+      // 1. Profil fotoğrafını kare merkezli optimize et ve yükle
+      const downloadUrl = await uploadProfilePhoto(selectedFile);
 
       // 2. Gerçek Firestore users/{uid}.photoURL alanını güncelle
       await updateUserProfileDetails(user.uid, {

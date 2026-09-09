@@ -24,53 +24,53 @@ export const MarkdownMessage: React.FC<MarkdownMessageProps> = ({ content, isMe 
   let codeBlockCounter = 0;
 
   return (
-    <div className={`markdown-body text-xs leading-relaxed break-words ${isMe ? 'text-white' : 'text-zinc-800 dark:text-zinc-100'}`}>
+    <div className={`markdown-body text-xs leading-relaxed break-words [overflow-wrap:anywhere] [word-break:break-word] min-w-0 max-w-full ${isMe ? 'text-white' : 'text-zinc-800 dark:text-zinc-100'}`}>
       <Markdown
         remarkPlugins={[remarkGfm]}
         components={{
           // Bold / Kalın Metinler
           strong: ({ children }) => (
-            <strong className={`font-bold ${isMe ? 'text-white' : 'text-zinc-950 dark:text-white'}`}>
+            <strong className={`font-bold break-words [overflow-wrap:anywhere] ${isMe ? 'text-white' : 'text-zinc-950 dark:text-white'}`}>
               {children}
             </strong>
           ),
 
           // Vurgulu / İtalik
           em: ({ children }) => (
-            <em className="italic">{children}</em>
+            <em className="italic break-words [overflow-wrap:anywhere]">{children}</em>
           ),
 
           // Paragraf
           p: ({ children }) => (
-            <p className="mb-2 last:mb-0 leading-relaxed whitespace-pre-wrap">{children}</p>
+            <p className="mb-2 last:mb-0 leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] [word-break:break-word] min-w-0">{children}</p>
           ),
 
           // Başlıklar
           h1: ({ children }) => (
-            <h1 className={`text-base font-bold mt-3 mb-1.5 ${isMe ? 'text-white' : 'text-zinc-900 dark:text-zinc-100'}`}>
+            <h1 className={`text-base font-bold mt-3 mb-1.5 break-words [overflow-wrap:anywhere] ${isMe ? 'text-white' : 'text-zinc-900 dark:text-zinc-100'}`}>
               {children}
             </h1>
           ),
           h2: ({ children }) => (
-            <h2 className={`text-sm font-bold mt-2.5 mb-1 ${isMe ? 'text-white' : 'text-zinc-900 dark:text-zinc-100'}`}>
+            <h2 className={`text-sm font-bold mt-2.5 mb-1 break-words [overflow-wrap:anywhere] ${isMe ? 'text-white' : 'text-zinc-900 dark:text-zinc-100'}`}>
               {children}
             </h2>
           ),
           h3: ({ children }) => (
-            <h3 className={`text-xs font-bold mt-2 mb-1 ${isMe ? 'text-white' : 'text-zinc-900 dark:text-zinc-100'}`}>
+            <h3 className={`text-xs font-bold mt-2 mb-1 break-words [overflow-wrap:anywhere] ${isMe ? 'text-white' : 'text-zinc-900 dark:text-zinc-100'}`}>
               {children}
             </h3>
           ),
 
           // Listeler
           ul: ({ children }) => (
-            <ul className="list-disc pl-5 mb-2 space-y-1">{children}</ul>
+            <ul className="list-disc pl-5 mb-2 space-y-1 min-w-0">{children}</ul>
           ),
           ol: ({ children }) => (
-            <ol className="list-decimal pl-5 mb-2 space-y-1">{children}</ol>
+            <ol className="list-decimal pl-5 mb-2 space-y-1 min-w-0">{children}</ol>
           ),
           li: ({ children }) => (
-            <li className="leading-relaxed">{children}</li>
+            <li className="leading-relaxed break-words [overflow-wrap:anywhere] [word-break:break-word]">{children}</li>
           ),
 
           // Alıntılar

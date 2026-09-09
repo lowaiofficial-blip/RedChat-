@@ -992,10 +992,10 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                   </div>
                 )}
 
-                <div className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[85%] sm:max-w-[420px]`}>
+                <div className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[85%] sm:max-w-[420px] min-w-0`}>
                   {/* Balon ve Masaüstü Aksiyon Butonları Satırı */}
                   <div
-                    className={`relative flex items-center gap-1 ${
+                    className={`relative flex items-center gap-1 max-w-full min-w-0 ${
                       isMe ? 'flex-row-reverse' : 'flex-row'
                     }`}
                   >
@@ -1010,7 +1010,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                         userSelect: 'none',
                         WebkitTouchCallout: 'none',
                       }}
-                      className={`relative rounded-2xl text-xs leading-relaxed break-words shadow-xs select-none transition-transform active:scale-[0.99] ${
+                      className={`relative rounded-2xl text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] shadow-xs select-none transition-transform active:scale-[0.99] min-w-0 ${
                         hasImage
                           ? 'w-56 sm:w-68 max-w-[72vw] p-1 pb-1.5'
                           : 'w-fit max-w-full px-3 py-1.5'
@@ -1101,8 +1101,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
                       {/* 🖼️ Fotoğraf İçeriği veya Metin + Saat (Kompakt Tek Akış) */}
                       {!hasImage ? (
-                        <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
-                          <span className="whitespace-pre-wrap select-none text-xs leading-relaxed break-words flex-1 min-w-[32px]">
+                        <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 max-w-full min-w-0">
+                          <span className="whitespace-pre-wrap select-none text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] flex-1 min-w-0 max-w-full">
                             {renderMessageText(msg.text, isMe)}
                           </span>
                           <span
@@ -1160,9 +1160,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                           </div>
 
                           {/* Fotoğraf Altı Metin + Saat */}
-                          <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 px-1 pt-1">
+                          <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 px-1 pt-1 max-w-full min-w-0">
                             {hasText && (
-                              <span className="whitespace-pre-wrap select-none text-xs leading-relaxed break-words flex-1 min-w-[60px]">
+                              <span className="whitespace-pre-wrap select-none text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] flex-1 min-w-0 max-w-full">
                                 {renderMessageText(msg.text, isMe)}
                               </span>
                             )}
