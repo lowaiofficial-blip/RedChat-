@@ -6,6 +6,7 @@ import { uploadImageToImgBB } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
 import { isRedChatAI } from '../services/aiService';
+import { getStoredTheme, applyTheme, type ThemeMode } from '../utils/theme';
 import {
   X,
   Mail,
@@ -63,8 +64,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [photoSuccess, setPhotoSuccess] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Tema state'i
-  const [themeMode, setThemeMode] = useState<'system' | 'light' | 'dark'>('system');
+  // Tema state'i (localStorage'dan başlatılır)
+  const [themeMode, setThemeMode] = useState<ThemeMode>(getStoredTheme);
+
+  const handleSelectTheme = (mode: ThemeMode) => {
+    setThemeMode(mode);
+    applyTheme(mode);
+  };
 
   // Gelen prop değiştiğinde (Firestore snapshot güncellendiğinde) senkronize et
   useEffect(() => {
@@ -518,7 +524,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 </h4>
                 <div className="grid grid-cols-3 gap-2">
                   <button
-                    onClick={() => setThemeMode('light')}
+                    onClick={() => handleSelectTheme('light')}
                     className={`p-2.5 rounded-xl border text-xs font-medium flex flex-col items-center gap-1 transition-all cursor-pointer ${
                       themeMode === 'light'
                         ? 'border-red-600 bg-red-50/50 text-red-600 dark:bg-red-950/20'
@@ -529,7 +535,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     <span>Açık</span>
                   </button>
                   <button
-                    onClick={() => setThemeMode('dark')}
+                    onClick={() => handleSelectTheme('dark')}
                     className={`p-2.5 rounded-xl border text-xs font-medium flex flex-col items-center gap-1 transition-all cursor-pointer ${
                       themeMode === 'dark'
                         ? 'border-red-600 bg-red-50/50 text-red-600 dark:bg-red-950/20'
@@ -540,7 +546,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     <span>Koyu</span>
                   </button>
                   <button
-                    onClick={() => setThemeMode('system')}
+                    onClick={() => handleSelectTheme('system')}
                     className={`p-2.5 rounded-xl border text-xs font-medium flex flex-col items-center gap-1 transition-all cursor-pointer ${
                       themeMode === 'system'
                         ? 'border-red-600 bg-red-50/50 text-red-600 dark:bg-red-950/20'

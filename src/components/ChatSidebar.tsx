@@ -5,6 +5,8 @@ import { isUserAdmin } from '../services/adminService';
 import { UserAvatar } from './UserAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
 import { isRedChatAI, getRedChatAIProfile } from '../services/aiService';
+import { SequentialTypingDots } from './SequentialTypingDots';
+import { getTypingInfo } from '../utils/typingHelper';
 import {
   Search,
   MessageSquare,
@@ -64,6 +66,13 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
   const [activeTab, setActiveTab] = useState<'chats' | 'users'>('chats');
   const [searchQuery, setSearchQuery] = useState('');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [now, setNow] = useState<number>(Date.now());
+
+  // Yazıyor durumlarını periyodik kontrol etmek için 1 sn ticker
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const userMenuRef = useRef<HTMLDivElement>(null);
 
@@ -453,6 +462,24 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                         }`}
                       >
                         {(() => {
+                          const convTypingInfo = getTypingInfo(
+                            conv.typingUsers,
+                            currentUser.uid,
+                            conv.isGroup,
+                            conv.participants,
+                            users,
+                            now
+                          );
+
+                          if (convTypingInfo) {
+                            return (
+                              <div className="flex items-center gap-1 min-w-0 truncate text-red-600 dark:text-red-400 font-medium">
+                                <span className="truncate">{convTypingInfo.displayText}</span>
+                                <SequentialTypingDots size="xs" className="text-red-600 dark:text-red-400" />
+                              </div>
+                            );
+                          }
+
                           const hasImage = Boolean(
                             conv.lastMessageHasImage ||
                             conv.lastMessageImageUrl ||

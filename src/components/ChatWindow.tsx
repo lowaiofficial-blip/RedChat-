@@ -8,6 +8,7 @@ import {
   deleteMessage,
   toggleMessageReaction,
   formatLastSeen,
+  setUserTypingStatus,
 } from '../services/chatService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
@@ -15,6 +16,8 @@ import { EmojiPicker } from './EmojiPicker';
 import { GroupInfoModal } from './GroupInfoModal';
 import { VerifiedBadge } from './VerifiedBadge';
 import { RadialPulseLoader } from './RadialPulseLoader';
+import { SequentialTypingDots } from './SequentialTypingDots';
+import { getTypingInfo } from '../utils/typingHelper';
 import { MarkdownMessage } from './MarkdownMessage';
 import { isRedChatAI, requestAIChatResponse, getRedChatAIProfile, REDCHAT_AI_UID } from '../services/aiService';
 import {
@@ -161,6 +164,41 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     if (conversation?.isGroup || isDirectAIChat) return false;
     return Boolean(otherUserObj?.isBanned);
   }, [conversation?.isGroup, isDirectAIChat, otherUserObj?.isBanned]);
+
+  // Zaman damgalarını ve aktif yazanları her saniye kontrol etmek için ticker
+  const [now, setNow] = useState<number>(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Şu anda yazan kullanıcıların bilgisi (birebir veya grupta)
+  const typingInfo = useMemo(() => {
+    if (!conversation) return null;
+    return getTypingInfo(
+      conversation.typingUsers,
+      currentUser.uid,
+      conversation.isGroup,
+      conversation.participants,
+      allUsers,
+      now
+    );
+  }, [conversation?.typingUsers, currentUser.uid, conversation?.isGroup, conversation?.participants, allUsers, now]);
+
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastTypingTimeRef = useRef<number>(0);
+
+  // Sohbet kapatıldığında veya değiştiğinde kullanıcının yazıyor durumunu temizle
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      if (conversation?.id && currentUser?.uid) {
+        setUserTypingStatus(conversation.id, currentUser.uid, false);
+      }
+    };
+  }, [conversation?.id, currentUser?.uid]);
 
   // ObjectURL bellek temizliği
   useEffect(() => {
@@ -336,10 +374,31 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     );
   }, [allUsers, aiProfilePhotoUrl, conversation, currentUser.uid, mentionQuery]);
 
-  // 💬 Input Metni Değişimi & Mention Algılama
+  // 💬 Input Metni Değişimi & Mention Algılama & Yazıyor Bildirimi
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
     setInputText(val);
+
+    // ⌨️ Gerçek Zamanlı Yazıyor (Typing) Durumu Gönderme
+    if (conversation?.id && currentUser?.uid && !isDirectAIChat) {
+      if (val.trim().length > 0) {
+        const nowMs = Date.now();
+        if (nowMs - lastTypingTimeRef.current > 2000) {
+          lastTypingTimeRef.current = nowMs;
+          setUserTypingStatus(conversation.id, currentUser.uid, true);
+        }
+
+        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = setTimeout(() => {
+          if (conversation?.id && currentUser?.uid) {
+            setUserTypingStatus(conversation.id, currentUser.uid, false);
+          }
+        }, 3500);
+      } else {
+        if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+        setUserTypingStatus(conversation.id, currentUser.uid, false);
+      }
+    }
 
     const cursor = e.target.selectionStart ?? val.length;
     const textBeforeCursor = val.slice(0, cursor);
@@ -481,6 +540,10 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
       // Gönderim başarılı olduysa form alanlarını ve yanıt modunu temizle
       setInputText('');
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      if (conversation?.id && currentUser?.uid) {
+        setUserTypingStatus(conversation.id, currentUser.uid, false);
+      }
       setReplyingToMessage(null);
       handleRemoveSelectedImage();
 
@@ -704,9 +767,18 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 truncate">
-                  <span>{conversation.participantIds?.length || 0} üye</span>
-                  <span>•</span>
-                  <span className="text-red-600 dark:text-red-400 font-medium">Grup Detayı</span>
+                  {typingInfo ? (
+                    <span className="text-red-600 dark:text-red-400 font-medium flex items-center gap-0.5">
+                      <span>{typingInfo.displayText}</span>
+                      <SequentialTypingDots size="xs" className="text-red-600 dark:text-red-400" />
+                    </span>
+                  ) : (
+                    <>
+                      <span>{conversation.participantIds?.length || 0} üye</span>
+                      <span>•</span>
+                      <span className="text-red-600 dark:text-red-400 font-medium">Grup Detayı</span>
+                    </>
+                  )}
                 </div>
               </div>
             </button>
@@ -763,6 +835,14 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                     <>
                       <span>•</span>
                       <span className="text-red-500 font-medium">Bu hesap askıya alındı</span>
+                    </>
+                  ) : typingInfo ? (
+                    <>
+                      <span>•</span>
+                      <span className="text-red-600 dark:text-red-400 font-medium flex items-center gap-0.5">
+                        <span>yazıyor</span>
+                        <SequentialTypingDots size="xs" className="text-red-600 dark:text-red-400" />
+                      </span>
                     </>
                   ) : !isDirectAIChat && (
                     <>
@@ -1252,13 +1332,31 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                     }}
                   />
                 </span>
-                <span className="text-[10px] text-red-600 dark:text-red-400 font-mono">
-                  yazıyor...
+                <span className="text-[10px] text-red-600 dark:text-red-400 font-mono flex items-center gap-0.5">
+                  <span>yazıyor</span>
+                  <SequentialTypingDots size="xs" className="text-red-600 dark:text-red-400" />
                 </span>
               </div>
               <div className="flex items-center gap-2 py-0.5">
                 <RadialPulseLoader statusText="RedChat AI yanıt hazırlıyor..." />
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Kullanıcı / Grup Üyeleri Yazıyor Bildirimi (Bubble) */}
+        {typingInfo && (
+          <div className="flex items-end gap-2 my-2 animate-in fade-in duration-200">
+            <div className="w-6 h-6 rounded-full bg-zinc-200 dark:bg-zinc-700 flex items-center justify-center shrink-0 text-[10px] font-semibold text-zinc-600 dark:text-zinc-300 overflow-hidden shadow-2xs">
+              {typingInfo.firstUserPhoto ? (
+                <img src={typingInfo.firstUserPhoto} alt="" className="w-full h-full object-cover" />
+              ) : (
+                typingInfo.firstUserName?.[0]?.toUpperCase() || '?'
+              )}
+            </div>
+            <div className="bg-white dark:bg-zinc-800 border border-zinc-200/80 dark:border-zinc-700/80 rounded-2xl rounded-bl-xs px-3 py-1.5 shadow-2xs flex items-center gap-1.5 text-xs text-zinc-700 dark:text-zinc-300">
+              <span className="font-medium text-zinc-800 dark:text-zinc-200">{typingInfo.displayText}</span>
+              <SequentialTypingDots size="xs" className="text-red-600 dark:text-red-400" />
             </div>
           </div>
         )}

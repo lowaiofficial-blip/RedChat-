@@ -9,8 +9,96 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // JSON gövdeleri için middleware
-  app.use(express.json({ limit: "10mb" }));
+  // JSON gövdeleri için middleware (görseller için 20mb limit)
+  app.use(express.json({ limit: "20mb" }));
+
+  // 📸 GÖRSEL YÜKLEME PROXY VE KESİNTİSİZ YEDEK SERVİSİ
+  // ImgBB hatası (400 Bad Request, geçersiz anahtar veya kota dolumu) durumunda FreeImage.host CDN yedeği devreye girer
+  app.post("/api/upload", async (req, res) => {
+    try {
+      const { image, name } = req.body;
+      if (!image) {
+        return res.status(400).json({ error: "Görsel verisi eksik." });
+      }
+
+      // Base64 başlığını temizle (örn. data:image/png;base64,...)
+      const cleanBase64 = image.includes(",") ? image.split(",")[1] : image;
+
+      // 1. ÖNCELİK: Ortamda geçerli bir ImgBB API anahtarı varsa dene
+      const imgbbKey = (process.env.VITE_IMGBB_API_KEY || process.env.IMGBB_API_KEY)?.trim();
+      if (imgbbKey && imgbbKey.length >= 20) {
+        try {
+          const imgbbForm = new URLSearchParams();
+          imgbbForm.append("image", cleanBase64);
+          if (name) imgbbForm.append("name", name);
+
+          const imgbbRes = await fetch(`https://api.imgbb.com/1/upload?key=${encodeURIComponent(imgbbKey)}`, {
+            method: "POST",
+            body: imgbbForm,
+          });
+
+          if (imgbbRes.ok) {
+            const data: any = await imgbbRes.json();
+            const directUrl = data?.data?.display_url || data?.data?.url;
+            if (data?.success && directUrl) {
+              return res.json({
+                url: directUrl,
+                provider: "imgbb",
+              });
+            }
+          } else {
+            console.warn(`ImgBB yükleme başarısız oldu (${imgbbRes.status}), FreeImage CDN yedeğine geçiliyor...`);
+          }
+        } catch (imgbbErr) {
+          console.warn("ImgBB isteği sırasında hata:", imgbbErr);
+        }
+      }
+
+      // 2. ÖNCELİK / KESİNTİSİZ YEDEK: FreeImage.host Ücretsiz CDN Servisi
+      try {
+        const freeImageForm = new URLSearchParams();
+        freeImageForm.append("key", "6d207e02198a847aa98d0a2a901485a5");
+        freeImageForm.append("action", "upload");
+        freeImageForm.append("source", cleanBase64);
+        freeImageForm.append("format", "json");
+
+        const freeImageRes = await fetch("https://freeimage.host/api/1/upload", {
+          method: "POST",
+          body: freeImageForm,
+        });
+
+        if (freeImageRes.ok) {
+          const data: any = await freeImageRes.json();
+          const directUrl = data?.image?.display_url || data?.image?.url;
+          if (directUrl) {
+            return res.json({
+              url: directUrl,
+              provider: "freeimage",
+            });
+          }
+        } else {
+          console.warn(`FreeImage.host yanıtı (${freeImageRes.status})`);
+        }
+      } catch (freeErr) {
+        console.warn("FreeImage isteği sırasında hata:", freeErr);
+      }
+
+      // 3. ÖNCELİK: Eğer görsel makul boyuttaysa (1.5 MB altı), data URL olarak doğrudan döndür
+      if (image.startsWith("data:image/") && image.length < 2 * 1024 * 1024) {
+        return res.json({
+          url: image,
+          provider: "direct_data_url",
+        });
+      }
+
+      return res.status(502).json({
+        error: "Görsel yüklenemedi. Lütfen tekrar deneyin.",
+      });
+    } catch (err: any) {
+      console.error("Görsel yükleme sunucu hatası:", err);
+      return res.status(500).json({ error: "Görsel işleme hatası." });
+    }
+  });
 
   // 🤖 REDCHAT AI SERVER-SIDE ENDPOINT (GPT-OSS 120B / Groq / Fallback AI)
   app.post("/api/ai/chat", async (req, res) => {

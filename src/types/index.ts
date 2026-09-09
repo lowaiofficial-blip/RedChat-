@@ -66,6 +66,9 @@ export interface Conversation {
   unreadCounts?: {
     [uid: string]: number;
   };
+  typingUsers?: {
+    [uid: string]: number;
+  };
   createdAt: any;
   updatedAt: any;
 }

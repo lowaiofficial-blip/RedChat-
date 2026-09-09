@@ -1107,3 +1107,29 @@ export async function toggleMessageReaction(
     reactions: currentReactions,
   });
 }
+
+/**
+ * Kullanıcının belirli bir sohbette yazma (typing) durumunu Firestore'da günceller.
+ */
+export async function setUserTypingStatus(
+  conversationId: string,
+  userId: string,
+  isTyping: boolean
+): Promise<void> {
+  if (!db || !conversationId || !userId) return;
+  try {
+    const convRef = doc(db, 'conversations', conversationId);
+    if (isTyping) {
+      await updateDoc(convRef, {
+        [`typingUsers.${userId}`]: Date.now(),
+      });
+    } else {
+      await updateDoc(convRef, {
+        [`typingUsers.${userId}`]: deleteField(),
+      });
+    }
+  } catch (err) {
+    // Yazma durumu kritik bir hata fırlatmamalıdır
+    console.debug('Failed to update typing status', err);
+  }
+}
