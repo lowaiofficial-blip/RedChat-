@@ -19,6 +19,8 @@ import { uploadImageToImgBB } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
 import { VerifiedBadge, preloadBadgeImage } from './VerifiedBadge';
 import { formatLastSeen } from '../services/chatService';
+import { ChunkCopyModal } from './ChunkCopyModal';
+import { downloadTextFile } from '../utils/fileUtils';
 import {
   Shield,
   Users,
@@ -51,6 +53,9 @@ import {
   Maximize2,
   Bot,
   Sparkles,
+  Download,
+  Layers,
+  MapPin,
 } from 'lucide-react';
 
 interface AdminPanelProps {
@@ -134,10 +139,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [logMessages, setLogMessages] = useState<ChatMessage[]>([]);
   const [loadingLogMessages, setLoadingLogMessages] = useState(false);
 
-  // Sohbeti Kopyalama State'i
+  // Sohbet İçi Arama ve Başlangıç Noktası Seçimi
+  const [logMessageSearch, setLogMessageSearch] = useState('');
+  const [selectedStartMsgId, setSelectedStartMsgId] = useState<string | null>(null);
+
+  // Sohbeti Kopyalama & Parçalı Kopyalama State'i
   const [copyingLog, setCopyingLog] = useState(false);
   const [copiedLogSuccess, setCopiedLogSuccess] = useState(false);
   const [copiedLogError, setCopiedLogError] = useState<string | null>(null);
+  const [chunkModalData, setChunkModalData] = useState<{ title?: string; text: string } | null>(null);
 
   // Görsel büyütme modalı
   const [expandedImageUrl, setExpandedImageUrl] = useState<string | null>(null);
@@ -514,6 +524,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleOpenChatLog = async (conv: Conversation) => {
     setActiveLogConversation(conv);
     setLogMessages([]);
+    setLogMessageSearch('');
+    setSelectedStartMsgId(null);
     setLoadingLogMessages(true);
     setCopiedLogSuccess(false);
     setCopiedLogError(null);
@@ -528,6 +540,61 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
+  // Seçilen başlangıç mesajının indeksi ve sonrasındaki mesajlar
+  const startMsgIndex = useMemo(() => {
+    if (!selectedStartMsgId) return -1;
+    return logMessages.findIndex((m) => m.id === selectedStartMsgId);
+  }, [selectedStartMsgId, logMessages]);
+
+  const messagesFromSelected = useMemo(() => {
+    if (startMsgIndex === -1) return logMessages;
+    return logMessages.slice(startMsgIndex);
+  }, [startMsgIndex, logMessages]);
+
+  // Log içi arama filtresi
+  const filteredLogMessages = useMemo(() => {
+    if (!logMessageSearch.trim()) return logMessages;
+    const q = logMessageSearch.trim().toLowerCase();
+    return logMessages.filter((msg) => {
+      const senderProfile = userMap.get(msg.senderId);
+      const senderName = senderProfile?.displayName || msg.senderName || msg.senderUsername || '';
+      const senderUsername = senderProfile?.username || msg.senderUsername || '';
+      const textMatch = msg.text?.toLowerCase().includes(q);
+      const senderMatch = senderName.toLowerCase().includes(q) || senderUsername.toLowerCase().includes(q);
+      return textMatch || senderMatch;
+    });
+  }, [logMessages, logMessageSearch, userMap]);
+
+  // 📋 SOHBET LOG METNİ YARDIMCISI
+  const getFormattedLogText = async (customMsgs?: ChatMessage[]): Promise<string> => {
+    if (!activeLogConversation) return '';
+    let msgs = customMsgs || logMessages;
+    if (!customMsgs && msgs.length === 0) {
+      msgs = await fetchAllMessagesForConversationAdmin(
+        currentUser,
+        activeLogConversation.id
+      );
+      setLogMessages(msgs);
+    }
+
+    const enrichedConv = { ...activeLogConversation };
+    if (enrichedConv.participants) {
+      const enrichedParts: { [uid: string]: any } = {};
+      Object.keys(enrichedConv.participants).forEach((uid) => {
+        const liveUser = userMap.get(uid);
+        const original = enrichedConv.participants?.[uid];
+        enrichedParts[uid] = {
+          ...original,
+          displayName: liveUser?.displayName || original?.displayName || liveUser?.username || 'Kullanıcı',
+          username: liveUser?.username || original?.username || 'kullanici',
+        };
+      });
+      enrichedConv.participants = enrichedParts;
+    }
+
+    return formatChatLogText(enrichedConv, msgs);
+  };
+
   // 📋 SOHBETİ TAM KOPYALA BUTONU (Clipboard)
   const handleCopyFullChatLog = async () => {
     if (!activeLogConversation || copyingLog) return;
@@ -537,28 +604,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setCopiedLogError(null);
 
     try {
-      const allMsgs = await fetchAllMessagesForConversationAdmin(
-        currentUser,
-        activeLogConversation.id
-      );
-
-      // Konuşmadaki güncel katılımcı isimlerini userMap ile zenginleştir
-      const enrichedConv = { ...activeLogConversation };
-      if (enrichedConv.participants) {
-        const enrichedParts: { [uid: string]: any } = {};
-        Object.keys(enrichedConv.participants).forEach((uid) => {
-          const liveUser = userMap.get(uid);
-          const original = enrichedConv.participants?.[uid];
-          enrichedParts[uid] = {
-            ...original,
-            displayName: liveUser?.displayName || original?.displayName || liveUser?.username || 'Kullanıcı',
-            username: liveUser?.username || original?.username || 'kullanici',
-          };
-        });
-        enrichedConv.participants = enrichedParts;
-      }
-
-      const formattedLog = formatChatLogText(enrichedConv, allMsgs);
+      const formattedLog = await getFormattedLogText();
 
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(formattedLog);
@@ -576,6 +622,126 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     } catch (err: any) {
       console.error('Sohbet logu kopyalanamadı:', err);
       setCopiedLogError('Sohbet logu panoya kopyalanamadı. Lütfen tekrar deneyin.');
+    } finally {
+      setCopyingLog(false);
+    }
+  };
+
+  // 📍 SEÇİLEN MESAJ DAHİL BUNDAN SONRASINI KOPYALA
+  const handleCopyFromSelected = async () => {
+    if (!activeLogConversation || copyingLog || messagesFromSelected.length === 0) return;
+
+    setCopyingLog(true);
+    setCopiedLogSuccess(false);
+    setCopiedLogError(null);
+
+    try {
+      const formattedLog = await getFormattedLogText(messagesFromSelected);
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(formattedLog);
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = formattedLog;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
+
+      setCopiedLogSuccess(true);
+      setTimeout(() => setCopiedLogSuccess(false), 3500);
+    } catch (err: any) {
+      console.error('Seçili aralık kopyalanamadı:', err);
+      setCopiedLogError('Seçilen mesajdan sonrakiler kopyalanamadı.');
+    } finally {
+      setCopyingLog(false);
+    }
+  };
+
+  // 📑 LOGU PARÇALI KOPYALA MODALI AÇ
+  const handleChunkCopyChatLog = async () => {
+    if (!activeLogConversation || copyingLog) return;
+
+    setCopyingLog(true);
+    setCopiedLogError(null);
+
+    try {
+      const formattedLog = await getFormattedLogText();
+      const chatTitle = activeLogConversation.name || 'Sohbet';
+
+      setChunkModalData({
+        title: `Admin Log - ${chatTitle}`,
+        text: formattedLog,
+      });
+    } catch (err: any) {
+      console.error('Log parçalanamadı:', err);
+      setCopiedLogError('Sohbet logu metni hazırlanamadı.');
+    } finally {
+      setCopyingLog(false);
+    }
+  };
+
+  // 📑 SEÇİLEN MESAJ DAHİL BUNDAN SONRASINI PARÇALI KOPYALA
+  const handleChunkCopyFromSelected = async () => {
+    if (!activeLogConversation || copyingLog || messagesFromSelected.length === 0) return;
+
+    setCopyingLog(true);
+    setCopiedLogError(null);
+
+    try {
+      const formattedLog = await getFormattedLogText(messagesFromSelected);
+      const chatTitle = activeLogConversation.name || 'Sohbet';
+
+      setChunkModalData({
+        title: `Admin Log (${messagesFromSelected.length} Mesaj) - ${chatTitle}`,
+        text: formattedLog,
+      });
+    } catch (err: any) {
+      console.error('Seçilen aralık parçalanamadı:', err);
+      setCopiedLogError('Seçilen mesaj logları metni hazırlanamadı.');
+    } finally {
+      setCopyingLog(false);
+    }
+  };
+
+  // 📥 LOGU .TXT DOSYASI OLARAK İNDİR
+  const handleDownloadChatLog = async () => {
+    if (!activeLogConversation || copyingLog) return;
+
+    setCopyingLog(true);
+    setCopiedLogError(null);
+
+    try {
+      const formattedLog = await getFormattedLogText();
+      const chatTitle = activeLogConversation.name || 'Sohbet';
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+      downloadTextFile(`Admin_Log_${chatTitle}_${timestamp}.txt`, formattedLog);
+    } catch (err: any) {
+      console.error('Log dosyası indirilemedi:', err);
+      setCopiedLogError('Log dosyası indirilemedi.');
+    } finally {
+      setCopyingLog(false);
+    }
+  };
+
+  // 📥 SEÇİLEN MESAJ DAHİL BUNDAN SONRASINI TXT İNDİR
+  const handleDownloadFromSelected = async () => {
+    if (!activeLogConversation || copyingLog || messagesFromSelected.length === 0) return;
+
+    setCopyingLog(true);
+    setCopiedLogError(null);
+
+    try {
+      const formattedLog = await getFormattedLogText(messagesFromSelected);
+      const chatTitle = activeLogConversation.name || 'Sohbet';
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+
+      downloadTextFile(`Admin_Log_Secilen_${chatTitle}_${timestamp}.txt`, formattedLog);
+    } catch (err: any) {
+      console.error('Log dosyası indirilemedi:', err);
+      setCopiedLogError('Log dosyası indirilemedi.');
     } finally {
       setCopyingLog(false);
     }
@@ -1922,17 +2088,37 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               </div>
 
-              {/* İşlem Butonları: 📋 Sohbeti Kopyala & Kapat */}
-              <div className="flex items-center gap-2 shrink-0">
+              {/* İşlem Butonları: 📥 TXT İndir, 📑 Parçalı Kopyala, 📋 Kopyala & Kapat */}
+              <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                <button
+                  onClick={handleDownloadChatLog}
+                  disabled={copyingLog}
+                  className="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer shadow-xs"
+                  title="Tüm Logu .TXT Dosyası Olarak İndir"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">TXT İndir</span>
+                </button>
+
+                <button
+                  onClick={handleChunkCopyChatLog}
+                  disabled={copyingLog}
+                  className="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white cursor-pointer shadow-xs"
+                  title="Logu Parçalara Bölerek Kopyala"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Parçalı Kopyala</span>
+                </button>
+
                 <button
                   onClick={handleCopyFullChatLog}
                   disabled={copyingLog}
-                  className={`px-3 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs ${
+                  className={`px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs ${
                     copiedLogSuccess
                       ? 'bg-emerald-600 text-white'
                       : 'bg-red-600 hover:bg-red-700 text-white'
                   }`}
-                  title="Tüm Mesaj Geçmişini Kopyala"
+                  title="Tüm Mesaj Geçmişini Doğrudan Panoya Kopyala"
                 >
                   {copyingLog ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -1944,7 +2130,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   ) : (
                     <>
                       <Copy className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Sohbeti Kopyala</span>
+                      <span className="hidden sm:inline">Tümünü Kopyala</span>
                       <span className="sm:hidden">Kopyala</span>
                     </>
                   )}
@@ -1974,6 +2160,89 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
             )}
 
+            {/* 🔍 SOHBET İÇİ ARAMA ÇUBUĞU */}
+            <div className="px-3 sm:px-4 py-2 bg-zinc-100/90 dark:bg-zinc-800/80 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-2 shrink-0">
+              <div className="relative flex-1 max-w-md">
+                <Search className="w-3.5 h-3.5 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={logMessageSearch}
+                  onChange={(e) => setLogMessageSearch(e.target.value)}
+                  placeholder="Sohbet içinde mesaj veya isim ara..."
+                  className="w-full pl-8 pr-8 py-1.5 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700/80 rounded-xl text-xs text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500"
+                />
+                {logMessageSearch && (
+                  <button
+                    onClick={() => setLogMessageSearch('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 p-0.5 rounded-full"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              {logMessageSearch.trim() && (
+                <div className="text-[11px] font-medium text-zinc-500 dark:text-zinc-400 shrink-0">
+                  <span className="text-red-600 dark:text-red-400 font-bold">{filteredLogMessages.length}</span> / {logMessages.length} sonuç
+                </div>
+              )}
+            </div>
+
+            {/* 📍 SEÇİLEN MESAJ DAHİL BUNDAN SONRASINI KOPYALA BARI */}
+            {selectedStartMsgId && startMsgIndex !== -1 && (
+              <div className="px-3 sm:px-4 py-2.5 bg-red-600 text-white border-b border-red-700 flex flex-wrap items-center justify-between gap-2.5 shrink-0 shadow-sm animate-in slide-in-from-top-2">
+                <div className="flex items-center gap-2 text-xs font-semibold min-w-0">
+                  <MapPin className="w-4 h-4 text-white shrink-0 animate-bounce" />
+                  <span className="truncate">
+                    Seçilen mesajdan itibaren <span className="underline font-extrabold">{messagesFromSelected.length} mesaj</span> seçildi.
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1.5 flex-wrap ml-auto">
+                  <button
+                    onClick={handleCopyFromSelected}
+                    disabled={copyingLog}
+                    className="px-2.5 py-1.5 bg-white hover:bg-zinc-100 text-red-600 font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
+                    title="Seçilen mesaj dahil kalan tüm mesajları panoya kopyala"
+                  >
+                    {copyingLog ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" />
+                    )}
+                    <span>Bundan Sonrasını Kopyala</span>
+                  </button>
+
+                  <button
+                    onClick={handleChunkCopyFromSelected}
+                    disabled={copyingLog}
+                    className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
+                    title="Seçilen mesajdan sonrasını parçalar halinde kopyala"
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Parçalı Kopyala</span>
+                  </button>
+
+                  <button
+                    onClick={handleDownloadFromSelected}
+                    disabled={copyingLog}
+                    className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
+                    title="Seçilen mesajdan sonrasını .txt olarak indir"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">TXT İndir</span>
+                  </button>
+
+                  <button
+                    onClick={() => setSelectedStartMsgId(null)}
+                    className="p-1 text-white/80 hover:text-white hover:bg-black/20 rounded-lg text-xs cursor-pointer transition-colors"
+                    title="Seçimi Temizle"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Mesaj Akışı Gövdesi (Kronolojik: Eskiden Yeniye) */}
             <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-3.5 bg-zinc-50/50 dark:bg-zinc-950/50">
               {loadingLogMessages ? (
@@ -1981,12 +2250,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <Loader2 className="w-6 h-6 animate-spin text-red-600" />
                   <span>Mesaj logları Firestore'dan çekiliyor...</span>
                 </div>
-              ) : logMessages.length === 0 ? (
+              ) : filteredLogMessages.length === 0 ? (
                 <div className="py-20 text-center text-zinc-400 text-xs">
-                  Bu sohbette henüz kaydedilmiş bir mesaj bulunmuyor.
+                  {logMessageSearch.trim()
+                    ? 'Arama kriterinize uygun bir mesaj bulunamadı.'
+                    : 'Bu sohbette henüz kaydedilmiş bir mesaj bulunmuyor.'}
                 </div>
               ) : (
-                logMessages.map((msg) => {
+                filteredLogMessages.map((msg) => {
                   let timeFormatted = '—';
                   if (msg.createdAt?.toDate) {
                     timeFormatted = msg.createdAt.toDate().toLocaleDateString('tr-TR', {
@@ -1998,11 +2269,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     });
                   }
 
+                  const isSelectedStart = msg.id === selectedStartMsgId;
+
                   if (msg.isSystemMessage) {
                     return (
                       <div
                         key={msg.id}
-                        className="py-1.5 px-3 bg-zinc-200/70 dark:bg-zinc-800/70 text-zinc-600 dark:text-zinc-400 rounded-full text-[11px] text-center max-w-md mx-auto font-medium"
+                        className={`py-1.5 px-3 rounded-full text-[11px] text-center max-w-md mx-auto font-medium transition-all ${
+                          isSelectedStart
+                            ? 'bg-red-600 text-white font-bold ring-2 ring-red-400 shadow-xs'
+                            : 'bg-zinc-200/70 dark:bg-zinc-800/70 text-zinc-600 dark:text-zinc-400'
+                        }`}
                       >
                         [Sistem]: {msg.text}
                       </div>
@@ -2017,8 +2294,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   return (
                     <div
                       key={msg.id}
-                      className="p-3 sm:p-3.5 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl shadow-xs space-y-2"
+                      className={`p-3 sm:p-3.5 rounded-2xl shadow-xs space-y-2 transition-all ${
+                        isSelectedStart
+                          ? 'bg-red-500/10 dark:bg-red-950/40 border-2 border-red-500 ring-2 ring-red-500/20'
+                          : 'bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800'
+                      }`}
                     >
+                      {/* Başlangıç Seçimi Rozeti */}
+                      {isSelectedStart && (
+                        <div className="flex items-center justify-between p-2 bg-red-600 text-white rounded-xl text-xs font-bold shadow-xs mb-1">
+                          <div className="flex items-center gap-1.5">
+                            <MapPin className="w-3.5 h-3.5 animate-bounce" />
+                            <span>📍 KOPYALAMA BAŞLANGIÇ NOKTASI SEÇİLDİ</span>
+                          </div>
+                          <span className="text-[10px] font-mono bg-black/20 px-2 py-0.5 rounded-md">
+                            Bundan sonra {logMessages.length - logMessages.findIndex((m) => m.id === msg.id)} mesaj var
+                          </span>
+                        </div>
+                      )}
+
                       {/* Mesaj Üstü */}
                       <div className="flex items-center justify-between text-xs">
                         <div className="flex items-center gap-2 min-w-0">
@@ -2042,9 +2336,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             </span>
                           </div>
                         </div>
-                        <span className="text-[10px] font-mono text-zinc-400 shrink-0 ml-2">
-                          {timeFormatted}
-                        </span>
+
+                        <div className="flex items-center gap-2 shrink-0 ml-2">
+                          <button
+                            onClick={() => setSelectedStartMsgId(isSelectedStart ? null : msg.id)}
+                            className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer ${
+                              isSelectedStart
+                                ? 'bg-red-600 text-white shadow-xs'
+                                : 'bg-zinc-100 hover:bg-red-100 dark:bg-zinc-800 dark:hover:bg-red-950/60 text-zinc-600 hover:text-red-600 dark:text-zinc-400 dark:hover:text-red-400'
+                            }`}
+                            title={isSelectedStart ? 'Başlangıç işaretini kaldır' : 'Bu mesajı kopyalama başlangıç noktası olarak seç'}
+                          >
+                            <MapPin className="w-3 h-3" />
+                            <span>{isSelectedStart ? 'Başlangıç Seçildi' : 'Buradan Başlat'}</span>
+                          </button>
+                          <span className="text-[10px] font-mono text-zinc-400 shrink-0">
+                            {timeFormatted}
+                          </span>
+                        </div>
                       </div>
 
                       {/* Yanıt (Reply) Varsa */}
@@ -2273,6 +2582,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             />
           </div>
         </div>
+      )}
+
+      {/* 📑 Parçalı Log / Metin Kopyalama Modalı */}
+      {chunkModalData && (
+        <ChunkCopyModal
+          isOpen={Boolean(chunkModalData)}
+          onClose={() => setChunkModalData(null)}
+          title={chunkModalData.title}
+          text={chunkModalData.text}
+        />
       )}
     </div>
   );

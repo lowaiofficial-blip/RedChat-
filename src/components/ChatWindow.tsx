@@ -1212,7 +1212,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             {selectedActionMessage.text && (
               <button
                 onClick={() => handleCopyText(selectedActionMessage.text)}
-                className="w-full px-3 py-2.5 text-xs font-semibold text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer"
+                className="w-full px-3 py-2 text-xs font-semibold text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer"
               >
                 <Copy className="w-4 h-4 text-zinc-400" />
                 <span>Metni Kopyala</span>
