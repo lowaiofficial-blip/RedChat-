@@ -14,6 +14,34 @@ import {
 
 const QUICK_REACTIONS = ['❤️', '👍', '😂', '🔥', '👏'];
 
+// 🧠 Global & sessionStorage tracking for completed stream message IDs
+const completedStreamedMessageIds = new Set<string>();
+
+try {
+  const saved = sessionStorage.getItem('redchat_streamed_msg_ids');
+  if (saved) {
+    const parsed = JSON.parse(saved);
+    if (Array.isArray(parsed)) {
+      parsed.forEach((id: string) => completedStreamedMessageIds.add(id));
+    }
+  }
+} catch (e) {
+  // Ignore sessionStorage errors
+}
+
+function markMessageStreamCompleted(id: string) {
+  if (!id) return;
+  completedStreamedMessageIds.add(id);
+  try {
+    sessionStorage.setItem(
+      'redchat_streamed_msg_ids',
+      JSON.stringify(Array.from(completedStreamedMessageIds))
+    );
+  } catch (e) {
+    // Ignore sessionStorage errors
+  }
+}
+
 export interface ChatMessageItemProps {
   msg: ChatMessage;
   isMe: boolean;
@@ -72,32 +100,57 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
   } = props;
 
   const fullText = msg.text || '';
-  const [displayedLength, setDisplayedLength] = useState(() => (isStreaming ? 0 : fullText.length));
-  const [isActivelyStreaming, setIsActivelyStreaming] = useState(isStreaming);
+  const isAlreadyStreamed = completedStreamedMessageIds.has(msg.id);
+  const shouldStream = isStreaming && !isAlreadyStreamed;
 
-  // Sync isActivelyStreaming when isStreaming prop changes
+  const [displayedLength, setDisplayedLength] = useState(() => (shouldStream ? 0 : fullText.length));
+  const [isActivelyStreaming, setIsActivelyStreaming] = useState(shouldStream);
+
+  // Sync isActivelyStreaming when isStreaming prop or message ID changes
   useEffect(() => {
-    if (isStreaming) {
+    if (shouldStream) {
       setIsActivelyStreaming(true);
       setDisplayedLength(0);
     } else {
       setIsActivelyStreaming(false);
       setDisplayedLength(fullText.length);
     }
-  }, [isStreaming, fullText.length]);
+  }, [shouldStream, fullText.length]);
 
   useEffect(() => {
     if (!isActivelyStreaming) return;
 
     if (displayedLength < fullText.length) {
-      // Dynamic speed between 12ms and 34ms per character as requested
-      const dynamicSpeed = Math.floor(Math.random() * 23) + 12;
+      // 🚀 Adaptif Hız & Parça Boyutu (Text Length Based Adaptive Streaming)
+      // Çok kısa metin (< 80 karakter): Yavaş daktilo hissi (22ms - 38ms)
+      // Orta boy metin (80 - 300 karakter): Dengeli orta hız (10ms - 18ms)
+      // Uzun metin (300 - 700 karakter): Hızlı akış (3-4 karakterlik adımlarla, 8ms - 14ms)
+      // Çok uzun metin (> 700 karakter): Süper hızlı akış (5-12 karakterlik adımlarla, 6ms - 10ms)
+      const totalLen = fullText.length;
+      let stepSize = 1;
+      let dynamicSpeed = 20;
+
+      if (totalLen < 80) {
+        stepSize = 1;
+        dynamicSpeed = Math.floor(Math.random() * 16) + 22; // 22ms - 38ms
+      } else if (totalLen < 300) {
+        stepSize = 1;
+        dynamicSpeed = Math.floor(Math.random() * 9) + 10; // 10ms - 18ms
+      } else if (totalLen < 700) {
+        stepSize = Math.floor(Math.random() * 2) + 3; // 3-4 karakter
+        dynamicSpeed = Math.floor(Math.random() * 7) + 8; // 8ms - 14ms
+      } else {
+        stepSize = Math.max(5, Math.floor(totalLen / 100)); // 5-12+ karakter
+        dynamicSpeed = Math.floor(Math.random() * 5) + 6; // 6ms - 10ms
+      }
+
       const timer = setTimeout(() => {
-        setDisplayedLength((prev) => prev + 1);
+        setDisplayedLength((prev) => Math.min(prev + stepSize, fullText.length));
       }, dynamicSpeed);
       return () => clearTimeout(timer);
     } else if (displayedLength >= fullText.length && fullText.length > 0) {
       setIsActivelyStreaming(false);
+      markMessageStreamCompleted(msg.id);
       if (onFinishStreaming) {
         onFinishStreaming(msg.id);
       }
