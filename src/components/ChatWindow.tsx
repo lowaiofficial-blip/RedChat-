@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import type { Conversation, ChatMessage, UserProfile } from '../types';
 import {
   subscribeToMessages,
@@ -12,6 +12,7 @@ import {
 } from '../services/chatService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
+import { ChatMessageItem } from './ChatMessageItem';
 import { EmojiPicker } from './EmojiPicker';
 import { GroupInfoModal } from './GroupInfoModal';
 import { VerifiedBadge } from './VerifiedBadge';
@@ -165,12 +166,20 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     return Boolean(otherUserObj?.isBanned);
   }, [conversation?.isGroup, isDirectAIChat, otherUserObj?.isBanned]);
 
-  // Zaman damgalarını ve aktif yazanları her saniye kontrol etmek için ticker
+  // Zaman damgalarını ve aktif yazanları kontrol etmek için ticker
+  // Yalnızca başka kullanıcılar yazıyorken çalışır, boş yere saniyede bir re-render yapmaz
   const [now, setNow] = useState<number>(Date.now());
   useEffect(() => {
+    const hasOtherTyping =
+      conversation?.typingUsers &&
+      Object.entries(conversation.typingUsers).some(
+        ([uid, timestamp]) => uid !== currentUser.uid && typeof timestamp === 'number' && timestamp > 0
+      );
+    if (!hasOtherTyping) return;
+
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [conversation?.typingUsers, currentUser.uid]);
 
   // Şu anda yazan kullanıcıların bilgisi (birebir veya grupta)
   const typingInfo = useMemo(() => {
@@ -318,8 +327,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     };
   }, [showEmojiPicker, showMentionSuggestions]);
 
-  // 👥 Mention Öneri Listesi (RedChat AI + Grup Üyeleri)
+  // 👥 Mention Öneri Listesi (RedChat AI + Grup Üyeleri) - Yalnızca mention önerisi açıkken çalışır
   const mentionCandidates = useMemo(() => {
+    if (!showMentionSuggestions) return [];
     const candidates: Array<{
       uid: string;
       displayName: string;
@@ -363,7 +373,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
 
     // Arama filtreleme
-    const q = mentionQuery.toLowerCase().trim();
+    const q = (mentionQuery || '').toLowerCase().trim();
     if (!q) return candidates;
 
     return candidates.filter(
@@ -372,7 +382,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         c.username.toLowerCase().includes(q) ||
         (c.isAi && ('redchat ai'.includes(q) || 'ai'.includes(q) || 'flashlite'.includes(q)))
     );
-  }, [allUsers, aiProfilePhotoUrl, conversation, currentUser.uid, mentionQuery]);
+  }, [allUsers, aiProfilePhotoUrl, conversation, currentUser.uid, mentionQuery, showMentionSuggestions]);
 
   // 💬 Input Metni Değişimi & Mention Algılama & Yazıyor Bildirimi
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -436,11 +446,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   };
 
-  // 🔵 Mesaj İçeriğinde Markdown (Kalın metin, Tablo, Liste, Kod) & @RedChat AI Mention Desteği
-  const renderMessageText = (text?: string, isMe?: boolean) => {
+  // 🔵 Mesaj İçeriğinde Markdown & Mention Desteği (useCallback ile memoize edildi)
+  const renderMessageText = useCallback((text?: string, isMe?: boolean) => {
     if (!text) return null;
     return <MarkdownMessage content={text} isMe={isMe} />;
-  };
+  }, []);
 
   // 😀 Input Alanına Emoji Ekle (Cursor korumalı, mevcut metni veya fotoğrafı bozmaz)
   const handleSelectEmoji = (emoji: string) => {
@@ -460,7 +470,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   };
 
   // 👍 Mesaja Emoji Tepkisi Ekle / Kaldır (Toggle)
-  const handleReaction = async (msg: ChatMessage, emoji: string) => {
+  const handleReaction = useCallback(async (msg: ChatMessage, emoji: string) => {
     if (!conversation?.id || !currentUser.uid) return;
     try {
       await toggleMessageReaction(conversation.id, msg.id, currentUser.uid, emoji);
@@ -468,17 +478,21 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     } catch (err) {
       console.error('Tepki kaydedilemedi:', err);
     }
-  };
+  }, [conversation?.id, currentUser.uid]);
+
+  const handleToggleHoverReaction = useCallback((msgId: string) => {
+    setHoveredReactionMessageId((prev) => (prev === msgId ? null : msgId));
+  }, []);
 
   // ↩️ Yanıt Başlat (Hem mobil hem PC)
-  const handleStartReply = (msg: ChatMessage) => {
+  const handleStartReply = useCallback((msg: ChatMessage) => {
     setReplyingToMessage(msg);
     setSelectedActionMessage(null);
     setEditingMessage(null);
-  };
+  }, []);
 
   // ↩️ Yanıta Tıklayınca Orijinal Mesaja Kaydır ve Vurgula
-  const handleScrollToMessage = (messageId: string) => {
+  const handleScrollToMessage = useCallback((messageId: string) => {
     const el = document.getElementById(`message-${messageId}`);
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -487,7 +501,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         setHighlightedMessageId((prev) => (prev === messageId ? null : prev));
       }, 2000);
     }
-  };
+  }, []);
 
   // Mesaj Gönderme (Metin, Fotoğraf, Fotoğraf + Metin, veya Yanıt)
   const handleSend = async (e: React.FormEvent) => {
@@ -669,33 +683,33 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   };
 
   // Zaman formatlama (18:42)
-  const formatMsgTime = (timestamp: any): string => {
+  const formatMsgTime = useCallback((timestamp: any): string => {
     if (!timestamp) return 'şimdi';
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
     if (isNaN(date.getTime())) return '';
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
+  }, []);
 
   // Uzun basma (Long-press) ve Sağ Tık kontrolü
-  const handleTouchStart = (msg: ChatMessage) => {
+  const handleTouchStart = useCallback((msg: ChatMessage) => {
     isLongPressActiveRef.current = false;
     longPressTimerRef.current = setTimeout(() => {
       isLongPressActiveRef.current = true;
       setSelectedActionMessage(msg);
     }, 450);
-  };
+  }, []);
 
-  const handleTouchEnd = () => {
+  const handleTouchEnd = useCallback(() => {
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
-  };
+  }, []);
 
-  const handleContextMenu = (e: React.MouseEvent, msg: ChatMessage) => {
+  const handleContextMenu = useCallback((e: React.MouseEvent, msg: ChatMessage) => {
     e.preventDefault();
     setSelectedActionMessage(msg);
-  };
+  }, []);
 
   // Hiçbir sohbet seçili değilse boş durum
   if (!conversation) {
@@ -936,9 +950,6 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             }
 
             const isMe = msg.senderId === currentUser.uid;
-            const isRead = msg.isRead || msg.status === 'read';
-            const hasImage = Boolean(msg.imageUrl && msg.imageUrl.trim().length > 0);
-            const hasText = Boolean(msg.text && msg.text.trim().length > 0);
             const isHighlighted = highlightedMessageId === msg.id;
 
             // Gerçek gönderen profil bilgileri (Firestore users/{uid} & participants haritasından)
@@ -960,347 +971,32 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               '';
 
             return (
-              <div
+              <ChatMessageItem
                 key={msg.id}
-                id={`message-${msg.id}`}
-                className={`group relative flex items-end gap-1.5 transition-all duration-300 ${
-                  isMe ? 'justify-end' : 'justify-start'
-                } ${
-                  isHighlighted
-                    ? 'p-1 -m-1 rounded-2xl ring-2 ring-red-500 bg-red-500/10 scale-[1.01]'
-                    : ''
-                }`}
-              >
-                {/* 👤 Gelen mesajlarda gönderen profil avatarı */}
-                {!isMe && (
-                  <div
-                    className="shrink-0 mb-0.5 cursor-pointer self-end"
-                    onClick={() => {
-                      if (senderUser) {
-                        onOpenProfile(senderUser);
-                      }
-                    }}
-                    title={senderDisplayName}
-                  >
-                    <UserAvatar
-                      photoURL={senderPhotoURL}
-                      name={senderDisplayName}
-                      username={senderUsername}
-                      size="sm"
-                      shape="circle"
-                    />
-                  </div>
-                )}
-
-                <div className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[85%] sm:max-w-[420px] min-w-0`}>
-                  {/* Balon ve Masaüstü Aksiyon Butonları Satırı */}
-                  <div
-                    className={`relative flex items-center gap-1 max-w-full min-w-0 ${
-                      isMe ? 'flex-row-reverse' : 'flex-row'
-                    }`}
-                  >
-                    {/* Mesaj Balonu (DOM'da ilk sıra - Avatar ile bitişik) */}
-                    <div
-                      onTouchStart={() => handleTouchStart(msg)}
-                      onTouchEnd={handleTouchEnd}
-                      onTouchMove={handleTouchEnd}
-                      onContextMenu={(e) => handleContextMenu(e, msg)}
-                      style={{
-                        WebkitUserSelect: 'none',
-                        userSelect: 'none',
-                        WebkitTouchCallout: 'none',
-                      }}
-                      className={`relative rounded-2xl text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] shadow-xs select-none transition-transform active:scale-[0.99] min-w-0 ${
-                        hasImage
-                          ? 'w-56 sm:w-68 max-w-[72vw] p-1 pb-1.5'
-                          : 'w-fit max-w-full px-3 py-1.5'
-                      } ${
-                        isMe
-                          ? 'bg-red-600 text-white rounded-br-xs'
-                          : 'bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 border border-zinc-200/80 dark:border-zinc-700/80 rounded-bl-xs'
-                      }`}
-                    >
-                      {/* 👥 Grup Sohbetinde Gönderen İsmi */}
-                      {conversation?.isGroup && !isMe && (
-                        <div className="text-[11px] font-bold text-red-600 dark:text-red-400 mb-0.5 px-0.5 truncate flex items-center gap-1">
-                          <span className="truncate">{senderDisplayName}</span>
-                          <VerifiedBadge
-                            isVerified={senderUser?.isVerified}
-                            badgeUrl={badgeUrl}
-                            size="sm"
-                            user={{
-                              displayName: senderDisplayName,
-                              username: senderUser?.username || msg.senderUsername,
-                              photoURL: senderUser?.photoURL || null,
-                            }}
-                          />
-                        </div>
-                      )}
-
-                      {/* ↩️ Yanıt Kartı (Mesaj Balonu İçi) */}
-                      {msg.replyTo && (
-                        <div
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (isLongPressActiveRef.current) return;
-                            handleScrollToMessage(msg.replyTo!.messageId);
-                          }}
-                          className={`mb-1 p-1.5 rounded-xl text-left cursor-pointer transition-all border-l-4 select-none ${
-                            isMe
-                              ? 'bg-red-700/50 hover:bg-red-700/70 border-white text-white'
-                              : 'bg-zinc-100 dark:bg-zinc-700/60 hover:bg-zinc-200 dark:hover:bg-zinc-700 border-red-600 dark:border-red-500 text-zinc-800 dark:text-zinc-200'
-                          }`}
-                          title="Orijinal mesaja git"
-                        >
-                          <div className="flex items-center justify-between gap-2 mb-0.5">
-                            <span
-                              className={`text-[10px] font-bold truncate flex items-center gap-1 ${
-                                isMe ? 'text-red-100' : 'text-red-600 dark:text-red-400'
-                              }`}
-                            >
-                              <Reply className="w-3 h-3 shrink-0" />
-                              {msg.replyTo.senderId === currentUser.uid
-                                ? 'Siz'
-                                : msg.replyTo.senderName || 'Kullanıcı'}
-                            </span>
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            {msg.replyTo.imageUrl && (
-                              <img
-                                src={msg.replyTo.imageUrl}
-                                alt="Yanıtlanan görsel"
-                                referrerPolicy="no-referrer"
-                                className="w-8 h-8 rounded-lg object-cover flex-shrink-0 border border-black/10"
-                              />
-                            )}
-                            <div className="min-w-0 flex-1">
-                              {msg.replyTo.imageUrl && !msg.replyTo.text ? (
-                                <span
-                                  className={`text-[11px] flex items-center gap-1 italic ${
-                                    isMe ? 'text-red-100/80' : 'text-zinc-500 dark:text-zinc-400'
-                                  }`}
-                                >
-                                  <ImageIcon className="w-3 h-3 shrink-0" />
-                                  Fotoğraf
-                                </span>
-                              ) : msg.replyTo.imageUrl && msg.replyTo.text ? (
-                                <div className="text-[11px] flex items-center gap-1 truncate">
-                                  <ImageIcon className="w-3 h-3 shrink-0 opacity-80" />
-                                  <span className="truncate">{msg.replyTo.text}</span>
-                                </div>
-                              ) : (
-                                <p className="text-[11px] truncate opacity-90">
-                                  {msg.replyTo.text || 'Bu mesaj artık kullanılamıyor.'}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* 🖼️ Fotoğraf İçeriği veya Metin + Saat (Kompakt Tek Akış) */}
-                      {!hasImage ? (
-                        <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 max-w-full min-w-0">
-                          <span className="whitespace-pre-wrap select-none text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] flex-1 min-w-0 max-w-full">
-                            {renderMessageText(msg.text, isMe)}
-                          </span>
-                          <span
-                            className={`inline-flex items-center gap-1 font-mono text-[10px] select-none shrink-0 self-end ml-auto ${
-                              isMe ? 'text-red-100/80' : 'text-zinc-400 dark:text-zinc-400'
-                            }`}
-                          >
-                            {msg.isEdited && (
-                              <span className="italic text-[9px] opacity-75 mr-0.5">
-                                (düzenlendi)
-                              </span>
-                            )}
-                            <span>{formatMsgTime(msg.createdAt)}</span>
-                            {isMe && (
-                              <span
-                                className="inline-flex items-center ml-0.5"
-                                title={isRead ? 'Okundu' : 'Gönderildi'}
-                              >
-                                {isRead ? (
-                                  <CheckCheck className="w-3.5 h-3.5 text-white font-bold" />
-                                ) : (
-                                  <Check className="w-3.5 h-3.5 text-red-200" />
-                                )}
-                              </span>
-                            )}
-                          </span>
-                        </div>
-                      ) : (
-                        <>
-                          {/* 🖼️ Fotoğraf */}
-                          <div
-                            className="relative group/img overflow-hidden rounded-xl cursor-pointer bg-black/10 dark:bg-black/30 flex items-center justify-center"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (isLongPressActiveRef.current) return;
-                              setLightboxImage({
-                                url: msg.imageUrl!,
-                                caption: msg.text || undefined,
-                              });
-                            }}
-                          >
-                            <img
-                              src={msg.imageUrl!}
-                              alt="Fotoğraf"
-                              referrerPolicy="no-referrer"
-                              className="w-full h-auto max-h-60 sm:max-h-68 object-cover rounded-xl transition-transform duration-200 group-hover/img:scale-[1.02] block"
-                              loading="lazy"
-                            />
-                            {/* Hover Zoom Göstergesi */}
-                            <div className="absolute inset-0 bg-black/25 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                              <span className="p-1.5 rounded-full bg-black/60 text-white backdrop-blur-xs shadow-md">
-                                <Maximize2 className="w-3.5 h-3.5" />
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* Fotoğraf Altı Metin + Saat */}
-                          <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 px-1 pt-1 max-w-full min-w-0">
-                            {hasText && (
-                              <span className="whitespace-pre-wrap select-none text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] flex-1 min-w-0 max-w-full">
-                                {renderMessageText(msg.text, isMe)}
-                              </span>
-                            )}
-                            <span
-                              className={`inline-flex items-center gap-1 font-mono text-[10px] select-none shrink-0 self-end ml-auto ${
-                                isMe ? 'text-red-100/80' : 'text-zinc-400 dark:text-zinc-400'
-                              }`}
-                            >
-                              {msg.isEdited && (
-                                <span className="italic text-[9px] opacity-75 mr-0.5">
-                                  (düzenlendi)
-                                </span>
-                              )}
-                              <span>{formatMsgTime(msg.createdAt)}</span>
-                              {isMe && (
-                                <span
-                                  className="inline-flex items-center ml-0.5"
-                                  title={isRead ? 'Okundu' : 'Gönderildi'}
-                                >
-                                  {isRead ? (
-                                    <CheckCheck className="w-3.5 h-3.5 text-white font-bold" />
-                                  ) : (
-                                    <Check className="w-3.5 h-3.5 text-red-200" />
-                                  )}
-                                </span>
-                              )}
-                            </span>
-                          </div>
-                        </>
-                      )}
-                    </div>
-
-                    {/* Masaüstü Hover Menü Butonları (Yalnızca masaüstünde hover durumunda görünür, mobilde gizlidir ve asla boşluk kaplamaz) */}
-                    <div className="hidden sm:flex opacity-0 group-hover:opacity-100 transition-opacity shrink-0 items-center gap-0.5 relative">
-                      {/* Hızlı Tepki Butonu ve Açılır Emoji Çubuğu */}
-                      <div className="relative">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setHoveredReactionMessageId((prev) => (prev === msg.id ? null : msg.id));
-                          }}
-                          className="p-1 rounded-full text-zinc-400 hover:text-amber-500 hover:bg-zinc-200/60 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
-                          title="Tepki Ekle"
-                        >
-                          <Smile className="w-3.5 h-3.5" />
-                        </button>
-
-                        {hoveredReactionMessageId === msg.id && (
-                          <div
-                            className={`absolute bottom-full mb-1 z-30 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-xl rounded-full px-2 py-1 flex items-center gap-1 animate-in zoom-in-90 ${
-                              isMe ? 'right-0' : 'left-0'
-                            }`}
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            {QUICK_REACTIONS.map((emoji) => {
-                              const userList = msg.reactions?.[emoji] || [];
-                              const hasReacted = userList.includes(currentUser.uid);
-                              return (
-                                <button
-                                  key={emoji}
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleReaction(msg, emoji);
-                                  }}
-                                  className={`w-7 h-7 text-sm rounded-full flex items-center justify-center transition-all hover:scale-125 active:scale-95 cursor-pointer ${
-                                    hasReacted
-                                      ? 'bg-red-100 dark:bg-red-950/80 ring-1 ring-red-500'
-                                      : 'hover:bg-zinc-100 dark:hover:bg-zinc-700'
-                                  }`}
-                                  title={`${emoji} tepkisi ver / kaldır`}
-                                >
-                                  {emoji}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-
-                      <button
-                        onClick={() => handleStartReply(msg)}
-                        className="p-1 rounded-full text-zinc-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-zinc-200/60 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
-                        title="Yanıtla"
-                      >
-                        <Reply className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => setSelectedActionMessage(msg)}
-                        className="p-1 rounded-full text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-200/60 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
-                        title="Seçenekler"
-                      >
-                        <MoreVertical className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* 💬 Mesaj Emoji Tepki Rozetleri */}
-                  {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                    <div
-                      className={`flex flex-wrap items-center gap-1 mt-1 px-0.5 ${
-                        isMe ? 'justify-end' : 'justify-start'
-                      }`}
-                    >
-                      {(Object.entries(msg.reactions) as [string, string[]][])
-                        .filter(([_, uids]) => Array.isArray(uids) && uids.length > 0)
-                        .map(([emoji, uids]) => {
-                          const count = uids.length;
-                          const hasReacted = uids.includes(currentUser.uid);
-                          return (
-                            <button
-                              key={emoji}
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleReaction(msg, emoji);
-                              }}
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium transition-all cursor-pointer select-none active:scale-90 ${
-                                hasReacted
-                                  ? 'bg-red-100 dark:bg-red-950/80 border border-red-400 dark:border-red-600 text-red-700 dark:text-red-300 font-bold shadow-xs'
-                                  : 'bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 shadow-xs'
-                              }`}
-                              title={`${count} kişi ${emoji} tepkisi verdi${
-                                hasReacted ? ' (Kendi tepkinizi kaldırmak için tıklayın)' : ''
-                              }`}
-                            >
-                              <span>{emoji}</span>
-                              {count > 1 && (
-                                <span className="text-[10px] font-semibold">{count}</span>
-                              )}
-                            </button>
-                          );
-                        })}
-                    </div>
-                  )}
-                </div>
-              </div>
+                msg={msg}
+                isMe={isMe}
+                currentUserUid={currentUser.uid}
+                isGroup={Boolean(conversation?.isGroup)}
+                isHighlighted={isHighlighted}
+                badgeUrl={badgeUrl}
+                senderUser={senderUser || undefined}
+                senderDisplayName={senderDisplayName}
+                senderUsername={senderUsername}
+                senderPhotoURL={senderPhotoURL}
+                isHoveredReaction={hoveredReactionMessageId === msg.id}
+                onOpenProfile={onOpenProfile}
+                onSelectImage={setLightboxImage}
+                onStartReply={handleStartReply}
+                onSelectActionMessage={setSelectedActionMessage}
+                onReaction={handleReaction}
+                onToggleHoverReaction={handleToggleHoverReaction}
+                onScrollToMessage={handleScrollToMessage}
+                onTouchStart={handleTouchStart}
+                onTouchEnd={handleTouchEnd}
+                onContextMenu={handleContextMenu}
+                renderMessageText={renderMessageText}
+                formatMsgTime={formatMsgTime}
+              />
             );
           })
         )}
