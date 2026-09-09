@@ -120,7 +120,7 @@ async function startServer() {
         }
       }
 
-      // 2. YEDEK: Gemini API (Ortamda GEMINI_API_KEY varsa kesinti yaşatmamak için)
+      // 2. OPSİYONEL YEDEK: Gemini API (Yalnızca ortamda GEMINI_API_KEY tanımlıysa devreye girer)
       if (geminiApiKey) {
         try {
           const { GoogleGenAI } = await import("@google/genai");
@@ -145,13 +145,20 @@ async function startServer() {
             return res.json({ text: sanitizeAIResponse(response.text), provider: "gemini" });
           }
         } catch (geminiErr) {
-          console.error("Gemini fallback error:", geminiErr);
+          console.warn("Gemini çağrısı başarısız oldu (opsiyonel):", geminiErr);
         }
       }
 
-      // API anahtarı yoksa veya her iki servis de yanıt vermediyse temiz hata
+      // API anahtarı yoksa veya servis yanıt vermediyse samimi bilgilendirme yanıtı
+      if (!groqApiKey && !geminiApiKey) {
+        return res.json({
+          text: "Merhaba! Ben **RedChat AI** asistanıyım. Yapay zeka motorunun tam performansla yanıt verebilmesi için sunucu ortamına `GROQ_API_KEY` eklenmesi gerekmektedir. Size başka bir konuda yardımcı olabilir miyim? 😊",
+          provider: "fallback",
+        });
+      }
+
       return res.status(503).json({
-        error: "RedChat AI şu anda yanıt veremiyor. Lütfen tekrar deneyin.",
+        error: "RedChat AI şu anda yanıt veremiyor. Lütfen birkaç saniye sonra tekrar deneyin.",
       });
     } catch (error: any) {
       console.error("AI chat server error:", error);
