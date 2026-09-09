@@ -1,0 +1,72 @@
+{
+  "entities": {
+    "UserProfile": {
+      "path": "users/{uid}",
+      "fields": {
+        "uid": { "type": "string", "description": "Auth UID matches Document ID" },
+        "username": { "type": "string", "description": "Original display username" },
+        "usernameLower": { "type": "string", "description": "Lowercased username for unique lookup" },
+        "email": { "type": "string", "description": "User email address" },
+        "displayName": { "type": "string", "description": "User display name" },
+        "photoURL": { "type": "string", "description": "Avatar URL or null" },
+        "bio": { "type": "string", "description": "Short bio or status" },
+        "createdAt": { "type": "timestamp", "description": "Account creation timestamp" },
+        "updatedAt": { "type": "timestamp", "description": "Last update timestamp" },
+        "isOnline": { "type": "boolean", "description": "Realtime online status" },
+        "lastSeen": { "type": "timestamp", "description": "Last active timestamp" },
+        "isVerified": { "type": "boolean", "description": "RedChat Verified badge status" },
+        "isBanned": { "type": "boolean", "description": "Account ban status" },
+        "banReason": { "type": "string", "description": "Account ban reason" },
+        "bannedAt": { "type": "timestamp", "description": "Ban timestamp" },
+        "isMuted": { "type": "boolean", "description": "Account mute status" },
+        "muteReason": { "type": "string", "description": "Account mute reason" },
+        "mutedAt": { "type": "timestamp", "description": "Mute timestamp" }
+      }
+    },
+    "UsernameIndex": {
+      "path": "usernames/{usernameLower}",
+      "fields": {
+        "uid": { "type": "string", "description": "Referenced user UID" },
+        "createdAt": { "type": "timestamp", "description": "Claim timestamp" }
+      }
+    },
+    "Conversation": {
+      "path": "conversations/{conversationId}",
+      "fields": {
+        "id": { "type": "string", "description": "Unique conversation ID" },
+        "isGroup": { "type": "boolean", "description": "Whether conversation is a group" },
+        "name": { "type": "string", "description": "Group name" },
+        "photoURL": { "type": "string", "description": "Group avatar URL" },
+        "groupOwnerId": { "type": "string", "description": "UID of group owner/creator" },
+        "participantIds": { "type": "array", "description": "List of participant UIDs" },
+        "participants": { "type": "map", "description": "Map of participant details with roles" },
+        "memberRoles": { "type": "map", "description": "Map of UID to role ('owner'|'admin'|'member')" },
+        "unreadCounts": { "type": "map", "description": "Unread message count per user" },
+        "lastMessageText": { "type": "string", "description": "Last message preview" },
+        "lastMessageTimestamp": { "type": "timestamp", "description": "Last message time" }
+      }
+    },
+    "ChatMessage": {
+      "path": "conversations/{conversationId}/messages/{messageId}",
+      "fields": {
+        "id": { "type": "string", "description": "Message document ID" },
+        "senderId": { "type": "string", "description": "Sender user UID" },
+        "senderName": { "type": "string", "description": "Sender display name" },
+        "senderUsername": { "type": "string", "description": "Sender username" },
+        "text": { "type": "string", "description": "Message text" },
+        "imageUrl": { "type": "string", "description": "Attached image URL" },
+        "isSystemMessage": { "type": "boolean", "description": "Whether message is an automated system announcement" },
+        "systemType": { "type": "string", "description": "System event type" },
+        "createdAt": { "type": "timestamp", "description": "Message send timestamp" }
+      }
+    },
+    "AppSettings": {
+      "path": "settings/{settingId}",
+      "fields": {
+        "verifiedBadgeUrl": { "type": "string", "description": "Custom verified badge PNG URL or null" },
+        "updatedAt": { "type": "timestamp", "description": "Last update timestamp" },
+        "updatedBy": { "type": "string", "description": "Admin UID or email" }
+      }
+    }
+  }
+}

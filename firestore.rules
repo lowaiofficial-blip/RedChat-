@@ -1,0 +1,171 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // =========================================================================
+    // 🔐 GÜVENLİK YARDIMCI FONKSİYONLARI (HELPER FUNCTIONS)
+    // =========================================================================
+    
+    // Geçerli oturum açmış kullanıcı kontrolü
+    function isAuthenticated() {
+      return request.auth != null && request.auth.uid != null;
+    }
+    
+    // Doküman sahibi kontrolü
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Sistem Yöneticisi kontrolü (Email listesi, custom claim veya Firestore rolü)
+    function isAdmin() {
+      return isAuthenticated() && (
+        (request.auth.token.email != null && (
+          request.auth.token.email == 'robloxenes930@gmail.com' ||
+          request.auth.token.email == 'gg00cat73@gmail.com'
+        )) ||
+        (request.auth.token.admin == true) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      );
+    }
+
+    // =========================================================================
+    // ⚙️ UYGULAMA GENEL AYARLARI (/settings/{settingId})
+    // =========================================================================
+    // Mavi tik rozet görseli, yapay zeka profil resmi ve uygulama ayarları
+    // Herkes okuyabilir, yalnızca adminler değiştirebilir.
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // =========================================================================
+    // 👤 KULLANICI PROFİLLERİ (/users/{userId})
+    // =========================================================================
+    match /users/{userId} {
+      // Tüm kullanıcılar arama ve mesajlaşma için profil detaylarını okuyabilir
+      allow read: if true;
+      
+      // Kullanıcı kendi profilini veya admin yeni profil oluşturabilir
+      allow create: if isAuthenticated() && (isOwner(userId) || isAdmin());
+      
+      // Kullanıcı kendi profil bilgilerini (durum, bio, avatar, son görülme) güncelleyebilir.
+      // KRİTİK GÜVENLİK: Normal kullanıcılar role (adminlik), isVerified (mavi tik),
+      // isBanned veya isMuted alanlarını ASLA değiştiremez!
+      allow update: if isAuthenticated() && (
+        isAdmin() ||
+        (
+          isOwner(userId) &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            'role', 'isVerified', 'isBanned', 'isMuted', 'banReason', 'bannedAt', 'muteReason', 'mutedAt'
+          ])
+        )
+      );
+      
+      // Hesap silme işlemi (kullanıcı veya admin)
+      allow delete: if isAuthenticated() && (isOwner(userId) || isAdmin());
+    }
+    
+    // =========================================================================
+    // 🏷️ BENZERSİZ KULLANICI ADI REZERVASYONU (/usernames/{usernameLower})
+    // =========================================================================
+    match /usernames/{usernameLower} {
+      allow read: if true;
+      allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if isAuthenticated() && (
+        resource.data.uid == request.auth.uid ||
+        isAdmin()
+      );
+    }
+
+    // =========================================================================
+    // 💬 SOHBETLER & GRUPLAR (/conversations/{conversationId})
+    // =========================================================================
+    match /conversations/{conversationId} {
+      // Sohbet okuma izni:
+      // - get: Doküman henüz yoksa (ilk sohbet başlatma kontrolü) veya varsa sadece gerçek katılımcılar okuyabilir
+      // - list: Sadece kullanıcının katılımcı olduğu sohbetler listelenebilir
+      allow get: if isAuthenticated() && (
+        resource == null ||
+        (resource.data.participantIds != null && request.auth.uid in resource.data.participantIds) ||
+        isAdmin()
+      );
+      
+      allow list: if isAuthenticated() && (
+        (resource.data.participantIds != null && request.auth.uid in resource.data.participantIds) ||
+        isAdmin()
+      );
+      
+      // Yeni birebir sohbet, grup sohbeti veya RedChat AI sohbeti başlatma:
+      // İstek gönderen kullanıcı mutlaka katılımcılar listesinde olmalıdır
+      allow create: if isAuthenticated() && (
+        request.resource.data.participantIds != null &&
+        request.auth.uid in request.resource.data.participantIds
+      );
+      
+      // Son mesaj, okunmamış sayaçları (unreadCounts), grup üyeleri güncelleme:
+      // Yalnızca ilgili sohbetin katılımcıları veya admin güncelleyebilir
+      allow update: if isAuthenticated() && (
+        (resource.data.participantIds != null && request.auth.uid in resource.data.participantIds) ||
+        isAdmin()
+      );
+      
+      // Grubu silme veya sohbetten ayrılma:
+      allow delete: if isAuthenticated() && (
+        resource.data.groupOwnerId == request.auth.uid ||
+        (resource.data.participantIds != null && request.auth.uid in resource.data.participantIds) ||
+        isAdmin()
+      );
+      
+      // =======================================================================
+      // 📨 SOHBET İÇİ MESAJLAR (/conversations/{conversationId}/messages/{messageId})
+      // =======================================================================
+      match /messages/{messageId} {
+        // Sohbetteki tüm mesajları YALNIZCA o konuşmanın gerçek katılımcıları okuyabilir!
+        // Yabancı bir kullanıcı başka bir sohbete veya gruba ASLA erişemez.
+        allow read: if isAuthenticated() && (
+          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds ||
+          isAdmin()
+        );
+        
+        // Yeni mesaj gönderme:
+        // 1. Gönderen mutlaka bu konuşmanın veya grubun katılımcısı olmalıdır
+        // 2. Kendi adına (senderId == request.auth.uid) gönderebilir
+        // 3. VEYA AI sohbetinde / @RedChat AI grup akışında RedChat AI sistem yanıtı (system_redchat_ai) olarak kaydedilebilir
+        // 4. Normal kullanıcı başka bir gerçek insan kullanıcının UID'sini ASLA taklit edemez!
+        allow create: if isAuthenticated() &&
+          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds &&
+          (
+            request.resource.data.senderId == request.auth.uid ||
+            (
+              request.resource.data.senderId == 'system_redchat_ai' &&
+              request.resource.data.senderUsername == 'redchat_ai'
+            )
+          );
+        
+        // Mesaj düzenleme ve emoji reaksiyonları:
+        allow update: if isAuthenticated() &&
+          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds &&
+          (
+            resource.data.senderId == request.auth.uid ||
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'isRead', 'status', 'text', 'isEdited', 'editedAt']) ||
+            isAdmin()
+          );
+        
+        // Mesaj silme (yalnızca gönderen veya admin silebilir)
+        allow delete: if isAuthenticated() && (
+          resource.data.senderId == request.auth.uid ||
+          isAdmin()
+        );
+      }
+    }
+
+    // =========================================================================
+    // 🔍 COLLECTION GROUP MESAJ ERİŞİMİ
+    // =========================================================================
+    // Global istatistikler için yalnızca adminler tüm mesaj koleksiyonunu sorgulayabilir
+    match /{path=**}/messages/{messageId} {
+      allow read: if isAuthenticated() && isAdmin();
+    }
+  }
+}

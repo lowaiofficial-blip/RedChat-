@@ -1,0 +1,6 @@
+{
+  "name": "RedChat",
+  "description": "RedChat real-time messaging and community platform with Firebase Auth and Firestore.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

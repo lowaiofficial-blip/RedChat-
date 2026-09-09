@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+/* 🌸 Meta AI Mini 3D Typing Loader (24px mini boyut) */
+.meta-3d-loader {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  animation: rotateContainer 2.5s linear infinite;
+}
+
+/* Mini 3D Tomurcuklar */
+.meta-3d-loader .petal {
+  position: absolute;
+  width: 7px;
+  height: 11px;
+  border-radius: 50%;
+  
+  /* Mavi -> Pembe/Mor Degrade */
+  background: radial-gradient(circle at 35% 25%, #ff77ff 0%, #a83aff 40%, #3b42fc 80%, #2b2ebb 100%);
+  
+  /* Mini Işık ve Gölge Yansıması */
+  box-shadow: inset -0.5px -0.5px 1px rgba(0, 0, 0, 0.5),
+              inset 0.5px 0.5px 1px rgba(255, 255, 255, 0.8);
+
+  /* Dairesel Dizilim ve Eğim */
+  transform-origin: center center;
+  transform: rotate(calc(var(--i) * (360deg / 7))) translateY(-8px) rotate(25deg);
+  
+  animation: petalPulse 1.4s ease-in-out infinite;
+  animation-delay: calc(var(--i) * -0.2s);
+}
+
+@keyframes rotateContainer {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes petalPulse {
+  0%, 100% {
+    transform: rotate(calc(var(--i) * (360deg / 7))) translateY(-8px) rotate(25deg) scale(0.5);
+    opacity: 0.3;
+    filter: brightness(0.7);
+  }
+  50% {
+    transform: rotate(calc(var(--i) * (360deg / 7))) translateY(-8px) rotate(25deg) scale(1.1);
+    opacity: 1;
+    filter: brightness(1.2);
+  }
+}
+
