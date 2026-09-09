@@ -1366,10 +1366,10 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
       {/* ↩️ YANIT MODU ÖNİZLEME ÇUBUĞU */}
       {replyingToMessage && !editingMessage && (
-        <div className="px-4 py-2.5 bg-zinc-100 dark:bg-zinc-800/95 border-t border-zinc-200 dark:border-zinc-700 flex items-center justify-between animate-in slide-in-from-bottom-2">
-          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+        <div className="px-4 py-2.5 bg-zinc-100 dark:bg-zinc-800/95 border-t border-zinc-200 dark:border-zinc-700 flex items-center justify-between animate-in slide-in-from-bottom-2 w-full max-w-full min-w-0 overflow-hidden">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1 overflow-hidden">
             <div className="w-1 h-8 bg-red-600 rounded-full shrink-0" />
-            <div className="flex items-center gap-2 min-w-0 flex-1">
+            <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
               {replyingToMessage.imageUrl && (
                 <img
                   src={replyingToMessage.imageUrl}
@@ -1378,28 +1378,28 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                   className="w-8 h-8 rounded-lg object-cover flex-shrink-0 border border-zinc-300 dark:border-zinc-700"
                 />
               )}
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1 text-[11px] font-bold text-red-600 dark:text-red-400">
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <div className="flex items-center gap-1 text-[11px] font-bold text-red-600 dark:text-red-400 min-w-0 max-w-full">
                   <Reply className="w-3 h-3 shrink-0" />
-                  <span className="truncate">
+                  <span className="truncate min-w-0">
                     {replyingToMessage.senderId === currentUser.uid
                       ? 'Kendinize yanıt veriyorsunuz'
                       : `${replyingToMessage.senderName || replyingToMessage.senderUsername || 'Kullanıcı'} yanıtlanıyor`}
                   </span>
                 </div>
-                <div className="text-[11px] text-zinc-600 dark:text-zinc-300 truncate flex items-center gap-1">
+                <div className="text-[11px] text-zinc-600 dark:text-zinc-300 truncate min-w-0 max-w-full flex items-center gap-1">
                   {replyingToMessage.imageUrl && !replyingToMessage.text ? (
-                    <span className="flex items-center gap-1 italic text-zinc-500 dark:text-zinc-400">
+                    <span className="flex items-center gap-1 italic text-zinc-500 dark:text-zinc-400 truncate min-w-0">
                       <ImageIcon className="w-3 h-3 text-red-500 shrink-0" />
                       Fotoğraf
                     </span>
                   ) : replyingToMessage.imageUrl && replyingToMessage.text ? (
                     <>
                       <ImageIcon className="w-3 h-3 text-red-500 shrink-0" />
-                      <span className="truncate">{replyingToMessage.text}</span>
+                      <span className="truncate min-w-0">{replyingToMessage.text}</span>
                     </>
                   ) : (
-                    <span className="truncate">{replyingToMessage.text || 'Mesaj'}</span>
+                    <span className="truncate min-w-0">{replyingToMessage.text || 'Mesaj'}</span>
                   )}
                 </div>
               </div>
@@ -1568,7 +1568,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             </button>
           </form>
         ) : (
-          <form onSubmit={handleSend} className="flex items-center gap-2">
+          <form onSubmit={handleSend} className="flex items-center gap-2 max-w-full min-w-0 w-full overflow-hidden">
             {/* 😀 Emoji Butonu */}
             <button
               id="emoji-toggle-btn"
@@ -1621,7 +1621,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                   ? `${conversation.name || 'Grup'} grubuna mesaj yaz...`
                   : `${displayName} ile mesajlaş...`
               }
-              className="flex-1 px-4 py-2.5 text-xs bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 disabled:opacity-60"
+              className="flex-1 min-w-0 px-4 py-2.5 text-xs bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 disabled:opacity-60"
             />
 
             {/* Gönder Butonu */}

@@ -2049,10 +2049,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                       {/* Yanıt (Reply) Varsa */}
                       {msg.replyTo && (
-                        <div className="p-2 bg-zinc-50 dark:bg-zinc-800/60 border-l-2 border-red-500 rounded-r-lg text-[11px] text-zinc-600 dark:text-zinc-300 flex items-center gap-1.5">
+                        <div className="p-2 bg-zinc-50 dark:bg-zinc-800/60 border-l-2 border-red-500 rounded-r-lg text-[11px] text-zinc-600 dark:text-zinc-300 flex items-center gap-1.5 min-w-0 max-w-full overflow-hidden">
                           <Reply className="w-3 h-3 text-red-500 shrink-0" />
-                          <span className="font-bold">{msg.replyTo.senderName}:</span>
-                          <span className="truncate">
+                          <span className="font-bold shrink-0">{msg.replyTo.senderName}:</span>
+                          <span className="truncate min-w-0 flex-1">
                             {msg.replyTo.text || '[Fotoğraf]'}
                           </span>
                         </div>

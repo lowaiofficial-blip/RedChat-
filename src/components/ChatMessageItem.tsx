@@ -121,7 +121,7 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
               userSelect: 'none',
               WebkitTouchCallout: 'none',
             }}
-            className={`relative rounded-2xl text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] shadow-xs select-none transition-transform active:scale-[0.99] min-w-0 ${
+            className={`relative rounded-2xl text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] shadow-xs select-none transition-transform active:scale-[0.99] min-w-0 overflow-hidden ${
               hasImage
                 ? 'w-56 sm:w-68 max-w-[72vw] p-1 pb-1.5'
                 : 'w-fit max-w-full px-3 py-1.5'
@@ -155,27 +155,29 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
                   e.stopPropagation();
                   onScrollToMessage(msg.replyTo!.messageId);
                 }}
-                className={`mb-1 p-1.5 rounded-xl text-left cursor-pointer transition-all border-l-4 select-none ${
+                className={`mb-1.5 p-1.5 rounded-xl text-left cursor-pointer transition-all border-l-4 select-none w-full max-w-full min-w-0 overflow-hidden ${
                   isMe
                     ? 'bg-red-700/50 hover:bg-red-700/70 border-white text-white'
                     : 'bg-zinc-100 dark:bg-zinc-700/60 hover:bg-zinc-200 dark:hover:bg-zinc-700 border-red-600 dark:border-red-500 text-zinc-800 dark:text-zinc-200'
                 }`}
                 title="Orijinal mesaja git"
               >
-                <div className="flex items-center justify-between gap-2 mb-0.5">
+                <div className="flex items-center justify-between gap-2 mb-0.5 min-w-0 max-w-full overflow-hidden">
                   <span
-                    className={`text-[10px] font-bold truncate flex items-center gap-1 ${
+                    className={`text-[10px] font-bold truncate min-w-0 max-w-full flex items-center gap-1 ${
                       isMe ? 'text-red-100' : 'text-red-600 dark:text-red-400'
                     }`}
                   >
                     <Reply className="w-3 h-3 shrink-0" />
-                    {msg.replyTo.senderId === currentUserUid
-                      ? 'Siz'
-                      : msg.replyTo.senderName || 'Kullanıcı'}
+                    <span className="truncate min-w-0">
+                      {msg.replyTo.senderId === currentUserUid
+                        ? 'Siz'
+                        : msg.replyTo.senderName || 'Kullanıcı'}
+                    </span>
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 min-w-0 max-w-full overflow-hidden">
                   {msg.replyTo.imageUrl && (
                     <img
                       src={msg.replyTo.imageUrl}
@@ -184,23 +186,23 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
                       className="w-8 h-8 rounded-lg object-cover flex-shrink-0 border border-black/10"
                     />
                   )}
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0 max-w-full flex-1 overflow-hidden">
                     {msg.replyTo.imageUrl && !msg.replyTo.text ? (
                       <span
-                        className={`text-[11px] flex items-center gap-1 italic ${
+                        className={`text-[11px] flex items-center gap-1 italic truncate min-w-0 max-w-full ${
                           isMe ? 'text-red-100/80' : 'text-zinc-500 dark:text-zinc-400'
                         }`}
                       >
                         <ImageIcon className="w-3 h-3 shrink-0" />
-                        Fotoğraf
+                        <span>Fotoğraf</span>
                       </span>
                     ) : msg.replyTo.imageUrl && msg.replyTo.text ? (
-                      <div className="text-[11px] flex items-center gap-1 truncate">
+                      <div className="text-[11px] flex items-center gap-1 truncate min-w-0 max-w-full">
                         <ImageIcon className="w-3 h-3 shrink-0 opacity-80" />
-                        <span className="truncate">{msg.replyTo.text}</span>
+                        <span className="truncate min-w-0 max-w-full">{msg.replyTo.text}</span>
                       </div>
                     ) : (
-                      <p className="text-[11px] truncate opacity-90">
+                      <p className="text-[11px] truncate break-all [overflow-wrap:anywhere] opacity-90 min-w-0 max-w-full block">
                         {msg.replyTo.text || 'Bu mesaj artık kullanılamıyor.'}
                       </p>
                     )}
