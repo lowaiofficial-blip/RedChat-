@@ -544,7 +544,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             messageId: replyingToMessage.id,
             senderId: replyingToMessage.senderId,
             senderName: replyingToMessage.senderName || replyingToMessage.senderUsername || 'Kullanıcı',
-            text: replyingToMessage.text || '',
+            text: (replyingToMessage.text || '').replace(/\s+/g, ' '),
             imageUrl: replyingToMessage.imageUrl || null,
           }
         : null;
@@ -729,7 +729,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   }
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-zinc-50 dark:bg-zinc-950 relative">
+    <div className="flex-1 flex flex-col h-full w-full max-w-full min-w-0 overflow-hidden bg-zinc-50 dark:bg-zinc-950 relative">
       {/* Kopyalandı Bildirimi */}
       {copiedNotification && (
         <div className="absolute top-20 left-1/2 -translate-x-1/2 z-40 bg-zinc-900/90 text-white text-xs px-3.5 py-1.5 rounded-full shadow-lg flex items-center gap-1.5 animate-in fade-in zoom-in-95">
@@ -893,7 +893,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       </div>
 
       {/* Messages Scroll Area */}
-      <div className="flex-1 overflow-y-auto px-2 sm:px-3 py-1.5 space-y-1">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full min-w-0 px-2 sm:px-3 py-1.5 space-y-1">
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center p-6 text-zinc-400">
             <div className="w-10 h-10 rounded-full bg-zinc-200 dark:bg-zinc-800 flex items-center justify-center mb-2">
@@ -1387,19 +1387,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                       : `${replyingToMessage.senderName || replyingToMessage.senderUsername || 'Kullanıcı'} yanıtlanıyor`}
                   </span>
                 </div>
-                <div className="text-[11px] text-zinc-600 dark:text-zinc-300 truncate min-w-0 max-w-full flex items-center gap-1">
+                <div className="text-[11px] text-zinc-600 dark:text-zinc-300 min-w-0 max-w-full overflow-hidden">
                   {replyingToMessage.imageUrl && !replyingToMessage.text ? (
                     <span className="flex items-center gap-1 italic text-zinc-500 dark:text-zinc-400 truncate min-w-0">
                       <ImageIcon className="w-3 h-3 text-red-500 shrink-0" />
-                      Fotoğraf
+                      <span>Fotoğraf</span>
                     </span>
                   ) : replyingToMessage.imageUrl && replyingToMessage.text ? (
-                    <>
+                    <div className="flex items-center gap-1 min-w-0 max-w-full overflow-hidden">
                       <ImageIcon className="w-3 h-3 text-red-500 shrink-0" />
-                      <span className="truncate min-w-0">{replyingToMessage.text}</span>
-                    </>
+                      <p className="truncate min-w-0 flex-1">{replyingToMessage.text.replace(/\s+/g, ' ')}</p>
+                    </div>
                   ) : (
-                    <span className="truncate min-w-0">{replyingToMessage.text || 'Mesaj'}</span>
+                    <p className="truncate min-w-0 max-w-full">{replyingToMessage.text?.replace(/\s+/g, ' ') || 'Mesaj'}</p>
                   )}
                 </div>
               </div>

@@ -282,7 +282,7 @@ export default function App() {
 
       {/* SAĞ PANEL (Chat Window) */}
       <div
-        className={`w-full md:flex-1 h-full ${
+        className={`w-full md:flex-1 h-full min-w-0 max-w-full overflow-hidden ${
           !activeConversationId ? 'hidden md:flex' : 'flex'
         }`}
       >

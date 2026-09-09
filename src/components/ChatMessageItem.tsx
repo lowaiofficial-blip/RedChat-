@@ -74,7 +74,7 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
   return (
     <div
       id={`message-${msg.id}`}
-      className={`group relative flex items-end gap-1.5 transition-all duration-300 ${
+      className={`group relative flex items-end gap-1.5 transition-all duration-300 w-full max-w-full min-w-0 ${
         isMe ? 'justify-end' : 'justify-start'
       } ${
         isHighlighted
@@ -103,7 +103,7 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
         </div>
       )}
 
-      <div className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[85%] sm:max-w-[420px] min-w-0`}>
+      <div className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[calc(100%-2.5rem)] sm:max-w-[420px] min-w-0`}>
         {/* Balon ve Masaüstü Aksiyon Butonları Satırı */}
         <div
           className={`relative flex items-center gap-1 max-w-full min-w-0 ${
@@ -199,11 +199,11 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
                     ) : msg.replyTo.imageUrl && msg.replyTo.text ? (
                       <div className="text-[11px] flex items-center gap-1 truncate min-w-0 max-w-full">
                         <ImageIcon className="w-3 h-3 shrink-0 opacity-80" />
-                        <span className="truncate min-w-0 max-w-full">{msg.replyTo.text}</span>
+                        <span className="truncate min-w-0 max-w-full">{msg.replyTo.text.replace(/\s+/g, ' ')}</span>
                       </div>
                     ) : (
                       <p className="text-[11px] truncate break-all [overflow-wrap:anywhere] opacity-90 min-w-0 max-w-full block">
-                        {msg.replyTo.text || 'Bu mesaj artık kullanılamıyor.'}
+                        {(msg.replyTo.text || 'Bu mesaj artık kullanılamıyor.').replace(/\s+/g, ' ')}
                       </p>
                     )}
                   </div>
@@ -214,9 +214,9 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
             {/* 🖼️ Fotoğraf İçeriği veya Metin + Saat (Kompakt Tek Akış) */}
             {!hasImage ? (
               <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 max-w-full min-w-0">
-                <span className="whitespace-pre-wrap select-none text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] flex-1 min-w-0 max-w-full">
+                <div className="whitespace-pre-wrap select-none text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] flex-1 min-w-0 max-w-full">
                   {renderMessageText(msg.text, isMe)}
-                </span>
+                </div>
                 <span
                   className={`inline-flex items-center gap-1 font-mono text-[10px] select-none shrink-0 self-end ml-auto ${
                     isMe ? 'text-red-100/80' : 'text-zinc-400 dark:text-zinc-400'
