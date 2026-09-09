@@ -115,6 +115,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
   // 🤖 RedChat AI Düşünme / Yanıt Üretme Durumu
   const [isAiThinking, setIsAiThinking] = useState(false);
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
 
   // 👥 Grup Bilgisi Modal State'i
   const [showGroupInfoModal, setShowGroupInfoModal] = useState(false);
@@ -580,8 +581,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
             const aiResponseText = await requestAIChatResponse(cleanPrompt, messages);
 
-            // AI mesajını Firestore sohbetine kaydet
-            await sendMessage(conversation.id, aiProfile, aiResponseText, null, null);
+            // AI mesajını Firestore sohbetine kaydet ve daktilo/streaming efektini başlat
+            const aiMsgId = await sendMessage(conversation.id, aiProfile, aiResponseText, null, null);
+            if (aiMsgId) {
+              setStreamingMessageId(aiMsgId);
+            }
           } catch (aiErr: any) {
             console.error('RedChat AI yanıt hatası:', aiErr);
             setImageUploadError(aiErr?.message || 'RedChat AI şu anda yanıt veremiyor.');
@@ -984,6 +988,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 senderUsername={senderUsername}
                 senderPhotoURL={senderPhotoURL}
                 isHoveredReaction={hoveredReactionMessageId === msg.id}
+                isStreaming={msg.id === streamingMessageId}
+                onFinishStreaming={(id) => setStreamingMessageId((curr) => (curr === id ? null : curr))}
                 onOpenProfile={onOpenProfile}
                 onSelectImage={setLightboxImage}
                 onStartReply={handleStartReply}
@@ -1001,7 +1007,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           })
         )}
 
-        {/* 🤖 REDCHAT AI DÜŞÜNME / YAZIYOR ANİMASYONU (7 Parçalı Radial Pulse Loader) */}
+        {/* 🤖 REDCHAT AI DÜŞÜNME / YAZIYOR ANİMASYONU */}
         {isAiThinking && (
           <div className="flex items-start gap-2.5 max-w-[85%] sm:max-w-md animate-in fade-in slide-in-from-bottom-2">
             <div className="flex-shrink-0 mt-0.5">
@@ -1034,7 +1040,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 </span>
               </div>
               <div className="flex items-center gap-2 py-0.5">
-                <RadialPulseLoader statusText="RedChat AI yanıt hazırlıyor..." />
+                <RadialPulseLoader statusText="Düşünüyorum..." />
               </div>
             </div>
           </div>

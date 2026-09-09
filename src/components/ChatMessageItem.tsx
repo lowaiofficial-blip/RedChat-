@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import type { ChatMessage, UserProfile } from '../types';
 import { UserAvatar } from './UserAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
@@ -26,6 +26,8 @@ export interface ChatMessageItemProps {
   senderUsername: string;
   senderPhotoURL: string | null;
   isHoveredReaction: boolean;
+  isStreaming?: boolean;
+  onFinishStreaming?: (messageId: string) => void;
   onOpenProfile: (user: UserProfile) => void;
   onSelectImage: (data: { url: string; caption?: string }) => void;
   onStartReply: (msg: ChatMessage) => void;
@@ -53,6 +55,8 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
     senderUsername,
     senderPhotoURL,
     isHoveredReaction,
+    isStreaming = false,
+    onFinishStreaming,
     onOpenProfile,
     onSelectImage,
     onStartReply,
@@ -66,6 +70,42 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
     renderMessageText,
     formatMsgTime,
   } = props;
+
+  const fullText = msg.text || '';
+  const [displayedLength, setDisplayedLength] = useState(() => (isStreaming ? 0 : fullText.length));
+  const [isActivelyStreaming, setIsActivelyStreaming] = useState(isStreaming);
+
+  // Sync isActivelyStreaming when isStreaming prop changes
+  useEffect(() => {
+    if (isStreaming) {
+      setIsActivelyStreaming(true);
+      setDisplayedLength(0);
+    } else {
+      setIsActivelyStreaming(false);
+      setDisplayedLength(fullText.length);
+    }
+  }, [isStreaming, fullText.length]);
+
+  useEffect(() => {
+    if (!isActivelyStreaming) return;
+
+    if (displayedLength < fullText.length) {
+      // Dynamic speed between 12ms and 34ms per character as requested
+      const dynamicSpeed = Math.floor(Math.random() * 23) + 12;
+      const timer = setTimeout(() => {
+        setDisplayedLength((prev) => prev + 1);
+      }, dynamicSpeed);
+      return () => clearTimeout(timer);
+    } else if (displayedLength >= fullText.length && fullText.length > 0) {
+      setIsActivelyStreaming(false);
+      if (onFinishStreaming) {
+        onFinishStreaming(msg.id);
+      }
+    }
+  }, [isActivelyStreaming, displayedLength, fullText, msg.id, onFinishStreaming]);
+
+  const isDoneStreaming = !isActivelyStreaming;
+  const currentText = isActivelyStreaming ? fullText.slice(0, displayedLength) : fullText;
 
   const hasImage = Boolean(msg.imageUrl);
   const hasText = Boolean(msg.text && msg.text.trim());
@@ -214,8 +254,13 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
             {/* 🖼️ Fotoğraf İçeriği veya Metin + Saat (Kompakt Tek Akış) */}
             {!hasImage ? (
               <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 max-w-full min-w-0">
-                <div className="whitespace-pre-wrap select-none text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] flex-1 min-w-0 max-w-full">
-                  {renderMessageText(msg.text, isMe)}
+                <div className="whitespace-pre-wrap select-none text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] flex-1 min-w-0 max-w-full inline">
+                  {renderMessageText(currentText, isMe)}
+                  {!isDoneStreaming && (
+                    <span id="ai-cursor" className="cursor font-semibold text-zinc-900 dark:text-white ml-0.5">
+                      |
+                    </span>
+                  )}
                 </div>
                 <span
                   className={`inline-flex items-center gap-1 font-mono text-[10px] select-none shrink-0 self-end ml-auto ${

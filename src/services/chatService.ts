@@ -832,7 +832,7 @@ export async function sendMessage(
   text: string = '',
   imageUrl?: string | null,
   replyTo?: ChatReplyReference | null
-): Promise<void> {
+): Promise<string> {
   if (!db) throw new Error('Firestore hazır değil');
   
   if (sender.isBanned) {
@@ -846,7 +846,7 @@ export async function sendMessage(
   const cleanText = text.trim();
   const cleanImageUrl = imageUrl?.trim() || null;
 
-  if (!cleanText && !cleanImageUrl) return;
+  if (!cleanText && !cleanImageUrl) return '';
 
   const messagesCol = collection(db, 'conversations', conversationId, 'messages');
   const convDocRef = doc(db, 'conversations', conversationId);
@@ -877,7 +877,7 @@ export async function sendMessage(
     };
   }
 
-  await addDoc(messagesCol, messageData);
+  const newDocRef = await addDoc(messagesCol, messageData);
 
   // 2. Alıcıların UID'lerini bul ve unreadCount'larını artır
   const hasImage = Boolean(cleanImageUrl);
@@ -920,6 +920,7 @@ export async function sendMessage(
 
   // 3. Ana konuşma dokümanındaki son mesajı, unread count'u ve güncelleme zamanını güncelle
   await updateDoc(convDocRef, updateData);
+  return newDocRef.id;
 }
 
 /**
