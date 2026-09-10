@@ -110,29 +110,36 @@ export const sendPushNotification = async (params: {
   data?: any;
 }) => {
   try {
-    console.log("📨 Push notification tetiklendi. Alıcılar:", params.receiverIds);
-    if (params.receiverIds.length === 0) {
+    const validReceivers = Array.isArray(params.receiverIds)
+      ? params.receiverIds.filter((id) => typeof id === 'string' && id.trim().length > 0)
+      : [];
+
+    if (validReceivers.length === 0) {
       console.log("⚠️ Alıcı listesi boş, gönderim iptal edildi.");
       return;
     }
 
+    const safeTitle = params.title?.trim() || "RedChat";
+    const safeBody = params.body?.trim() || "Yeni bir mesajınız var.";
+
     // Server-side endpoint'e gönder. Token çekme işini Admin SDK ile sunucu yapacak!
-    console.log("🚀 Sunucuya (/api/notifications/send) fetch isteği atılıyor...");
     const response = await fetch('/api/notifications/send', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        receiverIds: params.receiverIds,
-        title: params.title,
-        body: params.body,
-        data: params.data
+        receiverIds: validReceivers,
+        title: safeTitle,
+        body: safeBody,
+        data: params.data || {}
       })
     });
     
     if (!response.ok) {
-      console.error("❌ Sunucudan hata döndü:", response.status, response.statusText);
+      const errText = await response.text();
+      console.error("❌ Sunucudan hata döndü:", response.status, response.statusText, errText);
+      return;
     }
     
     const result = await response.json();

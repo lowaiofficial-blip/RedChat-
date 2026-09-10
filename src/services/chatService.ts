@@ -827,6 +827,64 @@ export function subscribeToMessages(
  * Sohbete yeni mesaj gönderir ve alıcının okunmamış mesaj sayısını (unread count) artırır.
  * Hem sadece metin, hem sadece fotoğraf, hem de fotoğraf + metin gönderebilir.
  */
+/**
+ * WhatsApp benzeri gruplanmış bildirim için son okunmamış mesajları kronolojik sırayla ve saatleriyle çeker.
+ */
+export async function getGroupedUnreadMessages(
+  conversationId: string,
+  senderUid: string,
+  fallbackText: string = 'Yeni mesaj'
+): Promise<Array<{ id?: string; text: string; time: string }>> {
+  const now = new Date();
+  const defaultTime = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+  const fallbackList = [{ text: fallbackText, time: defaultTime }];
+
+  if (!db || !conversationId) return fallbackList;
+
+  try {
+    const msgsCol = collection(db, 'conversations', conversationId, 'messages');
+    // En son 15 mesajı çekip hafızada filtreliyoruz
+    const q = query(msgsCol, orderBy('createdAt', 'desc'), limit(15));
+    const snap = await getDocs(q);
+
+    const unread: Array<{ id: string; text: string; time: string }> = [];
+    snap.forEach((docSnap) => {
+      const data = docSnap.data();
+      // Gönderen bu kullanıcı ve okunmamış mesajlar
+      if (data.senderId === senderUid && data.isRead !== true) {
+        let msgText = data.text?.trim() || '';
+        if (data.imageUrl && !msgText) {
+          msgText = '📷 Fotoğraf';
+        } else if (data.imageUrl && msgText) {
+          msgText = `📷 ${msgText}`;
+        }
+        if (!msgText && data.isThinking) {
+          msgText = 'Düşünüyor...';
+        }
+
+        let timeStr = defaultTime;
+        if (data.createdAt?.toDate) {
+          timeStr = data.createdAt.toDate().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+        }
+
+        if (msgText) {
+          unread.push({ id: docSnap.id, text: msgText, time: timeStr });
+        }
+      }
+    });
+
+    if (unread.length > 0) {
+      // Kronolojik sıra (en eski okunmamıştan en yeniye)
+      unread.reverse();
+      return unread;
+    }
+  } catch (err) {
+    console.warn('getGroupedUnreadMessages hatası:', err);
+  }
+
+  return fallbackList;
+}
+
 export async function sendMessage(
   conversationId: string,
   sender: UserProfile,
@@ -928,64 +986,69 @@ export async function sendMessage(
   // 3. Ana konuşma dokümanındaki son mesajı, unread count'u ve güncelleme zamanını güncelle
   await updateDoc(convDocRef, updateData);
 
-  // 4. Push Notification gönder
+  // 4. WhatsApp tarzı Gruplanmış Push Notification gönder
   try {
-    if (conversationData) {
-      const otherParticipantIds = (conversationData.participantIds || []).filter((uid) => uid !== sender.uid);
-      
-      const senderName = sender.displayName || sender.username || "Bir kullanıcı";
-      let notifTitle = senderName;
-      let notifBody = "";
+    const currentMsgText = hasImage && cleanText 
+      ? `📷 Fotoğraf: ${cleanText.substring(0, 40)}` 
+      : hasImage 
+      ? '📷 Fotoğraf' 
+      : cleanText || 'Yeni mesaj';
 
-      if (hasImage && cleanText) {
-        notifBody = `📷 Fotoğraf: ${cleanText.substring(0, 50)}`;
-      } else if (hasImage) {
-        notifBody = `📷 Fotoğraf gönderdi`;
-      } else {
-        notifBody = cleanText.substring(0, 100);
-      }
-      
+    const unreadMessages = await getGroupedUnreadMessages(conversationId, sender.uid, currentMsgText);
+    const unreadCount = unreadMessages.length;
+    const senderName = sender.displayName || sender.username || "Bir kullanıcı";
+
+    let otherParticipantIds: string[] = [];
+    let notifTitle = senderName;
+    let notifBody = "";
+
+    if (conversationData) {
+      otherParticipantIds = (conversationData.participantIds || []).filter((uid) => uid !== sender.uid);
       if (conversationData.isGroup) {
         const groupName = conversationData.name || "Grup";
-        notifTitle = groupName;
-        notifBody = `${senderName}: ${notifBody}`;
+        notifTitle = unreadCount > 1 ? `${groupName} (${unreadCount} yeni mesaj)` : groupName;
+        if (unreadCount > 1) {
+          notifBody = unreadMessages.map((m) => `${senderName}: ${m.text} (${m.time})`).join('\n');
+        } else {
+          notifBody = `${senderName}: ${unreadMessages[0].text}`;
+        }
+      } else {
+        notifTitle = unreadCount > 1 ? `${senderName} (${unreadCount} yeni mesaj)` : senderName;
+        if (unreadCount > 1) {
+          notifBody = unreadMessages.map((m) => `${m.text}  ${m.time}`).join('\n');
+        } else {
+          notifBody = unreadMessages[0].text;
+        }
       }
-      
-      // Push gönderimi (hata olsa bile mesajı durdurmaz)
+    } else {
+      const [uid1, uid2] = conversationId.split('_');
+      const recipientUid = uid1 === sender.uid ? uid2 : uid1;
+      if (recipientUid) {
+        otherParticipantIds = [recipientUid];
+        notifTitle = unreadCount > 1 ? `${senderName} (${unreadCount} yeni mesaj)` : senderName;
+        if (unreadCount > 1) {
+          notifBody = unreadMessages.map((m) => `${m.text}  ${m.time}`).join('\n');
+        } else {
+          notifBody = unreadMessages[0].text;
+        }
+      }
+    }
+
+    if (otherParticipantIds.length > 0) {
       sendPushNotification({
         receiverIds: otherParticipantIds,
         title: notifTitle,
         body: notifBody,
         data: {
-          conversationId: conversationId,
+          conversationId,
+          senderId: sender.uid,
+          senderName,
+          senderPhoto: sender.photoURL || '',
+          unreadCount: String(unreadCount),
+          messagesJson: JSON.stringify(unreadMessages),
           type: "chat_message"
         }
-      }).catch(err => console.error("Push notification gönderme hatası:", err));
-    } else {
-      // Eğer conversationData yoksa, recipientUid'yi kullan
-      const [uid1, uid2] = conversationId.split('_');
-      const recipientUid = uid1 === sender.uid ? uid2 : uid1;
-      if (recipientUid) {
-        const senderName = sender.displayName || sender.username || "Bir kullanıcı";
-        let notifBody = "";
-        if (hasImage && cleanText) {
-          notifBody = `📷 Fotoğraf: ${cleanText.substring(0, 50)}`;
-        } else if (hasImage) {
-          notifBody = `📷 Fotoğraf gönderdi`;
-        } else {
-          notifBody = cleanText.substring(0, 100);
-        }
-        
-        sendPushNotification({
-          receiverIds: [recipientUid],
-          title: senderName,
-          body: notifBody,
-          data: {
-            conversationId: conversationId,
-            type: "chat_message"
-          }
-        }).catch(err => console.error("Push notification gönderme hatası:", err));
-      }
+      }).catch((err) => console.error("Push notification gönderme hatası:", err));
     }
   } catch (err) {
     console.error("Push hazırlık aşamasında hata:", err);

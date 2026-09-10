@@ -104,3 +104,20 @@ export interface ChatMessage {
   isStreaming?: boolean;
 }
 
+export interface GroupedNotificationMessage {
+  id?: string;
+  text: string;
+  time: string;
+}
+
+export interface GroupedNotificationData {
+  conversationId: string;
+  senderId: string;
+  senderName: string;
+  senderPhoto?: string | null;
+  isGroup?: boolean;
+  groupName?: string;
+  messages: GroupedNotificationMessage[];
+  updatedAt: number;
+}
+

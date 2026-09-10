@@ -30,8 +30,10 @@ messaging.onBackgroundMessage((payload) => {
   const notificationTitle = payload.data?.title || 'RedChat';
   const notificationOptions = {
     body: payload.data?.body,
-    icon: '/icon.png',
+    icon: payload.data?.senderPhoto || '/icon.png',
     badge: '/icon.png',
+    tag: payload.data?.conversationId || undefined,
+    renotify: true,
     data: payload.data
   };
 

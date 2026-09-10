@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { User } from 'firebase/auth';
-import type { UserProfile, Conversation, AppSettings } from './types';
+import type { UserProfile, Conversation, AppSettings, GroupedNotificationData, GroupedNotificationMessage } from './types';
 import {
   subscribeToAuthState,
   subscribeToUserProfile,
@@ -11,6 +11,7 @@ import {
 import {
   subscribeToConversations,
   getOrCreateDirectConversation,
+  getGroupedUnreadMessages,
 } from './services/chatService';
 import { subscribeToAppSettings, ADMIN_EMAILS } from './services/adminService';
 import { setupForegroundListener, requestNotificationPermissionAndToken } from './services/messagingService';
@@ -25,6 +26,7 @@ import { ProfileModal } from './components/ProfileModal';
 import { CreateGroupModal } from './components/CreateGroupModal';
 import { AdminPanel } from './components/AdminPanel';
 import { BannedScreen } from './components/BannedScreen';
+import { WhatsAppNotificationBanner } from './components/WhatsAppNotificationBanner';
 import { Loader2, Bell, X } from 'lucide-react';
 
 export default function App() {
@@ -39,6 +41,8 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
   const [currentHash, setCurrentHash] = useState<string>(window.location.hash || '#/');
+  const [bannerNotification, setBannerNotification] = useState<GroupedNotificationData | null>(null);
+  const lastSeenMsgTimestampsRef = React.useRef<Record<string, number>>({});
 
   // 0. Hash Router Listener (/#/admin desteği)
   useEffect(() => {
@@ -117,19 +121,123 @@ export default function App() {
     return () => unsubscribeUsers();
   }, [currentUserAuth]);
 
+  // Aktif sohbet açıldığında, o sohbete ait açık bildirimi otomatik kapat
+  useEffect(() => {
+    if (activeConversationId && bannerNotification?.conversationId === activeConversationId) {
+      setBannerNotification(null);
+    }
+  }, [activeConversationId, bannerNotification?.conversationId]);
+
+  const isFirstConvSnapshotRef = React.useRef(true);
+
   // 4. Realtime Conversations Listener
   useEffect(() => {
     if (!currentUserAuth) return;
 
     const unsubscribeConv = subscribeToConversations(
       currentUserAuth.uid,
-      (convs) => {
+      async (convs) => {
         setConversations(convs);
+
+        // Sayfa ilk yüklendiğinde eski mesajlar için bildirim patlaması olmasını engelle
+        if (isFirstConvSnapshotRef.current) {
+          convs.forEach((c) => {
+            let msgTime = 0;
+            if (c.lastMessageTimestamp?.toMillis) {
+              msgTime = c.lastMessageTimestamp.toMillis();
+            } else if (c.lastMessageTimestamp?.seconds) {
+              msgTime = c.lastMessageTimestamp.seconds * 1000;
+            }
+            lastSeenMsgTimestampsRef.current[c.id] = msgTime;
+          });
+          isFirstConvSnapshotRef.current = false;
+          return;
+        }
+
+        // Yeni mesaj gelen konuşmaları tespit et ve WhatsApp bildirimini güncelle
+        for (const c of convs) {
+          if (c.id === activeConversationId) continue;
+          const unreadCount = c.unreadCounts?.[currentUserAuth.uid] || 0;
+          if (unreadCount <= 0) continue;
+          if (!c.lastMessageSenderId || c.lastMessageSenderId === currentUserAuth.uid) continue;
+
+          let msgTime = 0;
+          if (c.lastMessageTimestamp?.toMillis) {
+            msgTime = c.lastMessageTimestamp.toMillis();
+          } else if (c.lastMessageTimestamp?.seconds) {
+            msgTime = c.lastMessageTimestamp.seconds * 1000;
+          }
+
+          const lastSeen = lastSeenMsgTimestampsRef.current[c.id] || 0;
+          if (msgTime > lastSeen) {
+            lastSeenMsgTimestampsRef.current[c.id] = msgTime;
+
+            try {
+              const unreadList = await getGroupedUnreadMessages(
+                c.id,
+                c.lastMessageSenderId,
+                c.lastMessageText || 'Yeni mesaj'
+              );
+
+              const senderInfo = c.participants?.[c.lastMessageSenderId];
+              const senderName = senderInfo?.displayName || senderInfo?.username || 'Kullanıcı';
+
+              setBannerNotification((prev) => {
+                if (prev && prev.conversationId === c.id) {
+                  const map = new Map<string, GroupedNotificationMessage>();
+                  prev.messages.forEach((m) => map.set(m.text + m.time, m));
+                  unreadList.forEach((m) => map.set(m.text + m.time, m));
+                  return {
+                    ...prev,
+                    messages: Array.from(map.values()),
+                    updatedAt: Date.now(),
+                  };
+                }
+                return {
+                  conversationId: c.id,
+                  senderId: c.lastMessageSenderId!,
+                  senderName,
+                  senderPhoto: senderInfo?.photoURL || null,
+                  isGroup: !!c.isGroup,
+                  groupName: c.name,
+                  messages: unreadList,
+                  updatedAt: Date.now(),
+                };
+              });
+
+              // Sistem sekmesi odakta değilse native tarayıcı bildirimi göster
+              if (Notification.permission === 'granted' && document.visibilityState !== 'visible') {
+                const notifTitle = unreadList.length > 1
+                  ? (c.isGroup && c.name ? `${c.name} (${unreadList.length} yeni mesaj)` : `${senderName} (${unreadList.length} yeni mesaj)`)
+                  : (c.isGroup && c.name ? c.name : senderName);
+
+                const notifBody = unreadList.length > 1
+                  ? unreadList.map((m) => `${m.text}  ${m.time}`).join('\n')
+                  : unreadList[0]?.text || 'Yeni mesaj';
+
+                const notif = new Notification(notifTitle, {
+                  body: notifBody,
+                  icon: senderInfo?.photoURL || '/ai-petal.png',
+                  tag: c.id,
+                  renotify: true,
+                } as any);
+
+                notif.onclick = () => {
+                  window.focus();
+                  setActiveConversationId(c.id);
+                  notif.close();
+                };
+              }
+            } catch (err) {
+              console.warn('Realtime bildirim gruplama hatası:', err);
+            }
+          }
+        }
       }
     );
 
     return () => unsubscribeConv();
-  }, [currentUserAuth]);
+  }, [currentUserAuth, activeConversationId]);
 
   // 5. App Settings Listener (Kalıcı Mavi Tik PNG & Genel Ayarlar)
   useEffect(() => {
@@ -158,34 +266,78 @@ export default function App() {
     }
   }, [currentUserAuth, currentUserProfile]);
 
-  // Foreground Push Notification Listener
+  // Foreground Push Notification Listener (WhatsApp Tarzı Gruplama Destekli)
   useEffect(() => {
     if (!currentUserAuth) return;
     
     let unsubscribe: any = null;
     setupForegroundListener((payload) => {
-      // Eğer kullanıcı açık sohbetindeyse bildirime gerek yok (ChatService vs halleder)
       const data = payload.data;
-      if (data && data.conversationId === activeConversationId) {
-        // Zaten ilgili sohbet açık, sistem ses çalıyor veya yeni mesaj gösteriliyor.
+      if (!data || !data.conversationId) return;
+
+      // Eğer kullanıcı şu anda bu sohbetteyse bildirim gösterme
+      if (data.conversationId === activeConversationId) {
         return;
       }
       
-      // Native tarayıcı bildirimi göster (UI'da fake toast göstermiyoruz)
-      if (Notification.permission === 'granted') {
-        const title = payload.notification?.title || 'RedChat';
-        const options = {
-          body: payload.notification?.body,
-          icon: '/ai-petal.png',
-          data: payload.data,
-          tag: data?.conversationId || undefined,
-          renotify: true
+      let parsedMessages: GroupedNotificationMessage[] = [];
+      if (data.messagesJson) {
+        try {
+          parsedMessages = JSON.parse(data.messagesJson);
+        } catch (e) {
+          console.warn('messagesJson ayrıştırma hatası:', e);
+        }
+      }
+
+      if (parsedMessages.length === 0) {
+        const text = payload.notification?.body || data.body || 'Yeni mesaj';
+        const nowTime = new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+        parsedMessages = [{ text, time: nowTime }];
+      }
+
+      // WhatsApp Açılır Bildirim Kartını göster/güncelle
+      setBannerNotification((prev) => {
+        if (prev && prev.conversationId === data.conversationId) {
+          const map = new Map<string, GroupedNotificationMessage>();
+          prev.messages.forEach((m) => map.set(m.text + m.time, m));
+          parsedMessages.forEach((m) => map.set(m.text + m.time, m));
+          return {
+            ...prev,
+            messages: Array.from(map.values()),
+            updatedAt: Date.now(),
+          };
+        }
+
+        return {
+          conversationId: data.conversationId,
+          senderId: data.senderId || '',
+          senderName: data.senderName || payload.notification?.title || 'RedChat',
+          senderPhoto: data.senderPhoto || null,
+          isGroup: data.isGroup === 'true',
+          groupName: data.groupName || undefined,
+          messages: parsedMessages,
+          updatedAt: Date.now(),
         };
-        const notif = new Notification(title, options);
+      });
+
+      // Sekme arka plandaysa native tarayıcı bildirimi göster
+      if (Notification.permission === 'granted' && document.visibilityState !== 'visible') {
+        const title = payload.notification?.title || data.senderName || 'RedChat';
+        const notifBody = parsedMessages.length > 1
+          ? parsedMessages.map((m) => `${m.text}  ${m.time}`).join('\n')
+          : parsedMessages[0]?.text || 'Yeni mesaj';
+
+        const notif = new Notification(title, {
+          body: notifBody,
+          icon: data.senderPhoto || '/ai-petal.png',
+          data: payload.data,
+          tag: data.conversationId,
+          renotify: true,
+        } as any);
+
         notif.onclick = () => {
-          if (data && data.conversationId) {
-            window.location.hash = `#/chat/${data.conversationId}`;
-          }
+          window.focus();
+          setActiveConversationId(data.conversationId);
           notif.close();
         };
       }
@@ -322,6 +474,16 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen overflow-hidden flex bg-zinc-100 dark:bg-zinc-950 antialiased">
+      {/* 🟢 WhatsApp Tarzı Açılır Gruplanmış Bildirim Kartı */}
+      <WhatsAppNotificationBanner
+        notification={bannerNotification}
+        onOpenChat={(convId) => {
+          setActiveConversationId(convId);
+          setBannerNotification(null);
+        }}
+        onDismiss={() => setBannerNotification(null)}
+      />
+
       {showNotifBanner && (
         <div className="absolute top-0 left-0 right-0 z-[100] bg-red-600 text-white px-4 py-2 flex items-center justify-between shadow-md">
           <div className="flex items-center gap-2 text-sm font-medium">

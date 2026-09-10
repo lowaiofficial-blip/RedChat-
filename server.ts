@@ -53,19 +53,22 @@ async function startServer() {
 
       const { receiverIds, title, body, data } = req.body;
       
-      if (!receiverIds || !Array.isArray(receiverIds) || receiverIds.length === 0) {
-        return res.status(400).json({ error: "receiverIds array is required" });
+      const validReceiverIds = Array.isArray(receiverIds)
+        ? receiverIds.filter((id) => typeof id === "string" && id.trim().length > 0)
+        : [];
+
+      if (validReceiverIds.length === 0) {
+        return res.status(200).json({ success: true, message: "No valid receivers to notify." });
       }
 
-      if (!title || !body) {
-        return res.status(400).json({ error: "Title and body are required" });
-      }
+      const safeTitle = typeof title === "string" && title.trim().length > 0 ? title.trim() : "RedChat";
+      const safeBody = typeof body === "string" && body.trim().length > 0 ? body.trim() : "Yeni bir mesaj aldınız.";
 
       const db = getFirestore();
       let allTokens: string[] = [];
       const tokenToDocRefMap = new Map<string, any>();
       
-      for (const uid of receiverIds) {
+      for (const uid of validReceiverIds) {
         try {
           const snapshot = await db.collection(`users/${uid}/fcmTokens`).get();
           snapshot.forEach(docSnap => {
@@ -87,7 +90,7 @@ async function startServer() {
 
       // Token array can have max 500 tokens for sendMulticast
       const message: MulticastMessage = {
-        notification: { title, body },
+        notification: { title: safeTitle, body: safeBody },
         data: data || {},
         tokens: allTokens,
         android: {
