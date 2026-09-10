@@ -236,58 +236,59 @@ async function startServer() {
     }
   });
 
-  // 🤖 REDCHAT AI SERVER-SIDE ENDPOINT (GPT-OSS 120B / Groq / Fallback AI)
-  app.post("/api/ai/chat", async (req, res) => {
-    try {
-      const { messages, userMessage, userId } = req.body;
+  // 🤖 REDCHAT AI PROMPT, MEMORY & SANITIZATION HELPERS
+  const sanitizeAIResponse = (raw: string): string => {
+    if (!raw) return raw;
+    return raw
+      .replace(/OpenAI['’]?n[ıi]n\s+\*\*?GPT[-‑]?[0-9a-zA-Z.]*\*\*?/gi, '**RedChat AI**')
+      .replace(/OpenAI\s+tarafından\s+geliştirilen/gi, 'RedChat için geliştirilen')
+      .replace(/\bChatGPT\b/gi, 'RedChat AI')
+      .replace(/\bGPT[-‑]?[0-9a-zA-Z.]*(?:[- ]OSS)?(?:[- ]120B)?\b/gi, 'RedChat AI')
+      .replace(/\bGemini(?:\s*2\.5(?:\s*Flash)?)?\b/gi, 'RedChat AI')
+      .replace(/\bLlama[- ]?[0-9a-zA-Z.]*\b/gi, 'RedChat AI')
+      .replace(/\bQwen[- ]?[0-9a-zA-Z.]*\b/gi, 'RedChat AI')
+      .replace(/\bOpenAI\b/gi, 'RedChat');
+  };
 
-      if (!userMessage && (!messages || messages.length === 0)) {
-        return res.status(400).json({ error: "Mesaj içeriği eksik." });
-      }
-
-      const groqApiKey = process.env.GROQ_API_KEY?.trim();
-      const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
-
-      // Kullanıcının mevcut bellek verilerini çek
-      let memoriesText = "";
-      if (userId) {
-        try {
-          const db = getFirestore();
-          const memorySnap = await db.collection(`users/${userId}/memories`).get();
-          const memories: string[] = [];
-          memorySnap.forEach(doc => {
-            const data = doc.data();
-            if (data.text) memories.push(data.text);
-          });
-          if (memories.length > 0) {
-            memoriesText = `\n\n[KULLANICI BELLEĞİ (HATIRLAMAN GEREKENLER)]:\nKullanıcı hakkında önceden kaydettiğin bilgiler şunlardır:\n- ${memories.join('\n- ')}\n`;
-          }
-        } catch (err) {
-          console.error("Bellek okuma hatası:", err);
+  const getSystemPromptWithMemories = async (userId?: string) => {
+    let memoriesText = "";
+    if (userId) {
+      try {
+        const db = getFirestore();
+        const memorySnap = await db.collection(`users/${userId}/memories`).get();
+        const memories: string[] = [];
+        memorySnap.forEach((doc) => {
+          const data = doc.data();
+          if (data.text) memories.push(data.text);
+        });
+        if (memories.length > 0) {
+          memoriesText = `\n\n[KULLANICI BELLEĞİ (ÖNCEDEN KAYDEDİLENLER)]:\nKullanıcı hakkında önceden kaydettiğin bilgiler şunlardır:\n- ${memories.join("\n- ")}\n`;
         }
+      } catch (err) {
+        console.error("Bellek okuma hatası:", err);
       }
+    }
 
-      // 🛡️ Model İsmi Sanitizasyon Fonksiyonu:
-      const sanitizeAIResponse = (raw: string): string => {
-        if (!raw) return raw;
-        return raw
-          .replace(/OpenAI['’]?n[ıi]n\s+\*\*?GPT[-‑]?[0-9a-zA-Z.]*\*\*?/gi, '**Flash Lite 1.0**')
-          .replace(/OpenAI\s+tarafından\s+geliştirilen/gi, 'RedChat için geliştirilen')
-          .replace(/\bGPT[-‑]?[0-9a-zA-Z.]*(?:[- ]OSS)?(?:[- ]120B)?\b/gi, 'Flash Lite 1.0')
-          .replace(/\bGemini(?:\s*2\.5(?:\s*Flash)?)?\b/gi, 'Flash Lite 1.0')
-          .replace(/\bLlama[- ]?[0-9a-zA-Z.]*\b/gi, 'Flash Lite 1.0')
-          .replace(/\bOpenAI\b/gi, 'RedChat');
-      };
+    return `Sen 'RedChat AI' adlı resmi RedChat yapay zeka asistanısın.
 
-      // Model bağlamı hazırlama
-      const systemPrompt = `Sen 'RedChat AI' adlı resmi RedChat yapay zeka asistanısın.
 [KİMLİK VE MODEL BİLGİSİ - KESİN KURAL]:
-1. Modelin sorulduğunda ('modelin ne', 'hangi modelsin', 'hangi yapay zekasın', 'altyapın ne', 'kimsin', 'hangi dili/modeli kullanıyorsun' vb.), kesinlikle ve daima modelinin 'Flash Lite 1.0' olduğunu söyle.
-2. ASLA 'GPT-4', 'GPT-OSS', 'GPT-OSS 120B', 'OpenAI', 'Gemini' veya 'Llama' isimlerini kullanma. Bu isimleri anmak veya kendi modelin olarak iddia etmek KESİNLİKLE YASAKTIR.
-3. Modelin sorulduğunda yanıtın daima şu şekilde olmalıdır: "Ben RedChat AI'yım ve **Flash Lite 1.0** modeli üzerine inşa edildim. Türkçe olarak samimi, net ve yardımcı yanıtlar vermek üzere özel olarak yapılandırıldım. Başka merak ettiğin bir şey olursa sormaktan çekinme! 😊"
-4. Kullanıcılara samimi, akıllı, net, yardımsever ve Türkçe olarak yanıt verirsin.
-5. Markdown biçimlendirmelerini zengin ve düzgün şekilde kullan.
-6. Asla sahte bir insan olduğunu iddia etme; RedChat platformunun resmi AI asistanı olduğunu bil.
+1. Modelin sorulduğunda ('modelin ne', 'hangi modelsin', 'hangi yapay zekasın', 'altyapın ne', 'kimsin', 'hangi dili/modeli kullanıyorsun' vb.), kesinlikle ve daima adının ve modelinin 'RedChat AI' olduğunu söyle.
+2. ASLA 'GPT', 'GPT-4', 'GPT-OSS', 'GPT-OSS 120B', 'OpenAI', 'Gemini', 'Qwen' veya 'Llama' isimlerini kullanma. Bu isimleri anmak veya kendi modelin olarak iddia etmek KESİNLİKLE YASAKTIR.
+3. Modelin sorulduğunda yanıtın daima şu şekilde olmalıdır: "Ben RedChat AI'yım. Türkçe olarak samimi, net ve yardımcı yanıtlar vermek üzere özel olarak yapılandırıldım."
+4. ASLA BİLMEDİĞİN BİLGİYİ UYDURMA (HALÜSİNASYON YASAKTIR):
+Eğer kullanıcı sana bir kişi (örneğin "Robloxfanı kimdir?", "Ahmet kimdir?"), marka, kanal, hesap veya özel bir konu sorarsa ve elinde bu kişi/konu hakkında kesin doğrulanmış bilgi yoksa:
+"Bu kişi hakkında elimde doğrulanmış bir bilgi yok." şeklinde dürüstçe yanıt ver.
+Kesinlikle:
+❌ Hayali YouTube kanalı
+❌ Hayali Twitch hesabı
+❌ Hayali Telegram linki
+❌ Hayali takipçi sayısı
+❌ Hayali projeler
+❌ Hayali biyografi
+❌ Kullanıcının söylemediği kişisel bilgiler UYDURMA.
+5. Kullanıcılara samimi, akıllı, net, yardımsever ve Türkçe olarak yanıt verirsin.
+6. Markdown biçimlendirmelerini zengin ve düzgün şekilde kullan.
+7. Asla sahte bir insan olduğunu iddia etme; RedChat platformunun resmi AI asistanı olduğunu bil.
 
 [BELLEK ÖZELLİĞİ - ÇOK ÖNEMLİ KURALLAR]:
 1. KAYDETME: Kullanıcı senden bir bilgiyi belleğine kaydetmeni, hatırlamanı veya unutmamanı açıkça isterse, yanıtının en sonuna SADECE şu özel etiketi ekle: [BELLEK_KAYDET: kaydedilecek bilgi]
@@ -297,52 +298,216 @@ async function startServer() {
 
 Örnek Kayıt:
 Kullanıcı: "Benim en sevdiğim oyun Brawl Stars, bunu bellekte tut."
-Sen: "En sevdiğim oyunun Brawl Stars olduğunu belleğime kaydettim! Başka ne hakkında konuşmak istersin? [BELLEK_KAYDET: En sevdiği oyun Brawl Stars]"
+Sen: "Brawl Stars oyununu çok sevdiğinizi aklımda tutacağım! Başka bir konuda yardımcı olabilir miyim? [BELLEK_KAYDET: En sevdiği oyun Brawl Stars]"
 
 Eğer kullanıcı açıkça bir şey kaydetmeni İSTEMEDİYSE, kendi kafana göre bu etiketi ASLA KULLANMA.${memoriesText}`;
+  };
 
-      // Bellek kaydetme işlemini ayıklayan ve Firestore'a yazan fonksiyon
-      const processAIResponse = async (responseText: string): Promise<string> => {
-        let finalResponse = sanitizeAIResponse(responseText);
-        
-        // [BELLEK_KAYDET: X] etiketini ara
-        const memoryMatch = finalResponse.match(/\[BELLEK_KAYDET:\s*(.*?)\]/i);
-        if (memoryMatch && userId) {
-          const memoryTextToSave = memoryMatch[1].trim();
-          if (memoryTextToSave) {
-            try {
-              const db = getFirestore();
-              await db.collection(`users/${userId}/memories`).add({
-                text: memoryTextToSave,
-                createdAt: new Date(),
-                updatedAt: new Date()
-              });
-            } catch (err) {
-              console.error("Bellek kaydetme hatası:", err);
-            }
-          }
-          // Etiketi metinden sil ve yerine mesajın başına bilgilendirme ekle
-          finalResponse = finalResponse.replace(/\[BELLEK_KAYDET:\s*(.*?)\]/i, '').trim();
-          finalResponse = `📖 **Belleğe Kaydedildi**\n\n${finalResponse}`;
+  const processMemorySave = async (fullText: string, userId?: string) => {
+    if (!userId || !fullText) return;
+    const memoryMatch = fullText.match(/\[BELLEK_KAYDET:\s*(.*?)\]/i);
+    if (memoryMatch) {
+      const memoryTextToSave = memoryMatch[1].trim();
+      if (memoryTextToSave) {
+        try {
+          const db = getFirestore();
+          await db.collection(`users/${userId}/memories`).add({
+            text: memoryTextToSave,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+        } catch (err) {
+          console.error("Bellek Firestore kaydetme hatası:", err);
         }
-        
-        return finalResponse;
-      };
+      }
+    }
+  };
 
-      // Eğer kullanıcı doğrudan modelini soruyorsa kesin ve hatasız doğrudan yanıt ver
-      const isModelQuestion = userMessage && /^(modelin(\s+ne|\s+nedir|\s+hangisi)?|sen\s+hangi\s+modelsin|hangi\s+modelsin|hangi\s+modeli\s+kullan[ıi]yorsun|sen\s+kimsin|modelini\s+s[öo]yle)\??$/i.test(userMessage.trim());
+  // 🤖 REDCHAT AI SERVER-SIDE STREAMING ENDPOINT (Server-Sent Events)
+  app.post("/api/ai/chat/stream", async (req, res) => {
+    try {
+      const { messages, userMessage, userId } = req.body;
+
+      if (!userMessage && (!messages || messages.length === 0)) {
+        return res.status(400).json({ error: "Mesaj içeriği eksik." });
+      }
+
+      // Model sorusu doğrudan yanıtı (Hızlı ve kesin)
+      const cleanUserMsg = (userMessage || "").trim();
+      const isModelQuestion = /^(modelin(\s+ne|\s+nedir|\s+hangisi)?|sen\s+hangi\s+modelsin|hangi\s+modelsin|hangi\s+modeli\s+kullan[ıi]yorsun|sen\s+kimsin|modelini\s+s[öo]yle)\??$/i.test(cleanUserMsg);
+
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+
+      if (isModelQuestion) {
+        const directReply = "Ben RedChat AI'yım. Türkçe olarak samimi, net ve yardımcı yanıtlar vermek üzere özel olarak yapılandırıldım. Size nasıl yardımcı olabilirim? 😊";
+        res.write(`data: ${JSON.stringify({ chunk: directReply })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        return res.end();
+      }
+
+      const groqApiKey = process.env.GROQ_API_KEY?.trim();
+      const systemPrompt = await getSystemPromptWithMemories(userId);
+
+      const chatHistory = Array.isArray(messages) ? messages.slice(-10) : [];
+      const groqMessages = [
+        { role: "system", content: systemPrompt },
+        ...chatHistory.map((m: any) => ({
+          role: m.role === "assistant" || m.senderId === "system_redchat_ai" ? "assistant" : "user",
+          content: m.content || m.text || "",
+        })),
+      ];
+
+      if (cleanUserMsg && (groqMessages.length === 0 || groqMessages[groqMessages.length - 1].content !== cleanUserMsg)) {
+        groqMessages.push({ role: "user", content: cleanUserMsg });
+      }
+
+      const candidateModels = [
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-120b",
+        "groq/compound",
+        "qwen/qwen3.6-27b",
+        "openai/gpt-oss-20b",
+      ];
+      let streamedSuccess = false;
+      let fullAccumulatedResponse = "";
+
+      if (groqApiKey) {
+        for (const modelName of candidateModels) {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+            const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${groqApiKey}`,
+              },
+              body: JSON.stringify({
+                model: modelName,
+                messages: groqMessages,
+                temperature: 0.3,
+                max_tokens: 2048,
+                stream: true,
+              }),
+              signal: controller.signal,
+            });
+
+            clearTimeout(timeoutId);
+
+            if (groqRes.ok && groqRes.body) {
+              const reader = groqRes.body.getReader();
+              const decoder = new TextDecoder();
+              let streamBuffer = "";
+
+              while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+
+                streamBuffer += decoder.decode(value, { stream: true });
+                const lines = streamBuffer.split("\n");
+                streamBuffer = lines.pop() || "";
+
+                for (const line of lines) {
+                  const trimmed = line.trim();
+                  if (trimmed.startsWith("data: ")) {
+                    const dataStr = trimmed.slice(6);
+                    if (dataStr === "[DONE]") {
+                      continue;
+                    }
+                    try {
+                      const parsed = JSON.parse(dataStr);
+                      const deltaContent = parsed.choices?.[0]?.delta?.content;
+                      if (deltaContent) {
+                        fullAccumulatedResponse += deltaContent;
+                        const sanitizedDelta = sanitizeAIResponse(deltaContent);
+                        res.write(`data: ${JSON.stringify({ chunk: sanitizedDelta })}\n\n`);
+                      }
+                    } catch (pErr) {
+                      // json parse error for partial chunks
+                    }
+                  }
+                }
+              }
+
+              if (fullAccumulatedResponse.trim().length > 0) {
+                streamedSuccess = true;
+                break;
+              }
+            }
+          } catch (modelErr) {
+            console.warn(`Groq stream error on ${modelName}:`, modelErr);
+          }
+        }
+      }
+
+      // Eğer Groq akışı başarılı olduysa bellek kontrolünü yap ve bitir
+      if (streamedSuccess) {
+        await processMemorySave(fullAccumulatedResponse, userId);
+        res.write("data: [DONE]\n\n");
+        return res.end();
+      }
+
+      // Son çare bilgilendirme
+      const fallbackMsg = "Merhaba! Ben **RedChat AI** asistanıyım. Size yardımcı olmaktan mutluluk duyarım. Nasıl yardımcı olabilirim? 😊";
+      res.write(`data: ${JSON.stringify({ chunk: fallbackMsg })}\n\n`);
+      res.write("data: [DONE]\n\n");
+      return res.end();
+    } catch (streamErr: any) {
+      console.error("AI chat stream server error:", streamErr);
+      const safeMsg = "Merhaba! Size nasıl yardımcı olabilirim? Lütfen sorunuzu iletin. 😊";
+      try {
+        if (!res.headersSent) {
+          res.setHeader("Content-Type", "text/event-stream");
+          res.setHeader("Cache-Control", "no-cache");
+          res.setHeader("Connection", "keep-alive");
+        }
+        res.write(`data: ${JSON.stringify({ chunk: safeMsg })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        return res.end();
+      } catch {
+        return res.end();
+      }
+    }
+  });
+
+  // 🤖 REDCHAT AI SERVER-SIDE NON-STREAMING ENDPOINT (Standart JSON)
+  app.post("/api/ai/chat", async (req, res) => {
+    try {
+      const { messages, userMessage, userId } = req.body;
+
+      if (!userMessage && (!messages || messages.length === 0)) {
+        return res.status(400).json({ error: "Mesaj içeriği eksik." });
+      }
+
+      const cleanUserMsg = (userMessage || "").trim();
+      const isModelQuestion = /^(modelin(\s+ne|\s+nedir|\s+hangisi)?|sen\s+hangi\s+modelsin|hangi\s+modelsin|hangi\s+modeli\s+kullan[ıi]yorsun|sen\s+kimsin|modelini\s+s[öo]yle)\??$/i.test(cleanUserMsg);
       if (isModelQuestion) {
         return res.json({
-          text: "Ben RedChat AI'yım ve **Flash Lite 1.0** modeli üzerine inşa edildim. Türkçe olarak samimi, net ve yardımcı yanıtlar vermek üzere özel olarak yapılandırıldım. Başka merak ettiğin bir şey olursa sormaktan çekinme! 😊",
-          provider: "flash_lite_1.0"
+          text: "Ben RedChat AI'yım. Türkçe olarak samimi, net ve yardımcı yanıtlar vermek üzere özel olarak yapılandırıldım. Size nasıl yardımcı olabilirim? 😊",
+          provider: "redchat_ai",
         });
       }
 
-      // 1. ÖNCELİK: Groq API
+      const groqApiKey = process.env.GROQ_API_KEY?.trim();
+      const systemPrompt = await getSystemPromptWithMemories(userId);
+
+      const processAIResponse = async (responseText: string): Promise<string> => {
+        let finalResponse = sanitizeAIResponse(responseText);
+        const memoryMatch = finalResponse.match(/\[BELLEK_KAYDET:\s*(.*?)\]/i);
+        if (memoryMatch && userId) {
+          await processMemorySave(finalResponse, userId);
+          finalResponse = finalResponse.replace(/\[BELLEK_KAYDET:\s*(.*?)\]/i, "").trim();
+          finalResponse = `📖 **Belleğe Kaydedildi**\n\n${finalResponse}`;
+        }
+        return finalResponse;
+      };
+
       if (groqApiKey) {
         try {
           const chatHistory = Array.isArray(messages) ? messages.slice(-10) : [];
-          
           const groqMessages = [
             { role: "system", content: systemPrompt },
             ...chatHistory.map((m: any) => ({
@@ -351,16 +516,24 @@ Eğer kullanıcı açıkça bir şey kaydetmeni İSTEMEDİYSE, kendi kafana gör
             })),
           ];
 
-          if (userMessage && (groqMessages.length === 0 || groqMessages[groqMessages.length - 1].content !== userMessage)) {
-            groqMessages.push({ role: "user", content: userMessage });
+          if (cleanUserMsg && (groqMessages.length === 0 || groqMessages[groqMessages.length - 1].content !== cleanUserMsg)) {
+            groqMessages.push({ role: "user", content: cleanUserMsg });
           }
 
-          const candidateModels = ["openai/gpt-oss-120b", "gpt-oss-120b", "llama-3.3-70b-versatile"];
+          const candidateModels = [
+            "qwen/qwen3.8-27b",
+            "openai/gpt-oss-120b",
+            "groq/compound",
+            "qwen/qwen3.6-27b",
+            "openai/gpt-oss-20b",
+          ];
           let aiTextResponse: string | null = null;
-          let lastGroqError: any = null;
 
           for (const modelName of candidateModels) {
             try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 12000);
+
               const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
                 method: "POST",
                 headers: {
@@ -370,10 +543,13 @@ Eğer kullanıcı açıkça bir şey kaydetmeni İSTEMEDİYSE, kendi kafana gör
                 body: JSON.stringify({
                   model: modelName,
                   messages: groqMessages,
-                  temperature: 0.7,
+                  temperature: 0.3,
                   max_tokens: 2048,
                 }),
+                signal: controller.signal,
               });
+
+              clearTimeout(timeoutId);
 
               if (groqRes.ok) {
                 const groqData = await groqRes.json();
@@ -382,66 +558,24 @@ Eğer kullanıcı açıkça bir şey kaydetmeni İSTEMEDİYSE, kendi kafana gör
                   aiTextResponse = text;
                   break;
                 }
-              } else {
-                const errBody = await groqRes.text();
-                lastGroqError = errBody;
               }
             } catch (err) {
-              lastGroqError = err;
+              console.warn(`Groq error on ${modelName}:`, err);
             }
           }
 
           if (aiTextResponse) {
             const finalProcessedText = await processAIResponse(aiTextResponse);
             return res.json({ text: finalProcessedText, provider: "groq" });
-          } else {
-            console.warn("Groq API denemeleri başarısız oldu:", lastGroqError);
           }
         } catch (groqErr) {
           console.error("Groq chat endpoint error:", groqErr);
         }
       }
 
-      // 2. OPSİYONEL YEDEK: Gemini API
-      if (geminiApiKey) {
-        try {
-          const { GoogleGenAI } = await import("@google/genai");
-          const ai = new GoogleGenAI({ apiKey: geminiApiKey });
-
-          const chatHistory = Array.isArray(messages) ? messages.slice(-10) : [];
-          let contents = "";
-          chatHistory.forEach((m: any) => {
-            const role = m.role === "assistant" || m.senderId === "system_redchat_ai" ? "RedChat AI" : "Kullanıcı";
-            contents += `${role}: ${m.content || m.text}\n`;
-          });
-          if (userMessage) {
-            contents += `Kullanıcı: ${userMessage}\n`;
-          }
-
-          const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: `${systemPrompt}\n\nSohbet Geçmişi:\n${contents}\n\nRedChat AI Yanıtı:`,
-          });
-
-          if (response?.text) {
-            const finalProcessedText = await processAIResponse(response.text);
-            return res.json({ text: finalProcessedText, provider: "gemini" });
-          }
-        } catch (geminiErr) {
-          console.warn("Gemini çağrısı başarısız oldu (opsiyonel):", geminiErr);
-        }
-      }
-
-      // API anahtarı yoksa veya servis yanıt vermediyse samimi bilgilendirme yanıtı
-      if (!groqApiKey && !geminiApiKey) {
-        return res.json({
-          text: "Merhaba! Ben **RedChat AI** asistanıyım. Yapay zeka motorunun tam performansla yanıt verebilmesi için sunucu ortamına `GROQ_API_KEY` eklenmesi gerekmektedir. Size başka bir konuda yardımcı olabilir miyim? 😊",
-          provider: "fallback",
-        });
-      }
-
-      return res.status(503).json({
-        error: "RedChat AI şu anda yanıt veremiyor. Lütfen birkaç saniye sonra tekrar deneyin.",
+      return res.json({
+        text: "Merhaba! Ben **RedChat AI** asistanıyım. Size yardımcı olmaktan mutluluk duyarım. Nasıl yardımcı olabilirim? 😊",
+        provider: "fallback",
       });
     } catch (error: any) {
       console.error("AI chat server error:", error);

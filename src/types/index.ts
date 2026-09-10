@@ -100,5 +100,7 @@ export interface ChatMessage {
   };
   isSystemMessage?: boolean;
   systemType?: 'leave' | 'join' | 'create' | 'info' | 'role_change' | 'ownership_transfer' | 'name_change' | 'photo_change';
+  isThinking?: boolean;
+  isStreaming?: boolean;
 }
 

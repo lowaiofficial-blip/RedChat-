@@ -20,7 +20,7 @@ import { RadialPulseLoader } from './RadialPulseLoader';
 import { SequentialTypingDots } from './SequentialTypingDots';
 import { getTypingInfo } from '../utils/typingHelper';
 import { MarkdownMessage } from './MarkdownMessage';
-import { isRedChatAI, requestAIChatResponse, getRedChatAIProfile, REDCHAT_AI_UID } from '../services/aiService';
+import { isRedChatAI, requestAIChatResponse, requestAIChatStream, getRedChatAIProfile, REDCHAT_AI_UID } from '../services/aiService';
 import {
   Send,
   ArrowLeft,
@@ -113,8 +113,25 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   // Kopyalandı bildirimi
   const [copiedNotification, setCopiedNotification] = useState(false);
 
-  // 🤖 RedChat AI Düşünme / Yanıt Üretme Durumu
-  const [isAiThinking, setIsAiThinking] = useState(false);
+  // 🤖 RedChat AI Düşünme & Canlı Akış Durumu
+  const [activeAiStream, setActiveAiStream] = useState<{
+    messageId: string;
+    text: string;
+    isThinking: boolean;
+  } | null>(null);
+
+  const aiTypewriterRef = useRef<{
+    targetText: string;
+    displayedText: string;
+    isFinished: boolean;
+    timeoutId: any;
+  }>({
+    targetText: '',
+    displayedText: '',
+    isFinished: false,
+    timeoutId: null,
+  });
+  
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
 
   // 👥 Grup Bilgisi Modal State'i
@@ -262,7 +279,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   // Otomatik aşağı kaydırma
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
+  }, [messages.length, activeAiStream?.text, activeAiStream?.isThinking]);
 
   // Fotoğraf Seçimi
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -567,30 +584,152 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       const isAiMentioned = /@RedChat\s+AI|@redchat_ai|@RedChatAI/i.test(textToSend);
 
       if ((isDirectAIChat || (isGroupChat && isAiMentioned)) && textToSend) {
-        // AI Yanıtını arka planda asenkron olarak üret ve gönder (yalnızca 1 kez üretilir)
         (async () => {
-          setIsAiThinking(true);
+          const aiPhoto = aiProfilePhotoUrl || photoURL || null;
+          const aiProfile = getRedChatAIProfile(aiPhoto);
+          
+          let aiMsgId: string | null = null;
           try {
-            const aiPhoto = aiProfilePhotoUrl || photoURL || null;
-            const aiProfile = getRedChatAIProfile(aiPhoto);
+            aiMsgId = await sendMessage(conversation.id, aiProfile, '', null, null, { isThinking: true, isStreaming: true });
+            
+            if (aiMsgId) {
+              if (aiTypewriterRef.current.timeoutId) {
+                clearTimeout(aiTypewriterRef.current.timeoutId);
+              }
+              aiTypewriterRef.current = {
+                targetText: '',
+                displayedText: '',
+                isFinished: false,
+                timeoutId: null,
+              };
+              setActiveAiStream({
+                messageId: aiMsgId,
+                text: '',
+                isThinking: true,
+              });
+            }
 
-            // Grupta mention etiketi temizlenerek yapay zekaya aktarılır
             const cleanPrompt = isGroupChat
               ? textToSend.replace(/@RedChat\s+AI|@redchat_ai|@RedChatAI/gi, '').trim() || textToSend
               : textToSend;
 
-            const aiResponseText = await requestAIChatResponse(cleanPrompt, messages, currentUser.uid);
+            const targetMsgId = aiMsgId;
 
-            // AI mesajını Firestore sohbetine kaydet ve daktilo/streaming efektini başlat
-            const aiMsgId = await sendMessage(conversation.id, aiProfile, aiResponseText, null, null);
+            // ⚡ Kısa, orta ve uzun metinlere özel dinamik daktilo akış motoru
+            let onCompleteCallback: ((final: string) => void) | null = null;
+            const stepTypewriter = () => {
+              if (!targetMsgId) return;
+              const ref = aiTypewriterRef.current;
+
+              if (ref.displayedText.length < ref.targetText.length) {
+                const totalTargetLength = ref.targetText.length;
+                const diff = totalTargetLength - ref.displayedText.length;
+
+                let step = 1;
+                let dynamicSpeed = 20;
+
+                if (totalTargetLength < 100) {
+                  // 🟢 Kısa Metin (< 100 karakter): Tane tane, ritmik ve canlı daktilo akışı (24ms - 38ms)
+                  step = 1;
+                  dynamicSpeed = Math.floor(Math.random() * 15) + 24;
+                } else if (totalTargetLength <= 450) {
+                  // 🟡 Orta Metin (100 - 450 karakter): Dengeli, doğal konuşma/okuma temposu (14ms - 24ms)
+                  step = diff > 60 ? 2 : 1;
+                  dynamicSpeed = Math.floor(Math.random() * 11) + 14;
+                } else {
+                  // 🔴 Uzun Metin (> 450 karakter): Yüksek tempolu, seri ve bekleme süresini optimize eden akış (6ms - 14ms)
+                  step = diff > 200 ? 5 : diff > 100 ? 4 : diff > 40 ? 3 : 2;
+                  dynamicSpeed = Math.floor(Math.random() * 9) + 6;
+                }
+
+                const nextIndex = Math.min(ref.targetText.length, ref.displayedText.length + step);
+                const nextChar = ref.targetText.charAt(nextIndex - 1);
+                ref.displayedText = ref.targetText.slice(0, nextIndex);
+
+                setActiveAiStream({
+                  messageId: targetMsgId,
+                  text: ref.displayedText,
+                  isThinking: false,
+                });
+
+                // Noktalama işaretlerinde hafif mikro-duraksama (kısa ve orta metinlerde)
+                if (totalTargetLength <= 450 && (nextChar === '.' || nextChar === '?' || nextChar === '!' || nextChar === '\n')) {
+                  dynamicSpeed += 25;
+                }
+
+                ref.timeoutId = setTimeout(stepTypewriter, dynamicSpeed);
+              } else if (ref.isFinished) {
+                ref.timeoutId = null;
+                if (onCompleteCallback) {
+                  onCompleteCallback(ref.targetText);
+                }
+              } else {
+                ref.timeoutId = null;
+              }
+            };
+
+            const triggerTyping = () => {
+              if (!aiTypewriterRef.current.timeoutId) {
+                stepTypewriter();
+              }
+            };
+
+            const streamCompletionPromise = new Promise<string>((resolve) => {
+              onCompleteCallback = resolve;
+            });
+
+            requestAIChatStream(
+              cleanPrompt,
+              messages,
+              currentUser.uid,
+              (chunkText) => {
+                aiTypewriterRef.current.targetText = chunkText;
+                triggerTyping();
+              }
+            ).then((finalText) => {
+              aiTypewriterRef.current.targetText = finalText;
+              aiTypewriterRef.current.isFinished = true;
+              triggerTyping();
+            }).catch((streamErr) => {
+              console.warn('Yapay zeka akış hatası:', streamErr);
+              const safeFallback = "Merhaba! Size yardımcı olmaktan memnuniyet duyarım. Nasıl yardımcı olabilirim? 😊";
+              aiTypewriterRef.current.targetText = safeFallback;
+              aiTypewriterRef.current.isFinished = true;
+              triggerTyping();
+            });
+
+            const finalAiResponse = await streamCompletionPromise;
+
             if (aiMsgId) {
-              setStreamingMessageId(aiMsgId);
+              let processedFinal = finalAiResponse;
+              const memoryMatch = processedFinal.match(/\[BELLEK_KAYDET:\s*(.*?)\]/i);
+              if (memoryMatch) {
+                processedFinal = processedFinal.replace(/\[BELLEK_KAYDET:\s*(.*?)\]/i, '').trim();
+                processedFinal = `📖 **Belleğe Kaydedildi**\n\n${processedFinal}`;
+              }
+              await editMessage(conversation.id, aiMsgId, processedFinal, true, false, {
+                isThinking: false,
+                isStreaming: false,
+                isAiUpdate: true,
+              });
+              setActiveAiStream(null);
             }
           } catch (aiErr: any) {
             console.error('RedChat AI yanıt hatası:', aiErr);
-            setImageUploadError(aiErr?.message || 'RedChat AI şu anda yanıt veremiyor.');
-          } finally {
-            setIsAiThinking(false);
+            if (aiTypewriterRef.current.timeoutId) {
+              clearTimeout(aiTypewriterRef.current.timeoutId);
+            }
+            setActiveAiStream(null);
+            if (aiMsgId) {
+              await editMessage(
+                conversation.id,
+                aiMsgId,
+                "Merhaba! Size yardımcı olmaktan memnuniyet duyarım. Nasıl yardımcı olabilirim? 😊",
+                true,
+                false,
+                { isThinking: false, isStreaming: false, isAiUpdate: true }
+              );
+            }
           }
         })();
       }
@@ -862,7 +1001,14 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                         <SequentialTypingDots size="xs" className="text-red-600 dark:text-red-400" />
                       </span>
                     </>
-                  ) : !isDirectAIChat && (
+                  ) : isDirectAIChat ? (
+                    <>
+                      <span>•</span>
+                      <span className="text-zinc-500 dark:text-zinc-400 font-medium">
+                        Yapay Zeka Asistanı
+                      </span>
+                    </>
+                  ) : (
                     <>
                       <span>•</span>
                       <span className={isOnline ? 'text-emerald-600 font-medium' : 'text-zinc-400'}>
@@ -988,7 +1134,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 senderUsername={senderUsername}
                 senderPhotoURL={senderPhotoURL}
                 isHoveredReaction={hoveredReactionMessageId === msg.id}
-                isStreaming={msg.id === streamingMessageId}
+                isStreaming={activeAiStream?.messageId === msg.id ? true : msg.id === streamingMessageId}
+                isThinking={activeAiStream?.messageId === msg.id ? activeAiStream.isThinking : Boolean(msg.isThinking)}
+                liveText={activeAiStream?.messageId === msg.id ? activeAiStream.text : undefined}
                 onFinishStreaming={(id) => setStreamingMessageId((curr) => (curr === id ? null : curr))}
                 onOpenProfile={onOpenProfile}
                 onSelectImage={setLightboxImage}
@@ -1007,44 +1155,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           })
         )}
 
-        {/* 🤖 REDCHAT AI DÜŞÜNME / YAZIYOR ANİMASYONU */}
-        {isAiThinking && (
-          <div className="flex items-start gap-2.5 max-w-[85%] sm:max-w-md animate-in fade-in slide-in-from-bottom-2">
-            <div className="flex-shrink-0 mt-0.5">
-              <UserAvatar
-                photoURL={aiProfilePhotoUrl || photoURL}
-                name="RedChat AI"
-                username="redchat_ai"
-                size="sm"
-                shape="circle"
-              />
-            </div>
-            <div className="bg-white dark:bg-zinc-800 border border-zinc-200/80 dark:border-zinc-700/80 rounded-2xl rounded-tl-xs px-3.5 py-2.5 shadow-xs">
-              <div className="flex items-center gap-2 mb-1.5">
-                <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1">
-                  RedChat AI
-                  <VerifiedBadge
-                    isVerified={true}
-                    badgeUrl={badgeUrl}
-                    size="xs"
-                    user={{
-                      displayName: 'RedChat AI',
-                      username: 'redchat_ai',
-                      photoURL: aiProfilePhotoUrl || photoURL,
-                    }}
-                  />
-                </span>
-                <span className="text-[10px] text-red-600 dark:text-red-400 font-mono flex items-center gap-0.5">
-                  <span>yazıyor</span>
-                  <SequentialTypingDots size="xs" className="text-red-600 dark:text-red-400" />
-                </span>
-              </div>
-              <div className="flex items-center gap-2 py-0.5">
-                <RadialPulseLoader statusText="Düşünüyorum..." />
-              </div>
-            </div>
-          </div>
-        )}
+        
 
         {/* Kullanıcı / Grup Üyeleri Yazıyor Bildirimi (Bubble) */}
         {typingInfo && (

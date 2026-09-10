@@ -832,7 +832,8 @@ export async function sendMessage(
   sender: UserProfile,
   text: string = '',
   imageUrl?: string | null,
-  replyTo?: ChatReplyReference | null
+  replyTo?: ChatReplyReference | null,
+  options?: { isThinking?: boolean, isStreaming?: boolean }
 ): Promise<string> {
   if (!db) throw new Error('Firestore hazır değil');
   
@@ -847,7 +848,7 @@ export async function sendMessage(
   const cleanText = text.trim();
   const cleanImageUrl = imageUrl?.trim() || null;
 
-  if (!cleanText && !cleanImageUrl) return '';
+  if (!cleanText && !cleanImageUrl && !options?.isThinking) return '';
 
   const messagesCol = collection(db, 'conversations', conversationId, 'messages');
   const convDocRef = doc(db, 'conversations', conversationId);
@@ -862,6 +863,8 @@ export async function sendMessage(
     status: 'sent',
     isRead: false,
     isEdited: false,
+    ...(options?.isThinking && { isThinking: true }),
+    ...(options?.isStreaming && { isStreaming: true }),
   };
 
   if (cleanImageUrl) {
@@ -885,6 +888,8 @@ export async function sendMessage(
   let lastMessageSummary = cleanText;
   if (hasImage) {
     lastMessageSummary = cleanText ? cleanText : 'Fotoğraf';
+  } else if (options?.isThinking && !cleanText) {
+    lastMessageSummary = 'Düşünüyor...';
   }
 
   const updateData: any = {
@@ -1043,19 +1048,28 @@ export async function editMessage(
   messageId: string,
   newText: string,
   isLastMessage: boolean = false,
-  hasImage: boolean = false
+  hasImage: boolean = false,
+  options?: { isThinking?: boolean, isStreaming?: boolean, isAiUpdate?: boolean }
 ): Promise<void> {
   if (!db) throw new Error('Firestore hazır değil');
-  const cleanText = newText.trim();
-  if (!cleanText && !hasImage) return;
+  const cleanText = newText;
+  if (!cleanText && !hasImage && !options?.isThinking) return;
 
   const messageDocRef = doc(db, 'conversations', conversationId, 'messages', messageId);
 
-  await updateDoc(messageDocRef, {
+  const updates: any = {
     text: cleanText,
-    isEdited: true,
-    editedAt: serverTimestamp(),
-  });
+  };
+  
+  if (!options?.isAiUpdate) {
+    updates.isEdited = true;
+    updates.editedAt = serverTimestamp();
+  } else {
+    if (options.isThinking !== undefined) updates.isThinking = options.isThinking;
+    if (options.isStreaming !== undefined) updates.isStreaming = options.isStreaming;
+  }
+
+  await updateDoc(messageDocRef, updates);
 
   if (isLastMessage) {
     let summaryText = cleanText;

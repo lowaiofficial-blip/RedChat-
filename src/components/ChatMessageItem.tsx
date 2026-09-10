@@ -55,6 +55,8 @@ export interface ChatMessageItemProps {
   senderPhotoURL: string | null;
   isHoveredReaction: boolean;
   isStreaming?: boolean;
+  isThinking?: boolean;
+  liveText?: string;
   onFinishStreaming?: (messageId: string) => void;
   onOpenProfile: (user: UserProfile) => void;
   onSelectImage: (data: { url: string; caption?: string }) => void;
@@ -84,6 +86,8 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
     senderPhotoURL,
     isHoveredReaction,
     isStreaming = false,
+    isThinking: propIsThinking,
+    liveText,
     onFinishStreaming,
     onOpenProfile,
     onSelectImage,
@@ -157,11 +161,14 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
     }
   }, [isActivelyStreaming, displayedLength, fullText, msg.id, onFinishStreaming]);
 
-  const isDoneStreaming = !isActivelyStreaming;
-  const currentText = isActivelyStreaming ? fullText.slice(0, displayedLength) : fullText;
+  const isThinking = propIsThinking !== undefined ? propIsThinking : Boolean(msg.isThinking);
+  const isDoneStreaming = !isActivelyStreaming && liveText === undefined;
+  const currentText = liveText !== undefined
+    ? liveText
+    : (msg.isStreaming ? fullText : (isActivelyStreaming ? fullText.slice(0, displayedLength) : fullText));
 
   const hasImage = Boolean(msg.imageUrl);
-  const hasText = Boolean(msg.text && msg.text.trim());
+  const hasText = Boolean((liveText !== undefined ? liveText.trim() : (msg.text && msg.text.trim())) || isThinking);
   const isRead = msg.isRead || msg.status === 'read';
 
   return (
@@ -307,14 +314,20 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
             {/* 🖼️ Fotoğraf İçeriği veya Metin + Saat (Kompakt Tek Akış) */}
             {!hasImage ? (
               <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 max-w-full min-w-0">
-                <div className="whitespace-pre-wrap select-none text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] flex-1 min-w-0 max-w-full inline">
-                  {renderMessageText(currentText, isMe)}
-                  {!isDoneStreaming && (
-                    <span id="ai-cursor" className="cursor font-semibold text-zinc-900 dark:text-white ml-0.5">
-                      |
-                    </span>
-                  )}
-                </div>
+                {isThinking && !currentText ? (
+                  <div className="ai-loader-wrapper py-0.5 select-none min-h-[22px]">
+                    <div className="ai-thinking-text">Düşünüyorum...</div>
+                  </div>
+                ) : (
+                  <div className="ai-response-container whitespace-pre-wrap select-none text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] flex-1 min-w-0 max-w-full inline">
+                    {renderMessageText(currentText, isMe)}
+                    {(!isDoneStreaming || liveText !== undefined) && (
+                      <span id="ai-cursor" className="cursor">
+                        |
+                      </span>
+                    )}
+                  </div>
+                )}
                 <span
                   className={`inline-flex items-center gap-1 font-mono text-[10px] select-none shrink-0 self-end ml-auto ${
                     isMe ? 'text-red-100/80' : 'text-zinc-400 dark:text-zinc-400'

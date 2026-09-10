@@ -36,12 +36,15 @@
 }
 
 .ai-thinking-text {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 500;
+  line-height: 1.2;
   letter-spacing: -0.3px;
   
+  /* Temel pasif renk */
   color: rgba(255, 255, 255, 0.15); 
   
+  /* Işık geçişi: Ortadaki beyaz alan çok yumuşak dağıtıldı */
   background: linear-gradient(
     to right, 
     rgba(255, 255, 255, 0.15) 30%, 
@@ -53,45 +56,59 @@
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   
+  /* Orta hız: 2.2 saniye akış */
   animation: textShimmer 2.2s infinite cubic-bezier(0.4, 0, 0.2, 1);
-  filter: drop-shadow(0 0 12px rgba(255, 255, 255, 0.12));
+  
+  /* Harflerin arkasından gelen hafif premium parlama */
+  filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.12));
 }
 
 :root:not(.dark) .ai-thinking-text {
-  color: rgba(24, 24, 27, 0.25);
+  color: rgba(24, 24, 27, 0.2);
   background: linear-gradient(
     to right, 
-    rgba(24, 24, 27, 0.25) 30%, 
-    rgba(24, 24, 27, 0.95) 50%, 
-    rgba(24, 24, 27, 0.25) 70%
+    rgba(24, 24, 27, 0.2) 30%, 
+    rgba(24, 24, 27, 0.9) 50%, 
+    rgba(24, 24, 27, 0.2) 70%
   );
   background-size: 200% auto;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  filter: drop-shadow(0 0 12px rgba(0, 0, 0, 0.08));
+  filter: drop-shadow(0 0 8px rgba(0, 0, 0, 0.08));
 }
 
+/* Işığın Soldan Sağa Akışı */
 @keyframes textShimmer {
   0% { background-position: 200% center; }
   100% { background-position: -200% center; }
 }
 
+/* Tüm Yapının Arka Planda Yumuşakça Nefes Alması */
 @keyframes gentlePulse {
   0%, 100% { transform: scale(1); opacity: 0.95; }
   50% { transform: scale(1.02); opacity: 1; }
 }
 
-/* ⚡ Premium Streaming Cursor Animation */
+/* ⚡ Premium Parlayan İmleç (Cursor) */
 .cursor {
   font-weight: 600;
-  color: currentColor;
+  color: #ffffff;
   margin-left: 3px;
   animation: blink 0.8s infinite;
   display: inline-block;
 }
 
+:root:not(.dark) .cursor {
+  color: #18181b;
+}
+
 @keyframes blink {
-  0%, 100% { opacity: 1; filter: drop-shadow(0 0 4px currentColor); }
-  50% { opacity: 0; }
+  0%, 100% { 
+    opacity: 1; 
+    filter: drop-shadow(0 0 4px currentColor); 
+  }
+  50% { 
+    opacity: 0; 
+  }
 }
 

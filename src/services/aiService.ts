@@ -15,7 +15,7 @@ export function getRedChatAIProfile(customPhotoUrl?: string | null): UserProfile
     displayName: REDCHAT_AI_DISPLAY_NAME,
     email: 'ai@redchat.internal',
     photoURL: customPhotoUrl || null,
-    bio: 'RedChat Resmi Yapay Zeka Asistanı • Flash Lite 1.0',
+    bio: 'RedChat Resmi Yapay Zeka Asistanı',
     createdAt: null,
     updatedAt: null,
     isOnline: false,
@@ -99,5 +99,88 @@ export async function requestAIChatResponse(
   } catch (error: any) {
     console.error('requestAIChatResponse error:', error);
     throw new Error(error?.message || 'RedChat AI şu anda yanıt veremiyor. Lütfen tekrar deneyin.');
+  }
+}
+
+export async function requestAIChatStream(
+  userMessage: string,
+  chatHistory: ChatMessage[] = [],
+  userId?: string,
+  onChunk?: (text: string) => void
+): Promise<string> {
+  const cleanMessage = userMessage.trim();
+  
+  const formattedHistory = chatHistory.slice(-10).map((m) => ({
+    role: m.senderId === REDCHAT_AI_UID ? 'assistant' : 'user',
+    text: m.text,
+    senderId: m.senderId,
+  }));
+
+  try {
+    const response = await fetch('/api/ai/chat/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        userMessage: cleanMessage,
+        messages: formattedHistory,
+        userId
+      }),
+    });
+
+    if (!response.ok || !response.body) {
+      console.warn('Stream yanıt vermedi, standart istek deneniyor...');
+      const fallbackText = await requestAIChatResponse(cleanMessage, chatHistory, userId);
+      if (onChunk) onChunk(fallbackText);
+      return fallbackText;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullResponse = "";
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const dataStr = line.slice(6);
+          if (dataStr === "[DONE]") {
+            break;
+          }
+          try {
+            const data = JSON.parse(dataStr);
+            if (data.error) {
+              throw new Error(data.error);
+            }
+            if (data.chunk) {
+              fullResponse += data.chunk;
+              if (onChunk) {
+                onChunk(fullResponse);
+              }
+            }
+          } catch (e) {
+            // ignore JSON parse error for partial lines
+          }
+        }
+      }
+    }
+    return fullResponse;
+  } catch (error: any) {
+    console.error('requestAIChatStream error:', error);
+    try {
+      const fallback = await requestAIChatResponse(cleanMessage, chatHistory, userId);
+      if (onChunk) onChunk(fallback);
+      return fallback;
+    } catch (fbErr: any) {
+      throw new Error(fbErr?.message || 'RedChat AI şu anda yanıt veremiyor.');
+    }
   }
 }
