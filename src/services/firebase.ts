@@ -1,6 +1,7 @@
 import { initializeApp, getApps, getApp, type FirebaseApp, type FirebaseOptions } from 'firebase/app';
 import { getAuth, type Auth } from 'firebase/auth';
 import { getFirestore, type Firestore } from 'firebase/firestore';
+import { getStorage, type FirebaseStorage } from 'firebase/storage';
 
 /**
  * REDCHAT FIREBASE YAPILANDIRMASI (DOĞRUDAN KOD İÇİNDE)
@@ -31,7 +32,6 @@ function getStoredCustomConfig(): Partial<FirebaseOptions> | null {
 
 export function getEffectiveFirebaseConfig(): FirebaseOptions {
   const custom = getStoredCustomConfig();
-
   // Öncelik: Custom (UI'dan girilen) > FIREBASE_CONFIG (koddaki) > Fallback
   return {
     apiKey: custom?.apiKey || FIREBASE_CONFIG.apiKey || '',
@@ -61,6 +61,7 @@ export function clearCustomFirebaseConfig() {
 let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
 let db: Firestore | null = null;
+let storage: FirebaseStorage | null = null;
 
 try {
   const config = getEffectiveFirebaseConfig();
@@ -72,10 +73,11 @@ try {
     }
     auth = getAuth(app);
     db = getFirestore(app);
+    storage = getStorage(app);
   }
 } catch (error) {
   console.error('Firebase initialization error:', error);
 }
 
-export { app, auth, db };
+export { app, auth, db, storage };
 

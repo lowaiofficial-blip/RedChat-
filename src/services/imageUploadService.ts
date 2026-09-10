@@ -1,23 +1,12 @@
-/**
- * RedChat Ultra-Reliable Image Upload Service
- * 
- * Görselleri optimize eder ve kesintisiz şekilde yükler.
- * 400 Bad Request, API anahtarı geçersizliği veya ağ engellerine karşı
- * yerel sunucu depolama ve otomatik akıllı sıkıştırma mimarisi içerir.
- */
+import { storage } from './firebase';
+import { ref, uploadString, getDownloadURL } from 'firebase/storage';
 
-/**
- * Dosya adını Türkçe ve özel karakterlerden arındırıp güvenli ASCII haline getirir.
- */
 function sanitizeFileName(name: string): string {
   const ext = name.split('.').pop() || 'jpg';
   const cleanExt = ext.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'jpg';
   return `image_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${cleanExt}`;
 }
 
-/**
- * Görseli tarayıcıda Canvas ile orantılı olarak yeniden boyutlandırır ve sıkıştırır.
- */
 export async function compressImage(
   file: File,
   maxDimension = 1400,
@@ -42,7 +31,6 @@ export async function compressImage(
       img.onload = () => {
         let { width, height } = img;
         
-        // Boyutlandırma oranı hesapla
         if (width > maxDimension || height > maxDimension) {
           if (width > height) {
             height = Math.round((height * maxDimension) / width);
@@ -59,7 +47,6 @@ export async function compressImage(
         const ctx = canvas.getContext('2d');
 
         if (ctx) {
-          // Sadece JPEG için beyaz arka planla çiz (boyutu küçültmek için)
           ctx.fillStyle = '#FFFFFF';
           ctx.fillRect(0, 0, width, height);
           ctx.drawImage(img, 0, 0, width, height);
@@ -76,12 +63,6 @@ export async function compressImage(
   });
 }
 
-/**
- * 👤 Profil Fotoğrafı İçin Özel Optimizasyon ve Yükleme
- * Kare merkezli kırpar, 320x320 piksel yapar ve süper optimize eder (~25-35 KB).
- * Doğrudan kalıcı ve engelsiz Data URL sağlar, arka planda sunucuya da yazar.
- * Bu sayede profil fotoğrafı asla boş kalmaz, hiçbir ağ/CDN sansürüne takılmaz.
- */
 export async function uploadProfilePhoto(file: File): Promise<string> {
   if (!file || !file.type.startsWith('image/')) {
     throw new Error('Lütfen geçerli bir görsel dosyası seçin (PNG, JPG, WEBP).');
@@ -104,34 +85,54 @@ export async function uploadProfilePhoto(file: File): Promise<string> {
             return;
           }
 
-          // Arka planı beyaz yap (şeffaf png'ler siyah olmasın)
           ctx.fillStyle = '#FFFFFF';
           ctx.fillRect(0, 0, targetSize, targetSize);
 
-          // Kare merkezli kırpma (Center crop)
           const minDim = Math.min(img.width, img.height);
           const sx = (img.width - minDim) / 2;
           const sy = (img.height - minDim) / 2;
-
           ctx.drawImage(img, sx, sy, minDim, minDim, 0, 0, targetSize, targetSize);
+          
           const optimizedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+          const rawBase64 = optimizedDataUrl.split(',')[1];
+          const cleanName = sanitizeFileName(file.name);
 
-          // Arka planda sunucuya da kaydetmeyi dene (opsiyonel)
-          try {
-            fetch('/api/upload', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                image: optimizedDataUrl,
-                name: sanitizeFileName(file.name),
-              }),
-            }).catch(() => {});
-          } catch {
-            // Sessizce geç
+          const imgbbApiKey = import.meta.env.VITE_IMGBB_API_KEY;
+          if (imgbbApiKey && rawBase64) {
+            try {
+              const formData = new FormData();
+              formData.append('image', rawBase64);
+              formData.append('name', `avatar_${cleanName}`);
+
+              const response = await fetch(`https://api.imgbb.com/1/upload?key=${imgbbApiKey}`, {
+                method: 'POST',
+                body: formData,
+              });
+
+              if (response.ok) {
+                const data = await response.json();
+                if (data?.data?.url) {
+                  resolve(data.data.url);
+                  return;
+                }
+              }
+            } catch (err) {
+              console.warn("ImgBB upload failed for avatar, falling back...", err);
+            }
           }
 
-          // Profil fotoğrafları için doğrudan garantili data URL döndür
-          // Firestore'a 25KB olarak anında yazılır, hiçbir CDN kısıtlaması yaşanmaz
+          if (storage) {
+            try {
+              const fileRef = ref(storage, `avatars/${Date.now()}_${cleanName}`);
+              await uploadString(fileRef, optimizedDataUrl, 'data_url');
+              const url = await getDownloadURL(fileRef);
+              resolve(url);
+              return;
+            } catch (err) {
+              console.warn("Firebase Storage upload failed for avatar, falling back to base64.", err);
+            }
+          }
+
           resolve(optimizedDataUrl);
         } catch (canvasErr) {
           reject(canvasErr);
@@ -145,17 +146,11 @@ export async function uploadProfilePhoto(file: File): Promise<string> {
   });
 }
 
-/**
- * 💬 Genel Görsel Yükleme Fonksiyonu (Sohbet Mesajları, Grup Avatarları, Rozetler)
- * Yerel sunucu (/uploads/...) öncelikli, ardında çok katmanlı güvenli yedekler.
- */
 export async function uploadImageToImgBB(file: File): Promise<string> {
-  // 1. Dosya Doğrulama
   if (!file || !file.type.startsWith('image/')) {
     throw new Error('Lütfen geçerli bir görsel dosyası seçin (PNG, JPG, WEBP vb.).');
   }
 
-  // 2. İstemci Tarafında Akıllı Sıkıştırma (10MB+ fotoğrafları anında optimize eder)
   const { base64: compressedDataUrl, cleanName } = await compressImage(file, 1400, 0.82);
   const rawBase64 = compressedDataUrl.includes(',')
     ? compressedDataUrl.split(',')[1]
@@ -165,34 +160,46 @@ export async function uploadImageToImgBB(file: File): Promise<string> {
     throw new Error('Görsel dosyası okunamadı.');
   }
 
-  // 1. ÖNCELİK: Kendi Yerel Sunucu Depolamamız (/api/upload -> /uploads/...)
-  try {
-    const response = await fetch('/api/upload', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        image: compressedDataUrl,
-        name: cleanName,
-      }),
-    });
+  const imgbbApiKey = import.meta.env.VITE_IMGBB_API_KEY;
+  if (imgbbApiKey) {
+    try {
+      const formData = new FormData();
+      formData.append('image', rawBase64);
+      formData.append('name', cleanName);
 
-    if (response.ok) {
-      const data = await response.json();
-      if (data?.url) {
-        return data.url;
+      const response = await fetch(`https://api.imgbb.com/1/upload?key=${imgbbApiKey}`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data?.data?.url) {
+          return data.data.url;
+        }
       }
+    } catch (err) {
+      console.warn("ImgBB API çağrısı sırasında hata:", err);
     }
-  } catch (proxyErr) {
-    console.warn('/api/upload yerel sunucu çağrısı başarısız, yedek katman deneniyor...', proxyErr);
   }
 
-  // 2. ÖNCELİK: Optimize Edilmiş Data URL (Garantili Veri Koruma)
+  if (storage) {
+    try {
+      const storageRef = ref(storage, `chat_images/${Date.now()}_${cleanName}`);
+      await uploadString(storageRef, compressedDataUrl, 'data_url');
+      const downloadURL = await getDownloadURL(storageRef);
+      return downloadURL;
+    } catch (err) {
+      console.warn("Firebase Storage upload failed, falling back to base64 inline...", err);
+    }
+  }
+
   if (compressedDataUrl && compressedDataUrl.startsWith('data:image/')) {
-    // Sıkıştırılmış veri 1.8MB altındaysa sorunsuz şekilde çalışır
     if (compressedDataUrl.length < 1.8 * 1024 * 1024) {
       return compressedDataUrl;
+    } else {
+      const fallbackUrl = await compressImage(file, 800, 0.6);
+      return fallbackUrl.base64;
     }
   }
 
