@@ -13,6 +13,7 @@ import {
   getOrCreateDirectConversation,
 } from './services/chatService';
 import { subscribeToAppSettings, ADMIN_EMAILS } from './services/adminService';
+import { setupForegroundListener, requestNotificationPermissionAndToken } from './services/messagingService';
 import { db } from './services/firebase';
 import { doc, updateDoc } from 'firebase/firestore';
 import { preloadBadgeImage } from './components/VerifiedBadge';
@@ -24,7 +25,7 @@ import { ProfileModal } from './components/ProfileModal';
 import { CreateGroupModal } from './components/CreateGroupModal';
 import { AdminPanel } from './components/AdminPanel';
 import { BannedScreen } from './components/BannedScreen';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Bell, X } from 'lucide-react';
 
 export default function App() {
   const [currentUserAuth, setCurrentUserAuth] = useState<User | null>(null);
@@ -157,6 +158,44 @@ export default function App() {
     }
   }, [currentUserAuth, currentUserProfile]);
 
+  // Foreground Push Notification Listener
+  useEffect(() => {
+    if (!currentUserAuth) return;
+    
+    let unsubscribe: any = null;
+    setupForegroundListener((payload) => {
+      // Eğer kullanıcı açık sohbetindeyse bildirime gerek yok (ChatService vs halleder)
+      const data = payload.data;
+      if (data && data.conversationId === activeConversationId) {
+        // Zaten ilgili sohbet açık, sistem ses çalıyor veya yeni mesaj gösteriliyor.
+        return;
+      }
+      
+      // Native tarayıcı bildirimi göster (UI'da fake toast göstermiyoruz)
+      if (Notification.permission === 'granted') {
+        const title = payload.notification?.title || 'RedChat';
+        const options = {
+          body: payload.notification?.body,
+          icon: '/ai-petal.png',
+          data: payload.data,
+        };
+        const notif = new Notification(title, options);
+        notif.onclick = () => {
+          if (data && data.conversationId) {
+            window.location.hash = `#/chat/${data.conversationId}`;
+          }
+          notif.close();
+        };
+      }
+    }).then((unsub) => {
+      unsubscribe = unsub;
+    }).catch(console.error);
+    
+    return () => {
+      if (unsubscribe && typeof unsubscribe === 'function') unsubscribe();
+    };
+  }, [currentUserAuth, activeConversationId]);
+
   // RedChat AI hesabını kullanıcı listesine dahil et (Tüm kullanıcılar görebilsin ve doğrudan sohbet başlatabilsin)
   const displayedUsers = React.useMemo(() => {
     const aiUser = getRedChatAIProfile(appSettings?.aiProfilePhotoUrl);
@@ -200,6 +239,26 @@ export default function App() {
       ? currentUserProfile
       : displayedUsers.find((u) => u.uid === inspectingUser.uid) || inspectingUser
     : null;
+
+  const [showNotifBanner, setShowNotifBanner] = useState(() => {
+    return 'Notification' in window && Notification.permission === 'default' && localStorage.getItem('redchat_notif_banner_dismissed') !== 'true';
+  });
+
+  const handleEnableNotifications = async () => {
+    if (!currentUserProfile) return;
+    try {
+      await requestNotificationPermissionAndToken(currentUserProfile.uid);
+      setShowNotifBanner(false);
+    } catch (err) {
+      console.error(err);
+      setShowNotifBanner(false); // reddedilirse de gizle
+    }
+  };
+
+  const handleDismissNotifBanner = () => {
+    localStorage.setItem('redchat_notif_banner_dismissed', 'true');
+    setShowNotifBanner(false);
+  };
 
   if (authLoading) {
     return (
@@ -253,6 +312,23 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen overflow-hidden flex bg-zinc-100 dark:bg-zinc-950 antialiased">
+      {showNotifBanner && (
+        <div className="absolute top-0 left-0 right-0 z-[100] bg-red-600 text-white px-4 py-2 flex items-center justify-between shadow-md">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Bell className="w-4 h-4" />
+            <span className="hidden sm:inline">Bildirimleri açarak yeni mesajlardan anında haberdar olun.</span>
+            <span className="sm:hidden">Bildirimleri açarak haberdar olun.</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={handleEnableNotifications} className="px-3 py-1 bg-white text-red-600 rounded-lg text-xs font-bold hover:bg-zinc-100 transition-colors">
+              İzin Ver
+            </button>
+            <button onClick={handleDismissNotifBanner} className="p-1 hover:bg-black/10 rounded-full transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
       {/* SOL PANEL (Sidebar) */}
       <div
         className={`w-full md:w-auto h-full ${

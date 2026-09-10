@@ -19,6 +19,7 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import type { Conversation, ChatMessage, UserProfile, ChatReplyReference, GroupRole } from '../types';
+import { sendPushNotification } from './messagingService';
 
 /**
  * Kullanıcının grup içindeki güncel ve gerçek rolünü döner ('owner' | 'admin' | 'member').
@@ -895,11 +896,12 @@ export async function sendMessage(
     updatedAt: serverTimestamp(),
   };
 
+  let conversationData: Conversation | null = null;
   try {
     const convSnap = await getDoc(convDocRef);
     if (convSnap.exists()) {
-      const convData = convSnap.data() as Conversation;
-      const otherParticipantIds = (convData.participantIds || []).filter((uid) => uid !== sender.uid);
+      conversationData = convSnap.data() as Conversation;
+      const otherParticipantIds = (conversationData.participantIds || []).filter((uid) => uid !== sender.uid);
       otherParticipantIds.forEach((uid) => {
         updateData[`unreadCounts.${uid}`] = increment(1);
       });
@@ -920,6 +922,52 @@ export async function sendMessage(
 
   // 3. Ana konuşma dokümanındaki son mesajı, unread count'u ve güncelleme zamanını güncelle
   await updateDoc(convDocRef, updateData);
+
+  // 4. Push Notification gönder
+  try {
+    if (conversationData) {
+      const otherParticipantIds = (conversationData.participantIds || []).filter((uid) => uid !== sender.uid);
+      
+      const senderName = sender.displayName || sender.username || "Bir kullanıcı";
+      let notifTitle = "🔴 RedChat";
+      let notifBody = `${senderName} sana yeni bir mesaj gönderdi.`;
+      
+      if (conversationData.isGroup) {
+        const groupName = conversationData.name || "Grup";
+        notifBody = `${senderName} — ${groupName} grubunda yeni mesaj.`;
+      }
+      
+      // Push gönderimi (hata olsa bile mesajı durdurmaz)
+      sendPushNotification({
+        receiverIds: otherParticipantIds,
+        title: notifTitle,
+        body: notifBody,
+        data: {
+          conversationId: conversationId,
+          type: "chat_message"
+        }
+      }).catch(err => console.error("Push notification gönderme hatası:", err));
+    } else {
+      // Eğer conversationData yoksa, recipientUid'yi kullan
+      const [uid1, uid2] = conversationId.split('_');
+      const recipientUid = uid1 === sender.uid ? uid2 : uid1;
+      if (recipientUid) {
+        const senderName = sender.displayName || sender.username || "Bir kullanıcı";
+        sendPushNotification({
+          receiverIds: [recipientUid],
+          title: "🔴 RedChat",
+          body: `${senderName} sana yeni bir mesaj gönderdi.`,
+          data: {
+            conversationId: conversationId,
+            type: "chat_message"
+          }
+        }).catch(err => console.error("Push notification gönderme hatası:", err));
+      }
+    }
+  } catch (err) {
+    console.error("Push hazırlık aşamasında hata:", err);
+  }
+
   return newDocRef.id;
 }
 

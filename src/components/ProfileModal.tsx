@@ -7,6 +7,7 @@ import { UserAvatar } from './UserAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
 import { isRedChatAI } from '../services/aiService';
 import { getStoredTheme, applyTheme, type ThemeMode } from '../utils/theme';
+import { requestNotificationPermissionAndToken, removeTokenFromFirestore } from '../services/messagingService';
 import {
   X,
   Mail,
@@ -25,6 +26,8 @@ import {
   AlertCircle,
   Sparkles,
   Bot,
+  Bell,
+  BellOff
 } from 'lucide-react';
 
 interface ProfileModalProps {
@@ -51,7 +54,29 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Push notification state
+  const [pushEnabled, setPushEnabled] = useState(Notification.permission === 'granted');
+  const [pushLoading, setPushLoading] = useState(false);
 
+  const handleTogglePush = async () => {
+    if (!isCurrentUser) return;
+    setPushLoading(true);
+    setError(null);
+    try {
+      if (pushEnabled) {
+        await removeTokenFromFirestore(user.uid);
+        setPushEnabled(false);
+      } else {
+        await requestNotificationPermissionAndToken(user.uid);
+        setPushEnabled(true);
+      }
+    } catch (err: any) {
+      console.error(err);
+      setError("Bildirim ayarı değiştirilemedi. İzin verdiğinizden emin olun.");
+    } finally {
+      setPushLoading(false);
+    }
+  };
 
   // Anlık profil fotoğrafı state'i (Firestore senkronizasyonu tamamlandığında veya hemen anında güncellenir)
   const [currentPhotoURL, setCurrentPhotoURL] = useState<string | null>(user.photoURL || null);
@@ -555,6 +580,39 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   >
                     <SettingsIcon className="w-4 h-4" />
                     <span>Sistem</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Bildirim Ayarı */}
+              <div className="mb-6">
+                <h4 className="text-xs font-semibold text-zinc-900 dark:text-white mb-2.5 flex items-center gap-1.5">
+                  <Bell className="w-4 h-4 text-zinc-500" />
+                  Bildirimler
+                </h4>
+                <div className="flex items-center justify-between p-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+                  <div className="flex flex-col">
+                    <span className="text-xs font-medium text-zinc-900 dark:text-zinc-100">
+                      Anlık Bildirimler
+                    </span>
+                    <span className="text-[10px] text-zinc-500">
+                      Mesaj geldiğinde cihazına bildirim gönderilir
+                    </span>
+                  </div>
+                  <button
+                    onClick={handleTogglePush}
+                    disabled={pushLoading}
+                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors focus:outline-none ${
+                      pushEnabled ? 'bg-red-600' : 'bg-zinc-200 dark:bg-zinc-700'
+                    } ${pushLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <span className="sr-only">Bildirimleri Aç</span>
+                    <span
+                      aria-hidden="true"
+                      className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
+                        pushEnabled ? 'translate-x-2' : '-translate-x-2'
+                      }`}
+                    />
                   </button>
                 </div>
               </div>

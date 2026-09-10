@@ -3,15 +3,105 @@ import path from "path";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
+import { initializeApp, cert, applicationDefault, getApps, type AppOptions } from 'firebase-admin/app';
+import { getMessaging, type MulticastMessage } from 'firebase-admin/messaging';
 
 dotenv.config();
 
+// 🚀 FIREBASE ADMIN INITIALIZATION FOR PUSH NOTIFICATIONS
+try {
+  let adminConfig: AppOptions = {};
+
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+    try {
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+      adminConfig.credential = cert(serviceAccount);
+      console.log("Firebase Admin initialized with custom service account.");
+    } catch (e) {
+      console.error("FIREBASE_SERVICE_ACCOUNT_KEY JSON parse error:", e);
+    }
+  } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    adminConfig.credential = applicationDefault();
+    console.log("Firebase Admin initialized with GOOGLE_APPLICATION_CREDENTIALS.");
+  } else {
+    console.warn("⚠️ Firebase Admin credentials missing. Push notifications will not be sent. Please set FIREBASE_SERVICE_ACCOUNT_KEY in .env");
+  }
+
+  if (Object.keys(adminConfig).length > 0 && !getApps().length) {
+    initializeApp(adminConfig);
+  }
+} catch (adminErr) {
+  console.error("Firebase Admin setup error:", adminErr);
+}
+
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT || 3000;
 
   // JSON gövdeleri için middleware (görseller için 20mb limit)
   app.use(express.json({ limit: "20mb" }));
+
+  // 🔔 PUSH NOTIFICATION GÖNDERİM ENDPOINT'İ
+  app.post("/api/notifications/send", async (req, res) => {
+    try {
+      if (!getApps().length) {
+        return res.status(503).json({ error: "Firebase Admin is not configured on the server." });
+      }
+
+      const { tokens, title, body, data } = req.body;
+      
+      if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
+        return res.status(400).json({ error: "Tokens array is required" });
+      }
+
+      if (!title || !body) {
+        return res.status(400).json({ error: "Title and body are required" });
+      }
+
+      // Token array can have max 500 tokens for sendMulticast
+      const message: MulticastMessage = {
+        notification: { title, body },
+        data: data || {},
+        tokens: tokens,
+        android: {
+          priority: "high",
+          notification: {
+            channelId: "redchat_messages", // Yüksek öncelikli kanal
+          }
+        },
+        webpush: {
+          headers: {
+            Urgency: "high"
+          }
+        }
+      };
+
+      const response = await getMessaging().sendEachForMulticast(message);
+      
+      // Geçersiz tokenları bul
+      const failedTokens: string[] = [];
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success) {
+          const errorCode = resp.error?.code;
+          if (errorCode === 'messaging/invalid-registration-token' || 
+              errorCode === 'messaging/registration-token-not-registered') {
+            failedTokens.push(tokens[idx]);
+          }
+        }
+      });
+
+      return res.json({ 
+        success: true, 
+        successCount: response.successCount, 
+        failureCount: response.failureCount,
+        failedTokens // Client can clean these up from Firestore
+      });
+
+    } catch (err: any) {
+      console.error("Notification API Error:", err);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  });
 
   // 📂 Yerel Yükleme Dizini (Kendi sunucumuzdan kesintisiz, engelsiz görsel sunumu)
   const uploadsDir = path.join(process.cwd(), "public", "uploads");
