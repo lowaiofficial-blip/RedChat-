@@ -5,6 +5,7 @@ import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 import { initializeApp, cert, applicationDefault, getApps, type AppOptions } from 'firebase-admin/app';
 import { getMessaging, type MulticastMessage } from 'firebase-admin/messaging';
+import { getFirestore } from 'firebase-admin/firestore';
 
 dotenv.config();
 
@@ -44,25 +45,51 @@ async function startServer() {
   // 🔔 PUSH NOTIFICATION GÖNDERİM ENDPOINT'İ
   app.post("/api/notifications/send", async (req, res) => {
     try {
+      console.log("🔔 Sunucuya bildirim isteği düştü:", req.body);
       if (!getApps().length) {
+        console.error("Firebase Admin is not configured on the server.");
         return res.status(503).json({ error: "Firebase Admin is not configured on the server." });
       }
 
-      const { tokens, title, body, data } = req.body;
+      const { receiverIds, title, body, data } = req.body;
       
-      if (!tokens || !Array.isArray(tokens) || tokens.length === 0) {
-        return res.status(400).json({ error: "Tokens array is required" });
+      if (!receiverIds || !Array.isArray(receiverIds) || receiverIds.length === 0) {
+        return res.status(400).json({ error: "receiverIds array is required" });
       }
 
       if (!title || !body) {
         return res.status(400).json({ error: "Title and body are required" });
       }
 
+      const db = getFirestore();
+      const allTokens: string[] = [];
+      const tokenToDocRefMap = new Map<string, any>();
+      
+      for (const uid of receiverIds) {
+        try {
+          const snapshot = await db.collection(`users/${uid}/fcmTokens`).get();
+          snapshot.forEach(docSnap => {
+            const tokenData = docSnap.data();
+            if (tokenData.token) {
+              allTokens.push(tokenData.token);
+              tokenToDocRefMap.set(tokenData.token, docSnap.ref);
+            }
+          });
+        } catch (err) {
+          console.error(`Kullanıcı (${uid}) tokenları çekilirken hata:`, err);
+        }
+      }
+
+      if (allTokens.length === 0) {
+        console.log("Gönderilecek token bulunamadı.");
+        return res.status(200).json({ success: true, message: "No tokens found for these receivers." });
+      }
+
       // Token array can have max 500 tokens for sendMulticast
       const message: MulticastMessage = {
         notification: { title, body },
         data: data || {},
-        tokens: tokens,
+        tokens: allTokens,
         android: {
           priority: "high",
           notification: {
@@ -78,14 +105,19 @@ async function startServer() {
 
       const response = await getMessaging().sendEachForMulticast(message);
       
-      // Geçersiz tokenları bul
+      // Geçersiz tokenları bul ve admin yetkisiyle sil
       const failedTokens: string[] = [];
       response.responses.forEach((resp, idx) => {
         if (!resp.success) {
           const errorCode = resp.error?.code;
           if (errorCode === 'messaging/invalid-registration-token' || 
               errorCode === 'messaging/registration-token-not-registered') {
-            failedTokens.push(tokens[idx]);
+            const failedToken = allTokens[idx];
+            failedTokens.push(failedToken);
+            const docRef = tokenToDocRefMap.get(failedToken);
+            if (docRef) {
+              docRef.delete().catch((err: any) => console.error("Geçersiz token silinemedi:", err));
+            }
           }
         }
       });
@@ -94,7 +126,7 @@ async function startServer() {
         success: true, 
         successCount: response.successCount, 
         failureCount: response.failureCount,
-        failedTokens // Client can clean these up from Firestore
+        failedTokens 
       });
 
     } catch (err: any) {

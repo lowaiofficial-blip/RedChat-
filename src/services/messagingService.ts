@@ -110,58 +110,33 @@ export const sendPushNotification = async (params: {
   data?: any;
 }) => {
   try {
-    if (params.receiverIds.length === 0) return;
-
-    // Her alıcı için tokenları Firestore'dan çek
-    const allTokens: string[] = [];
-    const tokensToUidMap = new Map<string, string>(); // invalid token olursa kimden sileceğimizi bilmek için
-
-    for (const uid of params.receiverIds) {
-      const tokensRef = collection(db, `users/${uid}/fcmTokens`);
-      const snapshot = await getDocs(tokensRef);
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        if (data.token) {
-          allTokens.push(data.token);
-          tokensToUidMap.set(data.token, uid);
-        }
-      });
+    console.log("📨 Push notification tetiklendi. Alıcılar:", params.receiverIds);
+    if (params.receiverIds.length === 0) {
+      console.log("⚠️ Alıcı listesi boş, gönderim iptal edildi.");
+      return;
     }
 
-    if (allTokens.length === 0) return;
-
-    // Server-side endpoint'e gönder
+    // Server-side endpoint'e gönder. Token çekme işini Admin SDK ile sunucu yapacak!
+    console.log("🚀 Sunucuya (/api/notifications/send) fetch isteği atılıyor...");
     const response = await fetch('/api/notifications/send', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        tokens: allTokens,
+        receiverIds: params.receiverIds,
         title: params.title,
         body: params.body,
         data: params.data
       })
     });
-
-    const result = await response.json();
     
-    // Geçersiz tokenları temizle
-    if (result.failedTokens && Array.isArray(result.failedTokens) && result.failedTokens.length > 0) {
-      for (const failedToken of result.failedTokens) {
-        const uid = tokensToUidMap.get(failedToken);
-        if (uid) {
-          // Token'a karşılık gelen dökümanı bul ve sil
-          const q = query(collection(db, `users/${uid}/fcmTokens`), where("token", "==", failedToken));
-          const snapshot = await getDocs(q);
-          snapshot.forEach(async (docSnap) => {
-            await deleteDoc(doc(db, `users/${uid}/fcmTokens`, docSnap.id));
-            console.log("Geçersiz FCM token temizlendi:", docSnap.id);
-          });
-        }
-      }
+    if (!response.ok) {
+      console.error("❌ Sunucudan hata döndü:", response.status, response.statusText);
     }
-
+    
+    const result = await response.json();
+    console.log("📬 Sunucudan gelen yanıt:", result);
   } catch (error) {
     console.error("Push notification gönderilirken hata oluştu:", error);
   }
