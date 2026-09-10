@@ -178,6 +178,8 @@ export default function App() {
           body: payload.notification?.body,
           icon: '/ai-petal.png',
           data: payload.data,
+          tag: data?.conversationId || undefined,
+          renotify: true
         };
         const notif = new Notification(title, options);
         notif.onclick = () => {

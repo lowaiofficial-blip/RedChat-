@@ -62,7 +62,7 @@ async function startServer() {
       }
 
       const db = getFirestore();
-      const allTokens: string[] = [];
+      let allTokens: string[] = [];
       const tokenToDocRefMap = new Map<string, any>();
       
       for (const uid of receiverIds) {
@@ -70,7 +70,7 @@ async function startServer() {
           const snapshot = await db.collection(`users/${uid}/fcmTokens`).get();
           snapshot.forEach(docSnap => {
             const tokenData = docSnap.data();
-            if (tokenData.token) {
+            if (tokenData.token && !tokenToDocRefMap.has(tokenData.token)) {
               allTokens.push(tokenData.token);
               tokenToDocRefMap.set(tokenData.token, docSnap.ref);
             }
@@ -94,11 +94,16 @@ async function startServer() {
           priority: "high",
           notification: {
             channelId: "redchat_messages", // Yüksek öncelikli kanal
+            tag: data?.conversationId || undefined
           }
         },
         webpush: {
           headers: {
             Urgency: "high"
+          },
+          notification: {
+            tag: data?.conversationId || undefined,
+            renotify: true
           }
         }
       };

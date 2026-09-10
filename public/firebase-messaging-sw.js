@@ -21,11 +21,16 @@ const messaging = firebase.messaging();
 
 messaging.onBackgroundMessage((payload) => {
   console.log('[firebase-messaging-sw.js] Received background message ', payload);
-
-  const notificationTitle = payload.notification?.title || 'RedChat';
+  // Eğer payload.notification varsa, Firebase SDK bunu otomatik olarak gösterir.
+  // Çift bildirim olmaması için burada tekrar showNotification ÇAĞIRMIYORUZ!
+  if (payload.notification) {
+    return;
+  }
+  
+  const notificationTitle = payload.data?.title || 'RedChat';
   const notificationOptions = {
-    body: payload.notification?.body,
-    icon: '/icon.png', // Eğer public içinde iconunuz varsa yolunu belirtin
+    body: payload.data?.body,
+    icon: '/icon.png',
     badge: '/icon.png',
     data: payload.data
   };

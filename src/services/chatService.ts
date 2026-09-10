@@ -929,12 +929,21 @@ export async function sendMessage(
       const otherParticipantIds = (conversationData.participantIds || []).filter((uid) => uid !== sender.uid);
       
       const senderName = sender.displayName || sender.username || "Bir kullanıcı";
-      let notifTitle = "🔴 RedChat";
-      let notifBody = `${senderName} sana yeni bir mesaj gönderdi.`;
+      let notifTitle = senderName;
+      let notifBody = "";
+
+      if (hasImage && cleanText) {
+        notifBody = `📷 Fotoğraf: ${cleanText.substring(0, 50)}`;
+      } else if (hasImage) {
+        notifBody = `📷 Fotoğraf gönderdi`;
+      } else {
+        notifBody = cleanText.substring(0, 100);
+      }
       
       if (conversationData.isGroup) {
         const groupName = conversationData.name || "Grup";
-        notifBody = `${senderName} — ${groupName} grubunda yeni mesaj.`;
+        notifTitle = groupName;
+        notifBody = `${senderName}: ${notifBody}`;
       }
       
       // Push gönderimi (hata olsa bile mesajı durdurmaz)
@@ -953,10 +962,19 @@ export async function sendMessage(
       const recipientUid = uid1 === sender.uid ? uid2 : uid1;
       if (recipientUid) {
         const senderName = sender.displayName || sender.username || "Bir kullanıcı";
+        let notifBody = "";
+        if (hasImage && cleanText) {
+          notifBody = `📷 Fotoğraf: ${cleanText.substring(0, 50)}`;
+        } else if (hasImage) {
+          notifBody = `📷 Fotoğraf gönderdi`;
+        } else {
+          notifBody = cleanText.substring(0, 100);
+        }
+        
         sendPushNotification({
           receiverIds: [recipientUid],
-          title: "🔴 RedChat",
-          body: `${senderName} sana yeni bir mesaj gönderdi.`,
+          title: senderName,
+          body: notifBody,
           data: {
             conversationId: conversationId,
             type: "chat_message"
