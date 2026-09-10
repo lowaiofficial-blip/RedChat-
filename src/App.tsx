@@ -260,6 +260,14 @@ export default function App() {
     setShowNotifBanner(false);
   };
 
+  // Arka planda otomatik FCM token senkronizasyonu
+  useEffect(() => {
+    if (currentUserProfile && 'Notification' in window && Notification.permission === 'granted') {
+      // Zaten izin verilmişse, sessizce token alıp Firestore'a kaydet
+      requestNotificationPermissionAndToken(currentUserProfile.uid).catch(console.error);
+    }
+  }, [currentUserProfile]);
+
   if (authLoading) {
     return (
       <div className="h-screen w-screen flex items-center justify-center bg-zinc-50 dark:bg-zinc-950">
