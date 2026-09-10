@@ -27,8 +27,11 @@ import {
   Sparkles,
   Bot,
   Bell,
-  BellOff
+  BellOff,
+  Book
 } from 'lucide-react';
+
+import { MemoryModal } from './MemoryModal';
 
 interface ProfileModalProps {
   user: UserProfile;
@@ -48,6 +51,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   badgeUrl,
 }) => {
   const [activeTab, setActiveTab] = useState<'profile' | 'settings'>(initialTab);
+  const [showMemory, setShowMemory] = useState(false);
   const [editing, setEditing] = useState(false);
   const [displayName, setDisplayName] = useState(user.displayName || user.username);
   const [bio, setBio] = useState(user.bio || '');
@@ -619,6 +623,16 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
               <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800">
                 <button
+                  onClick={() => setShowMemory(true)}
+                  className="w-full py-2.5 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 rounded-xl transition-colors flex items-center justify-between cursor-pointer mb-2 border border-red-100 dark:border-red-500/20"
+                >
+                  <span className="flex items-center gap-2">
+                    <Book className="w-3.5 h-3.5 text-red-500" /> RedChat AI Belleği
+                  </span>
+                  <span className="text-zinc-400">›</span>
+                </button>
+
+                <button
                   onClick={() => {
                     setActiveTab('profile');
                     setEditing(true);
@@ -646,6 +660,12 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
           )}
         </div>
       </div>
+
+      {/* Bellek Modal */}
+      {showMemory && (
+        <MemoryModal userId={user.uid} onClose={() => setShowMemory(false)} />
+      )}
+
 
       {/* 🔴 REDCHAT ÖZEL PROFİL FOTOĞRAFI ONAY & YÜKLEME MODALI */}
       {showConfirmModal && previewUrl && (

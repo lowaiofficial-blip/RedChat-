@@ -59,6 +59,11 @@ service cloud.firestore {
         // Diğer kullanıcılar bu tokenları göremez ve değiştiremez
         allow read, write: if isAuthenticated() && isOwner(userId);
       }
+
+      // 📖 KULLANICI BELLEĞİ (MEMORIES)
+      match /memories/{memoryId} {
+        allow read, write: if isAuthenticated() && isOwner(userId);
+      }
     }
     
     // =========================================================================

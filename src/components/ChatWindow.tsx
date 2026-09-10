@@ -579,7 +579,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               ? textToSend.replace(/@RedChat\s+AI|@redchat_ai|@RedChatAI/gi, '').trim() || textToSend
               : textToSend;
 
-            const aiResponseText = await requestAIChatResponse(cleanPrompt, messages);
+            const aiResponseText = await requestAIChatResponse(cleanPrompt, messages, currentUser.uid);
 
             // AI mesajını Firestore sohbetine kaydet ve daktilo/streaming efektini başlat
             const aiMsgId = await sendMessage(conversation.id, aiProfile, aiResponseText, null, null);

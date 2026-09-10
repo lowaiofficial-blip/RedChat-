@@ -234,7 +234,7 @@ async function startServer() {
   // 🤖 REDCHAT AI SERVER-SIDE ENDPOINT (GPT-OSS 120B / Groq / Fallback AI)
   app.post("/api/ai/chat", async (req, res) => {
     try {
-      const { messages, userMessage } = req.body;
+      const { messages, userMessage, userId } = req.body;
 
       if (!userMessage && (!messages || messages.length === 0)) {
         return res.status(400).json({ error: "Mesaj içeriği eksik." });
@@ -243,8 +243,26 @@ async function startServer() {
       const groqApiKey = process.env.GROQ_API_KEY?.trim();
       const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
 
+      // Kullanıcının mevcut bellek verilerini çek
+      let memoriesText = "";
+      if (userId) {
+        try {
+          const db = getFirestore();
+          const memorySnap = await db.collection(`users/${userId}/memories`).get();
+          const memories: string[] = [];
+          memorySnap.forEach(doc => {
+            const data = doc.data();
+            if (data.text) memories.push(data.text);
+          });
+          if (memories.length > 0) {
+            memoriesText = `\n\n[KULLANICI BELLEĞİ (HATIRLAMAN GEREKENLER)]:\nKullanıcı hakkında önceden kaydettiğin bilgiler şunlardır:\n- ${memories.join('\n- ')}\n`;
+          }
+        } catch (err) {
+          console.error("Bellek okuma hatası:", err);
+        }
+      }
+
       // 🛡️ Model İsmi Sanitizasyon Fonksiyonu:
-      // Kesinlikle 'GPT-4', 'GPT-OSS', 'OpenAI', 'Gemini' veya 'Llama' isimlerini sızdırmaz, daima 'Flash Lite 1.0' yapar.
       const sanitizeAIResponse = (raw: string): string => {
         if (!raw) return raw;
         return raw
@@ -263,8 +281,44 @@ async function startServer() {
 2. ASLA 'GPT-4', 'GPT-OSS', 'GPT-OSS 120B', 'OpenAI', 'Gemini' veya 'Llama' isimlerini kullanma. Bu isimleri anmak veya kendi modelin olarak iddia etmek KESİNLİKLE YASAKTIR.
 3. Modelin sorulduğunda yanıtın daima şu şekilde olmalıdır: "Ben RedChat AI'yım ve **Flash Lite 1.0** modeli üzerine inşa edildim. Türkçe olarak samimi, net ve yardımcı yanıtlar vermek üzere özel olarak yapılandırıldım. Başka merak ettiğin bir şey olursa sormaktan çekinme! 😊"
 4. Kullanıcılara samimi, akıllı, net, yardımsever ve Türkçe olarak yanıt verirsin.
-5. Markdown biçimlendirmelerini (kalın metinler, tablolar, listeler, kod blokları) zengin ve düzgün şekilde kullan.
-6. Asla sahte bir insan olduğunu iddia etme; RedChat platformunun resmi AI asistanı olduğunu bil.`;
+5. Markdown biçimlendirmelerini zengin ve düzgün şekilde kullan.
+6. Asla sahte bir insan olduğunu iddia etme; RedChat platformunun resmi AI asistanı olduğunu bil.
+
+[BELLEK ÖZELLİĞİ - ÇOK ÖNEMLİ]:
+Kullanıcı senden bir bilgiyi belleğine kaydetmeni, hatırlamanı veya unutmamanı açıkça isterse (örneğin: "Benim en sevdiğim oyun Brawl Stars, bunu bellekte tut"), bu bilgiyi kalıcı belleğe kaydetmelisin.
+Bunu yapmak için yanıtının en sonuna tam olarak şu özel etiketi ekle: [BELLEK_KAYDET: kaydedilecek bilgi]
+Örnek:
+Kullanıcı: "Benim en sevdiğim oyun Brawl Stars, bunu bellekte tut."
+Sen: "En sevdiğim oyunun Brawl Stars olduğunu belleğime kaydettim! Başka ne hakkında konuşmak istersin? [BELLEK_KAYDET: En sevdiği oyun Brawl Stars]"
+Eğer kullanıcı açıkça bir şey kaydetmeni İSTEMEDİYSE, kendi kafana göre bu etiketi ASLA KULLANMA.${memoriesText}`;
+
+      // Bellek kaydetme işlemini ayıklayan ve Firestore'a yazan fonksiyon
+      const processAIResponse = async (responseText: string): Promise<string> => {
+        let finalResponse = sanitizeAIResponse(responseText);
+        
+        // [BELLEK_KAYDET: X] etiketini ara
+        const memoryMatch = finalResponse.match(/\[BELLEK_KAYDET:\s*(.*?)\]/i);
+        if (memoryMatch && userId) {
+          const memoryTextToSave = memoryMatch[1].trim();
+          if (memoryTextToSave) {
+            try {
+              const db = getFirestore();
+              await db.collection(`users/${userId}/memories`).add({
+                text: memoryTextToSave,
+                createdAt: new Date(),
+                updatedAt: new Date()
+              });
+            } catch (err) {
+              console.error("Bellek kaydetme hatası:", err);
+            }
+          }
+          // Etiketi metinden sil ve yerine mesajın başına bilgilendirme ekle
+          finalResponse = finalResponse.replace(/\[BELLEK_KAYDET:\s*(.*?)\]/i, '').trim();
+          finalResponse = `📖 **Belleğe Kaydedildi**\n\n${finalResponse}`;
+        }
+        
+        return finalResponse;
+      };
 
       // Eğer kullanıcı doğrudan modelini soruyorsa kesin ve hatasız doğrudan yanıt ver
       const isModelQuestion = userMessage && /^(modelin(\s+ne|\s+nedir|\s+hangisi)?|sen\s+hangi\s+modelsin|hangi\s+modelsin|hangi\s+modeli\s+kullan[ıi]yorsun|sen\s+kimsin|modelini\s+s[öo]yle)\??$/i.test(userMessage.trim());
@@ -275,7 +329,7 @@ async function startServer() {
         });
       }
 
-      // 1. ÖNCELİK: Groq API (GPT-OSS 120B / openai/gpt-oss-120b veya llama-3.3-70b-versatile)
+      // 1. ÖNCELİK: Groq API
       if (groqApiKey) {
         try {
           const chatHistory = Array.isArray(messages) ? messages.slice(-10) : [];
@@ -292,7 +346,6 @@ async function startServer() {
             groqMessages.push({ role: "user", content: userMessage });
           }
 
-          // Groq modellerini dene: 'openai/gpt-oss-120b', 'gpt-oss-120b', 'llama-3.3-70b-versatile'
           const candidateModels = ["openai/gpt-oss-120b", "gpt-oss-120b", "llama-3.3-70b-versatile"];
           let aiTextResponse: string | null = null;
           let lastGroqError: any = null;
@@ -330,7 +383,8 @@ async function startServer() {
           }
 
           if (aiTextResponse) {
-            return res.json({ text: sanitizeAIResponse(aiTextResponse), provider: "groq" });
+            const finalProcessedText = await processAIResponse(aiTextResponse);
+            return res.json({ text: finalProcessedText, provider: "groq" });
           } else {
             console.warn("Groq API denemeleri başarısız oldu:", lastGroqError);
           }
@@ -339,7 +393,7 @@ async function startServer() {
         }
       }
 
-      // 2. OPSİYONEL YEDEK: Gemini API (Yalnızca ortamda GEMINI_API_KEY tanımlıysa devreye girer)
+      // 2. OPSİYONEL YEDEK: Gemini API
       if (geminiApiKey) {
         try {
           const { GoogleGenAI } = await import("@google/genai");
@@ -361,7 +415,8 @@ async function startServer() {
           });
 
           if (response?.text) {
-            return res.json({ text: sanitizeAIResponse(response.text), provider: "gemini" });
+            const finalProcessedText = await processAIResponse(response.text);
+            return res.json({ text: finalProcessedText, provider: "gemini" });
           }
         } catch (geminiErr) {
           console.warn("Gemini çağrısı başarısız oldu (opsiyonel):", geminiErr);

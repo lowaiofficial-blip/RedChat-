@@ -49,7 +49,8 @@ export function isRedChatAI(userOrUid?: UserProfile | string | null): boolean {
  */
 export async function requestAIChatResponse(
   userMessage: string,
-  chatHistory: ChatMessage[] = []
+  chatHistory: ChatMessage[] = [],
+  userId?: string
 ): Promise<string> {
   const cleanMessage = userMessage.trim();
   if (!cleanMessage) {
@@ -72,6 +73,7 @@ export async function requestAIChatResponse(
       body: JSON.stringify({
         userMessage: cleanMessage,
         messages: formattedHistory,
+        userId
       }),
     });
 
