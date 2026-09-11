@@ -162,7 +162,8 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
   }, [isActivelyStreaming, displayedLength, fullText, msg.id, onFinishStreaming]);
 
   const isThinking = propIsThinking !== undefined ? propIsThinking : Boolean(msg.isThinking);
-  const isDoneStreaming = !isActivelyStreaming && liveText === undefined;
+  const isMessageStreaming = Boolean(isStreaming || msg.isStreaming || liveText !== undefined || isActivelyStreaming);
+  const isDoneStreaming = !isMessageStreaming;
   const currentText = liveText !== undefined
     ? liveText
     : (msg.isStreaming ? fullText : (isActivelyStreaming ? fullText.slice(0, displayedLength) : fullText));

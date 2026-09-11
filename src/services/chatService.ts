@@ -1150,6 +1150,31 @@ export async function editMessage(
 }
 
 /**
+ * Yapay zeka yanıt üretirken (streaming) Firestore'daki mesajı gerçek zamanlı günceller.
+ * Böylece gruptaki veya sohbetteki diğer kullanıcılar "Düşünüyorum..." durumunda takılı kalmaz,
+ * akışı anlık ve canlı olarak izleyebilir.
+ */
+export async function updateAIMessageStream(
+  conversationId: string,
+  messageId: string,
+  text: string,
+  options?: { isThinking?: boolean; isStreaming?: boolean }
+): Promise<void> {
+  if (!db || !conversationId || !messageId) return;
+  try {
+    const messageDocRef = doc(db, 'conversations', conversationId, 'messages', messageId);
+    const updates: Record<string, any> = {
+      text: text,
+    };
+    if (options?.isThinking !== undefined) updates.isThinking = options.isThinking;
+    if (options?.isStreaming !== undefined) updates.isStreaming = options.isStreaming;
+    await updateDoc(messageDocRef, updates);
+  } catch (err) {
+    console.warn('updateAIMessageStream hatası:', err);
+  }
+}
+
+/**
  * Kullanıcının kendi gönderdiği mesajı silmesi.
  */
 export async function deleteMessage(

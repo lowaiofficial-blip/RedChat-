@@ -342,6 +342,7 @@ Eğer kullanıcı açıkça bir şey kaydetmeni İSTEMEDİYSE, kendi kafana gör
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
+      res.flushHeaders();
 
       if (isModelQuestion) {
         const directReply = "Ben RedChat AI'yım. Türkçe olarak samimi, net ve yardımcı yanıtlar vermek üzere özel olarak yapılandırıldım. Size nasıl yardımcı olabilirim? 😊";
@@ -368,10 +369,8 @@ Eğer kullanıcı açıkça bir şey kaydetmeni İSTEMEDİYSE, kendi kafana gör
 
       const candidateModels = [
         "qwen/qwen3.8-27b",
-        "openai/gpt-oss-120b",
         "groq/compound",
-        "qwen/qwen3.6-27b",
-        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
       ];
       let streamedSuccess = false;
       let fullAccumulatedResponse = "";
@@ -525,10 +524,8 @@ Eğer kullanıcı açıkça bir şey kaydetmeni İSTEMEDİYSE, kendi kafana gör
 
           const candidateModels = [
             "qwen/qwen3.8-27b",
-            "openai/gpt-oss-120b",
             "groq/compound",
-            "qwen/qwen3.6-27b",
-            "openai/gpt-oss-20b",
+            "openai/gpt-oss-120b",
           ];
           let aiTextResponse: string | null = null;
 

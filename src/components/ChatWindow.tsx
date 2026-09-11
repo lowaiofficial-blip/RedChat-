@@ -5,6 +5,7 @@ import {
   sendMessage,
   markMessagesAsRead,
   editMessage,
+  updateAIMessageStream,
   deleteMessage,
   toggleMessageReaction,
   formatLastSeen,
@@ -589,6 +590,54 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           const aiProfile = getRedChatAIProfile(aiPhoto);
           
           let aiMsgId: string | null = null;
+          let firestoreSyncTimeout: any = null;
+          let lastFirestoreSync = 0;
+          let hasSyncedFirstChunk = false;
+          let latestStreamedText = '';
+
+          const performFirestoreSync = async (text: string, isStreamingVal: boolean, isThinkingVal: boolean) => {
+            if (!aiMsgId) return;
+            try {
+              await updateAIMessageStream(conversation.id, aiMsgId, text, {
+                isThinking: isThinkingVal,
+                isStreaming: isStreamingVal,
+              });
+            } catch (err) {
+              console.warn('Firestore akış senkronizasyon hatası:', err);
+            }
+          };
+
+          const queueFirestoreSync = (text: string) => {
+            latestStreamedText = text;
+            const now = Date.now();
+
+            // İlk parça geldiğinde HEMEN Firestore'a aktar
+            // Böylece gruptaki diğer kişiler anında "Düşünüyorum..." durumundan çıkar ve metni görür!
+            if (!hasSyncedFirstChunk) {
+              hasSyncedFirstChunk = true;
+              lastFirestoreSync = now;
+              performFirestoreSync(text, true, false);
+              return;
+            }
+
+            // Sonraki parçaları 350ms aralıklarla Firestore'a yaz (akıcı ve kota dostu)
+            if (now - lastFirestoreSync >= 350) {
+              lastFirestoreSync = now;
+              if (firestoreSyncTimeout) {
+                clearTimeout(firestoreSyncTimeout);
+                firestoreSyncTimeout = null;
+              }
+              performFirestoreSync(text, true, false);
+            } else if (!firestoreSyncTimeout) {
+              const delay = Math.max(50, 350 - (now - lastFirestoreSync));
+              firestoreSyncTimeout = setTimeout(() => {
+                firestoreSyncTimeout = null;
+                lastFirestoreSync = Date.now();
+                performFirestoreSync(latestStreamedText, true, false);
+              }, delay);
+            }
+          };
+
           try {
             aiMsgId = await sendMessage(conversation.id, aiProfile, '', null, null, { isThinking: true, isStreaming: true });
             
@@ -596,12 +645,6 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               if (aiTypewriterRef.current.timeoutId) {
                 clearTimeout(aiTypewriterRef.current.timeoutId);
               }
-              aiTypewriterRef.current = {
-                targetText: '',
-                displayedText: '',
-                isFinished: false,
-                timeoutId: null,
-              };
               setActiveAiStream({
                 messageId: aiMsgId,
                 text: '',
@@ -615,90 +658,27 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
             const targetMsgId = aiMsgId;
 
-            // ⚡ Kısa, orta ve uzun metinlere özel dinamik daktilo akış motoru
-            let onCompleteCallback: ((final: string) => void) | null = null;
-            const stepTypewriter = () => {
-              if (!targetMsgId) return;
-              const ref = aiTypewriterRef.current;
-
-              if (ref.displayedText.length < ref.targetText.length) {
-                const totalTargetLength = ref.targetText.length;
-                const diff = totalTargetLength - ref.displayedText.length;
-
-                let step = 1;
-                let dynamicSpeed = 20;
-
-                if (totalTargetLength < 100) {
-                  // 🟢 Kısa Metin (< 100 karakter): Tane tane, ritmik ve canlı daktilo akışı (24ms - 38ms)
-                  step = 1;
-                  dynamicSpeed = Math.floor(Math.random() * 15) + 24;
-                } else if (totalTargetLength <= 450) {
-                  // 🟡 Orta Metin (100 - 450 karakter): Dengeli, doğal konuşma/okuma temposu (14ms - 24ms)
-                  step = diff > 60 ? 2 : 1;
-                  dynamicSpeed = Math.floor(Math.random() * 11) + 14;
-                } else {
-                  // 🔴 Uzun Metin (> 450 karakter): Yüksek tempolu, seri ve bekleme süresini optimize eden akış (6ms - 14ms)
-                  step = diff > 200 ? 5 : diff > 100 ? 4 : diff > 40 ? 3 : 2;
-                  dynamicSpeed = Math.floor(Math.random() * 9) + 6;
-                }
-
-                const nextIndex = Math.min(ref.targetText.length, ref.displayedText.length + step);
-                const nextChar = ref.targetText.charAt(nextIndex - 1);
-                ref.displayedText = ref.targetText.slice(0, nextIndex);
-
-                setActiveAiStream({
-                  messageId: targetMsgId,
-                  text: ref.displayedText,
-                  isThinking: false,
-                });
-
-                // Noktalama işaretlerinde hafif mikro-duraksama (kısa ve orta metinlerde)
-                if (totalTargetLength <= 450 && (nextChar === '.' || nextChar === '?' || nextChar === '!' || nextChar === '\n')) {
-                  dynamicSpeed += 25;
-                }
-
-                ref.timeoutId = setTimeout(stepTypewriter, dynamicSpeed);
-              } else if (ref.isFinished) {
-                ref.timeoutId = null;
-                if (onCompleteCallback) {
-                  onCompleteCallback(ref.targetText);
-                }
-              } else {
-                ref.timeoutId = null;
-              }
-            };
-
-            const triggerTyping = () => {
-              if (!aiTypewriterRef.current.timeoutId) {
-                stepTypewriter();
-              }
-            };
-
-            const streamCompletionPromise = new Promise<string>((resolve) => {
-              onCompleteCallback = resolve;
-            });
-
-            requestAIChatStream(
+            // ⚡ Yüksek hızlı ve anlık gerçek zamanlı akış (SSE akışı doğrudan ekrana yansıtılır)
+            const finalAiResponse = await requestAIChatStream(
               cleanPrompt,
               messages,
               currentUser.uid,
               (chunkText) => {
-                aiTypewriterRef.current.targetText = chunkText;
-                triggerTyping();
+                if (targetMsgId) {
+                  setActiveAiStream({
+                    messageId: targetMsgId,
+                    text: chunkText,
+                    isThinking: false,
+                  });
+                  queueFirestoreSync(chunkText);
+                }
               }
-            ).then((finalText) => {
-              aiTypewriterRef.current.targetText = finalText;
-              aiTypewriterRef.current.isFinished = true;
-              triggerTyping();
-            }).catch((streamErr) => {
-              console.warn('Yapay zeka akış hatası:', streamErr);
-              const safeFallback = "Merhaba! Size yardımcı olmaktan memnuniyet duyarım. Nasıl yardımcı olabilirim? 😊";
-              aiTypewriterRef.current.targetText = safeFallback;
-              aiTypewriterRef.current.isFinished = true;
-              triggerTyping();
-            });
+            );
 
-            const finalAiResponse = await streamCompletionPromise;
+            if (firestoreSyncTimeout) {
+              clearTimeout(firestoreSyncTimeout);
+              firestoreSyncTimeout = null;
+            }
 
             if (aiMsgId) {
               let processedFinal = finalAiResponse;
@@ -716,8 +696,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             }
           } catch (aiErr: any) {
             console.error('RedChat AI yanıt hatası:', aiErr);
-            if (aiTypewriterRef.current.timeoutId) {
-              clearTimeout(aiTypewriterRef.current.timeoutId);
+            if (firestoreSyncTimeout) {
+              clearTimeout(firestoreSyncTimeout);
+              firestoreSyncTimeout = null;
             }
             setActiveAiStream(null);
             if (aiMsgId) {
@@ -1134,7 +1115,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 senderUsername={senderUsername}
                 senderPhotoURL={senderPhotoURL}
                 isHoveredReaction={hoveredReactionMessageId === msg.id}
-                isStreaming={activeAiStream?.messageId === msg.id ? true : msg.id === streamingMessageId}
+                isStreaming={activeAiStream?.messageId === msg.id ? true : Boolean(msg.isStreaming || msg.id === streamingMessageId)}
                 isThinking={activeAiStream?.messageId === msg.id ? activeAiStream.isThinking : Boolean(msg.isThinking)}
                 liveText={activeAiStream?.messageId === msg.id ? activeAiStream.text : undefined}
                 onFinishStreaming={(id) => setStreamingMessageId((curr) => (curr === id ? null : curr))}
