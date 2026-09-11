@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { User } from 'firebase/auth';
-import type { UserProfile, Conversation, AppSettings, GroupedNotificationData, GroupedNotificationMessage } from './types';
+import type { UserProfile, Conversation, AppSettings, GroupedNotificationData, GroupedNotificationMessage, Channel } from './types';
 import {
   subscribeToAuthState,
   subscribeToUserProfile,
@@ -13,6 +13,14 @@ import {
   getOrCreateDirectConversation,
   getGroupedUnreadMessages,
 } from './services/chatService';
+import {
+  subscribeToChannels,
+  subscribeToUserFollowingChannels,
+  checkIsChannelOwner,
+  followChannel,
+  unfollowChannel,
+  ensureOfficialRedChatChannel,
+} from './services/channelService';
 import { subscribeToAppSettings, ADMIN_EMAILS } from './services/adminService';
 import { setupForegroundListener, requestNotificationPermissionAndToken } from './services/messagingService';
 import { db } from './services/firebase';
@@ -24,10 +32,13 @@ import { ChatSidebar } from './components/ChatSidebar';
 import { ChatWindow } from './components/ChatWindow';
 import { ProfileModal } from './components/ProfileModal';
 import { CreateGroupModal } from './components/CreateGroupModal';
+import { CreateChannelModal } from './components/CreateChannelModal';
+import { ChannelManageModal } from './components/ChannelManageModal';
+import { ChannelView } from './components/ChannelView';
 import { AdminPanel } from './components/AdminPanel';
 import { BannedScreen } from './components/BannedScreen';
 import { WhatsAppNotificationBanner } from './components/WhatsAppNotificationBanner';
-import { Loader2, Bell, X } from 'lucide-react';
+import { Loader2, Bell, X, Radio } from 'lucide-react';
 
 export default function App() {
   const [currentUserAuth, setCurrentUserAuth] = useState<User | null>(null);
@@ -35,6 +46,14 @@ export default function App() {
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+
+  // 📢 Kanallar State'i
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [followingChannelIds, setFollowingChannelIds] = useState<string[]>([]);
+  const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
+  const [isCurrentChannelOwner, setIsCurrentChannelOwner] = useState<boolean>(false);
+  const [showCreateChannelModal, setShowCreateChannelModal] = useState<boolean>(false);
+  const [managingChannel, setManagingChannel] = useState<Channel | null>(null);
   const [inspectingUser, setInspectingUser] = useState<UserProfile | null>(null);
   const [modalTab, setModalTab] = useState<'profile' | 'settings'>('profile');
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
@@ -120,6 +139,62 @@ export default function App() {
 
     return () => unsubscribeUsers();
   }, [currentUserAuth]);
+
+  // 3b. 📢 Realtime Channels & Following Listener
+  useEffect(() => {
+    if (!currentUserAuth) return;
+
+    const unsubscribeChannels = subscribeToChannels((chs) => {
+      setChannels(chs);
+    });
+
+    const unsubscribeFollowing = subscribeToUserFollowingChannels(
+      currentUserAuth.uid,
+      (followingIds) => {
+        setFollowingChannelIds(followingIds);
+      }
+    );
+
+    return () => {
+      unsubscribeChannels();
+      unsubscribeFollowing();
+    };
+  }, [currentUserAuth]);
+
+  // 3c. 👑 Aktif Kanal Kuruculuk Kontrolü (Owner Check)
+  const isUserAnAdmin = Boolean(
+    currentUserProfile &&
+      (currentUserProfile.role === 'admin' ||
+        (currentUserAuth?.email
+          ? ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(currentUserAuth.email.toLowerCase())
+          : false))
+  );
+
+  useEffect(() => {
+    let isMounted = true;
+    if (!activeChannelId || !currentUserProfile) {
+      setIsCurrentChannelOwner(false);
+      return;
+    }
+
+    if (isUserAnAdmin) {
+      setIsCurrentChannelOwner(true);
+      return;
+    }
+
+    checkIsChannelOwner(activeChannelId, currentUserProfile.uid, isUserAnAdmin)
+      .then((isOwner) => {
+        if (isMounted) setIsCurrentChannelOwner(isOwner);
+      })
+      .catch((err) => {
+        console.error('Kanal sahiplik kontrolü hatası:', err);
+        if (isMounted) setIsCurrentChannelOwner(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [activeChannelId, currentUserProfile, isUserAnAdmin]);
 
   // Aktif sohbet açıldığında, o sohbete ait açık bildirimi otomatik kapat
   useEffect(() => {
@@ -502,51 +577,137 @@ export default function App() {
         </div>
       )}
       {/* SOL PANEL (Sidebar) */}
-      <div
-        className={`w-full md:w-auto h-full ${
-          activeConversationId ? 'hidden md:flex' : 'flex'
-        }`}
-      >
-        <ChatSidebar
-          currentUser={currentUserProfile}
-          conversations={conversations}
-          users={displayedUsers}
-          activeConversationId={activeConversationId}
-          badgeUrl={appSettings?.verifiedBadgeUrl}
-          aiProfilePhotoUrl={appSettings?.aiProfilePhotoUrl}
-          onSelectConversation={(id) => setActiveConversationId(id)}
-          onSelectUser={handleSelectUser}
-          onOpenProfile={(u, tab = 'profile') => {
-            setInspectingUser(u);
-            setModalTab(tab);
-          }}
-          onCreateGroup={() => setShowCreateGroupModal(true)}
-          onLogout={logoutUser}
-          onOpenAdmin={() => {
-            window.location.hash = '#/admin';
-          }}
-        />
-      </div>
+      {(() => {
+        const isDetailOpen = Boolean(activeConversationId || activeChannelId);
+        const activeChannel = channels.find((c) => c.id === activeChannelId) || null;
 
-      {/* SAĞ PANEL (Chat Window) */}
-      <div
-        className={`w-full md:flex-1 h-full min-w-0 max-w-full overflow-hidden ${
-          !activeConversationId ? 'hidden md:flex' : 'flex'
-        }`}
-      >
-        <ChatWindow
-          conversation={activeConversation}
+        return (
+          <>
+            <div
+              className={`w-full md:w-auto h-full ${
+                isDetailOpen ? 'hidden md:flex' : 'flex'
+              }`}
+            >
+              <ChatSidebar
+                currentUser={currentUserProfile}
+                conversations={conversations}
+                users={displayedUsers}
+                channels={channels}
+                activeConversationId={activeConversationId}
+                activeChannelId={activeChannelId}
+                followingChannelIds={followingChannelIds}
+                badgeUrl={appSettings?.verifiedBadgeUrl}
+                aiProfilePhotoUrl={appSettings?.aiProfilePhotoUrl}
+                onSelectConversation={(id) => {
+                  setActiveConversationId(id);
+                  setActiveChannelId(null);
+                }}
+                onSelectChannel={(chId) => {
+                  setActiveChannelId(chId);
+                  setActiveConversationId(null);
+                }}
+                onCreateChannel={() => setShowCreateChannelModal(true)}
+                onSelectUser={handleSelectUser}
+                onOpenProfile={(u, tab = 'profile') => {
+                  setInspectingUser(u);
+                  setModalTab(tab);
+                }}
+                onCreateGroup={() => setShowCreateGroupModal(true)}
+                onLogout={logoutUser}
+                onOpenAdmin={() => {
+                  window.location.hash = '#/admin';
+                }}
+              />
+            </div>
+
+            {/* SAĞ PANEL (Chat Window veya Channel View) */}
+            <div
+              className={`w-full md:flex-1 h-full min-w-0 max-w-full overflow-hidden ${
+                !isDetailOpen ? 'hidden md:flex' : 'flex'
+              }`}
+            >
+              {activeChannelId && activeChannel ? (
+                <ChannelView
+                  channel={activeChannel}
+                  currentUser={currentUserProfile}
+                  isOwner={isCurrentChannelOwner}
+                  isAdmin={isUserAnAdmin}
+                  isFollowing={followingChannelIds.includes(activeChannel.id)}
+                  onBack={() => setActiveChannelId(null)}
+                  onFollowToggle={async (channelId, follow) => {
+                    if (follow) {
+                      await followChannel(channelId, currentUserProfile);
+                    } else {
+                      await unfollowChannel(channelId, currentUserProfile.uid);
+                    }
+                  }}
+                  onOpenManage={(ch) => setManagingChannel(ch)}
+                  onDeleteSuccess={() => {
+                    setActiveChannelId(null);
+                  }}
+                />
+              ) : activeConversationId ? (
+                <ChatWindow
+                  conversation={activeConversation}
+                  currentUser={currentUserProfile}
+                  allUsers={displayedUsers}
+                  badgeUrl={appSettings?.verifiedBadgeUrl}
+                  aiProfilePhotoUrl={appSettings?.aiProfilePhotoUrl}
+                  onBack={() => setActiveConversationId(null)}
+                  onOpenProfile={(u) => {
+                    setInspectingUser(u);
+                    setModalTab('profile');
+                  }}
+                />
+              ) : (
+                <div className="hidden md:flex flex-col items-center justify-center w-full h-full bg-zinc-50/50 dark:bg-zinc-900/50 text-zinc-400 p-8 text-center">
+                  <div className="w-16 h-16 rounded-3xl bg-red-100/80 dark:bg-red-950/40 text-red-600 flex items-center justify-center mb-4 shadow-sm">
+                    <Radio className="w-8 h-8" />
+                  </div>
+                  <h3 className="text-base font-bold text-zinc-800 dark:text-zinc-200">
+                    RedChat Sohbet ve Kanallar
+                  </h3>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400 max-w-sm mt-1.5 leading-relaxed">
+                    Sohbet etmek için soldaki listeden bir konuşma seçin veya güncellemeleri takip etmek için kanallara göz atın.
+                  </p>
+                </div>
+              )}
+            </div>
+          </>
+        );
+      })()}
+
+      {/* 📢 Kanal Oluşturma Modalı */}
+      {showCreateChannelModal && currentUserProfile && (
+        <CreateChannelModal
           currentUser={currentUserProfile}
-          allUsers={displayedUsers}
-          badgeUrl={appSettings?.verifiedBadgeUrl}
-          aiProfilePhotoUrl={appSettings?.aiProfilePhotoUrl}
-          onBack={() => setActiveConversationId(null)}
-          onOpenProfile={(u) => {
-            setInspectingUser(u);
-            setModalTab('profile');
+          onClose={() => setShowCreateChannelModal(false)}
+          onChannelCreated={(newId) => {
+            setShowCreateChannelModal(false);
+            setActiveChannelId(newId);
+            setActiveConversationId(null);
           }}
         />
-      </div>
+      )}
+
+      {/* ⚙️ Kanal Yönetim ve Takipçi Modalı */}
+      {managingChannel && currentUserProfile && (
+        <ChannelManageModal
+          channel={managingChannel}
+          currentUser={currentUserProfile}
+          onClose={() => setManagingChannel(null)}
+          onChannelUpdated={(updated) => {
+            setChannels((prev) =>
+              prev.map((c) => (c.id === updated.id ? updated : c))
+            );
+            setManagingChannel(updated);
+          }}
+          onChannelDeleted={() => {
+            setManagingChannel(null);
+            setActiveChannelId(null);
+          }}
+        />
+      )}
 
       {/* 👥 Grup Oluşturma Modalı */}
       {showCreateGroupModal && currentUserProfile && (

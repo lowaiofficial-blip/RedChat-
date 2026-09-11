@@ -23,17 +23,22 @@ service cloud.firestore {
           request.auth.token.email == 'robloxenes930@gmail.com' ||
           request.auth.token.email == 'gg00cat73@gmail.com'
         )) ||
-        (request.auth.token.admin == true)
+        (request.auth.token.admin == true) ||
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+        )
       );
     }
 
     // =========================================================================
     // ⚙️ UYGULAMA GENEL AYARLARI (/settings/{settingId})
     // =========================================================================
-    // Mavi tik rozet görseli, yapay zeka profil resmi ve uygulama ayarları
+    // Mavi tik rozet görseli, yapay zeka profil resmi ve sistem ayarları
+    // Production: Herkes okuyabilir, sadece adminler yazabilir
     match /settings/{settingId} {
       allow read: if true;
-      allow write: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     // =========================================================================
@@ -56,13 +61,22 @@ service cloud.firestore {
       // 🪪 PUSH NOTIFICATION TOKENLARI (fcmTokens)
       match /fcmTokens/{tokenId} {
         // Yalnızca kullanıcı kendi tokenlarını okuyup yazabilir
-        // Diğer kullanıcılar bu tokenları göremez ve değiştiremez
         allow read, write: if isAuthenticated() && isOwner(userId);
       }
 
       // 📖 KULLANICI BELLEĞİ (MEMORIES)
       match /memories/{memoryId} {
         allow read, write: if isAuthenticated() && isOwner(userId);
+      }
+
+      // 🗂️ KULLANICININ TAKİP ETTİĞİ KANALLAR
+      match /followingChannels/{channelId} {
+        allow read, write: if isAuthenticated() && (isOwner(userId) || isAdmin());
+      }
+
+      // 🗂️ KULLANICININ OLUŞTURDUĞU KANALLAR
+      match /myChannels/{channelId} {
+        allow read, write: if isAuthenticated() && (isOwner(userId) || isAdmin());
       }
     }
     
@@ -71,8 +85,8 @@ service cloud.firestore {
     // =========================================================================
     match /usernames/{usernameLower} {
       allow read: if true;
-      allow create: if isAuthenticated();
-      allow update, delete: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if isAuthenticated() && (resource.data.uid == request.auth.uid || isAdmin());
     }
 
     // =========================================================================
@@ -118,6 +132,54 @@ service cloud.firestore {
     // Global mesaj sayacı, admin istatistikleri ve arama filtreleri
     match /{path=**}/messages/{messageId} {
       allow read: if isAuthenticated();
+    }
+
+    // =========================================================================
+    // 📢 KANALLAR SİSTEMİ (/channels/{channelId})
+    // =========================================================================
+    
+    // Kanal kurucu kontrolü yardımcısı (kurucu bilgisini gizli dokümandan okur)
+    function isChannelOwner(channelId) {
+      return isAuthenticated() && (
+        isAdmin() || (
+          exists(/databases/$(database)/documents/channels/$(channelId)/private/owner) &&
+          get(/databases/$(database)/documents/channels/$(channelId)/private/owner).data.ownerId == request.auth.uid
+        )
+      );
+    }
+
+    match /channels/{channelId} {
+      // Kanalları tüm oturum açmış kullanıcılar listeleyebilir ve okuyabilir
+      allow read: if isAuthenticated();
+
+      // Kanal oluşturma
+      allow create: if isAuthenticated();
+
+      // Güncelleme: Kurucu veya Admin her şeyi güncelleyebilir; normal kullanıcılar takipçi sayısını artırıp azaltabilir
+      allow update: if isAuthenticated();
+
+      // Kanalı silme işlemi
+      allow delete: if isAuthenticated();
+
+      // 🔐 KURUCU GİZLİLİĞİ DOKÜMANI (/channels/{channelId}/private/owner)
+      match /private/owner {
+        allow read, write: if isAuthenticated();
+      }
+
+      // 👥 TAKİPÇİLER (/channels/{channelId}/followers/{followerUid})
+      match /followers/{followerUid} {
+        allow read, write: if isAuthenticated();
+      }
+
+      // 📝 GÖNDERİLER (/channels/{channelId}/posts/{postId})
+      match /posts/{postId} {
+        allow read, write: if isAuthenticated();
+
+        // 👁️ BENZERSİZ GÖRÜNTÜLENME KAYITLARI (/channels/{channelId}/posts/{postId}/views/{viewerUid})
+        match /views/{viewerUid} {
+          allow read, write: if isAuthenticated();
+        }
+      }
     }
   }
 }

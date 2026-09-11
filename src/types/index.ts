@@ -121,3 +121,44 @@ export interface GroupedNotificationData {
   updatedAt: number;
 }
 
+// ==========================================
+// 📢 KANAL SİSTEMİ VERİ MODELLERİ (CHANNELS)
+// ==========================================
+
+export interface Channel {
+  id: string;
+  name: string;
+  description: string;
+  photoURL?: string | null;
+  isVerified?: boolean;
+  followerCount: number;
+  postCount?: number;
+  lastPostText?: string | null;
+  lastPostTimestamp?: any;
+  disabled?: boolean;
+  createdAt: any;
+  updatedAt?: any;
+}
+
+export interface ChannelPost {
+  id: string;
+  channelId: string;
+  text: string;
+  imageUrl?: string | null;
+  viewsCount: number;
+  createdAt: any;
+}
+
+export interface ChannelFollower {
+  uid: string;
+  displayName: string;
+  username: string;
+  photoURL: string | null;
+  followedAt: any;
+}
+
+export interface ChannelOwnerPrivate {
+  ownerId: string;
+  createdAt: any;
+}
+

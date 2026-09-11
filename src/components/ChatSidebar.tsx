@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import type { UserProfile, Conversation } from '../types';
+import type { UserProfile, Conversation, Channel } from '../types';
 import { formatLastSeen } from '../services/chatService';
 import { isUserAdmin } from '../services/adminService';
 import { UserAvatar } from './UserAvatar';
@@ -20,16 +20,28 @@ import {
   ShieldAlert,
   Bot,
   Sparkles,
+  Radio,
+  Plus,
+  Check,
+  Bell,
+  Star,
+  Clock,
+  BadgeCheck,
 } from 'lucide-react';
 
 interface ChatSidebarProps {
   currentUser: UserProfile;
   conversations: Conversation[];
   users: UserProfile[];
+  channels?: Channel[];
   activeConversationId: string | null;
+  activeChannelId?: string | null;
+  followingChannelIds?: string[];
   badgeUrl?: string | null;
   aiProfilePhotoUrl?: string | null;
   onSelectConversation: (conversationId: string) => void;
+  onSelectChannel?: (channelId: string) => void;
+  onCreateChannel?: () => void;
   onSelectUser: (user: UserProfile) => void;
   onOpenProfile: (user: UserProfile, tab?: 'profile' | 'settings') => void;
   onCreateGroup: () => void;
@@ -53,17 +65,23 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
   currentUser,
   conversations,
   users,
+  channels = [],
   activeConversationId,
+  activeChannelId,
+  followingChannelIds = [],
   badgeUrl,
   aiProfilePhotoUrl,
   onSelectConversation,
+  onSelectChannel,
+  onCreateChannel,
   onSelectUser,
   onOpenProfile,
   onCreateGroup,
   onLogout,
   onOpenAdmin,
 }) => {
-  const [activeTab, setActiveTab] = useState<'chats' | 'users'>('chats');
+  const [activeTab, setActiveTab] = useState<'chats' | 'channels' | 'users'>('chats');
+  const [channelFilter, setChannelFilter] = useState<'all' | 'popular' | 'new' | 'verified' | 'following'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [now, setNow] = useState<number>(Date.now());
@@ -161,6 +179,38 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
     });
   }, [conversations, currentUser.uid, searchQuery, users, activeConversationId]);
 
+  // 📢 Filtrelenmiş Kanallar Listesi
+  const filteredChannels = useMemo(() => {
+    let list = [...channels];
+
+    // 1. Arama filtresi
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (ch) =>
+          ch.name.toLowerCase().includes(q) ||
+          ch.description?.toLowerCase().includes(q)
+      );
+    }
+
+    // 2. Kategori filtresi
+    if (channelFilter === 'following') {
+      list = list.filter((ch) => followingChannelIds.includes(ch.id));
+    } else if (channelFilter === 'verified') {
+      list = list.filter((ch) => ch.isVerified);
+    } else if (channelFilter === 'popular') {
+      list.sort((a, b) => (b.followerCount || 0) - (a.followerCount || 0));
+    } else if (channelFilter === 'new') {
+      list.sort((a, b) => {
+        const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
+        const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+        return timeB - timeA;
+      });
+    }
+
+    return list;
+  }, [channels, searchQuery, channelFilter, followingChannelIds]);
+
   return (
     <aside className="relative w-full md:w-80 lg:w-96 flex flex-col h-full bg-white dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-800 flex-shrink-0">
       {/* Top Brand Header */}
@@ -214,43 +264,67 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Kullanıcı, grup veya mesaj ara"
+            placeholder={
+              activeTab === 'chats'
+                ? 'Sohbet veya grup ara...'
+                : activeTab === 'channels'
+                ? 'Kanal ara...'
+                : 'Kullanıcı ara...'
+            }
             className="w-full pl-10 pr-3.5 py-2 text-xs border border-zinc-200 dark:border-zinc-800 rounded-xl bg-zinc-50 dark:bg-zinc-800/60 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
           />
         </div>
       </div>
 
-      {/* Segment Tabs: Sohbetler vs Kullanıcılar */}
+      {/* Segment Tabs: Sohbetler vs Kanallar vs Kullanıcılar */}
       <div className="px-3 pb-2">
-        <div className="grid grid-cols-2 p-1 bg-zinc-100 dark:bg-zinc-800/80 rounded-xl text-xs font-semibold">
+        <div className="grid grid-cols-3 p-1 bg-zinc-100 dark:bg-zinc-800/80 rounded-xl text-xs font-semibold gap-0.5">
           <button
+            id="tab-chats"
             onClick={() => setActiveTab('chats')}
-            className={`py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+            className={`py-1.5 px-1 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer ${
               activeTab === 'chats'
                 ? 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs'
                 : 'text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300'
             }`}
           >
-            <MessageSquare className="w-3.5 h-3.5" />
-            <span>Sohbetler</span>
+            <MessageSquare className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">Sohbet</span>
             {totalUnreadCount > 0 ? (
-              <span className="px-1.5 py-0.2 rounded-full bg-red-600 text-white text-[9px] font-bold">
+              <span className="px-1.5 py-0.2 rounded-full bg-red-600 text-white text-[9px] font-bold shrink-0">
                 {totalUnreadCount > 99 ? '99+' : totalUnreadCount}
               </span>
             ) : (
-              <span className="text-zinc-400">({conversations.length})</span>
+              <span className="text-zinc-400 text-[10px] shrink-0">({conversations.length})</span>
             )}
           </button>
+
           <button
+            id="tab-channels"
+            onClick={() => setActiveTab('channels')}
+            className={`py-1.5 px-1 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer ${
+              activeTab === 'channels'
+                ? 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs'
+                : 'text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300'
+            }`}
+          >
+            <Radio className="w-3.5 h-3.5 shrink-0 text-red-600" />
+            <span className="truncate">Kanallar</span>
+            <span className="text-zinc-400 text-[10px] shrink-0">({channels.length})</span>
+          </button>
+
+          <button
+            id="tab-users"
             onClick={() => setActiveTab('users')}
-            className={`py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+            className={`py-1.5 px-1 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer ${
               activeTab === 'users'
                 ? 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs'
                 : 'text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-300'
             }`}
           >
-            <Users className="w-3.5 h-3.5" />
-            <span>Kullanıcılar ({otherUsers.length})</span>
+            <Users className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">Kişiler</span>
+            <span className="text-zinc-400 text-[10px] shrink-0">({otherUsers.length})</span>
           </button>
         </div>
       </div>
@@ -520,6 +594,170 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
               );
             })
           )
+        ) : activeTab === 'channels' ? (
+          // 📢 KANALLAR LİSTESİ (CHANNELS LIST)
+          <div className="flex flex-col h-full">
+            {/* Üstte + Kanal Oluştur ve Filtreler */}
+            <div className="p-3 bg-zinc-50 dark:bg-zinc-800/40 border-b border-zinc-100 dark:border-zinc-800 space-y-2.5">
+              <button
+                id="sidebar-create-channel-btn"
+                onClick={onCreateChannel}
+                className="w-full py-2 px-3 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md shadow-red-600/20"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Yeni Kanal Oluştur</span>
+              </button>
+
+              {/* Filtre Çipleri */}
+              <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none pb-0.5 text-[11px]">
+                <button
+                  onClick={() => setChannelFilter('all')}
+                  className={`px-2.5 py-1 rounded-lg font-semibold whitespace-nowrap transition-colors cursor-pointer ${
+                    channelFilter === 'all'
+                      ? 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900'
+                      : 'bg-zinc-200/70 dark:bg-zinc-700/60 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-300/70'
+                  }`}
+                >
+                  Tümü
+                </button>
+                <button
+                  onClick={() => setChannelFilter('popular')}
+                  className={`px-2.5 py-1 rounded-lg font-semibold whitespace-nowrap transition-colors flex items-center gap-1 cursor-pointer ${
+                    channelFilter === 'popular'
+                      ? 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900'
+                      : 'bg-zinc-200/70 dark:bg-zinc-700/60 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-300/70'
+                  }`}
+                >
+                  <Star className="w-3 h-3 text-amber-500 fill-amber-500" />
+                  <span>Popüler</span>
+                </button>
+                <button
+                  onClick={() => setChannelFilter('new')}
+                  className={`px-2.5 py-1 rounded-lg font-semibold whitespace-nowrap transition-colors flex items-center gap-1 cursor-pointer ${
+                    channelFilter === 'new'
+                      ? 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900'
+                      : 'bg-zinc-200/70 dark:bg-zinc-700/60 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-300/70'
+                  }`}
+                >
+                  <Clock className="w-3 h-3 text-blue-500" />
+                  <span>Yeni</span>
+                </button>
+                <button
+                  onClick={() => setChannelFilter('verified')}
+                  className={`px-2.5 py-1 rounded-lg font-semibold whitespace-nowrap transition-colors flex items-center gap-1 cursor-pointer ${
+                    channelFilter === 'verified'
+                      ? 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900'
+                      : 'bg-zinc-200/70 dark:bg-zinc-700/60 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-300/70'
+                  }`}
+                >
+                  <BadgeCheck className="w-3 h-3 text-red-500" />
+                  <span>Onaylı</span>
+                </button>
+                <button
+                  onClick={() => setChannelFilter('following')}
+                  className={`px-2.5 py-1 rounded-lg font-semibold whitespace-nowrap transition-colors flex items-center gap-1 cursor-pointer ${
+                    channelFilter === 'following'
+                      ? 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900'
+                      : 'bg-zinc-200/70 dark:bg-zinc-700/60 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-300/70'
+                  }`}
+                >
+                  <Check className="w-3 h-3 text-emerald-500" />
+                  <span>Takipte</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Kanallar Listesi */}
+            {filteredChannels.length === 0 ? (
+              <div className="p-8 text-center flex flex-col items-center justify-center text-zinc-400">
+                <div className="w-12 h-12 rounded-2xl bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center mb-3 text-zinc-400">
+                  <Radio className="w-6 h-6" />
+                </div>
+                <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
+                  {searchQuery ? 'Aramanıza uygun kanal bulunamadı.' : 'Henüz kanal bulunmuyor.'}
+                </p>
+                <p className="text-[11px] text-zinc-400 mt-1 mb-4 max-w-xs">
+                  İlk kanalı oluşturarak takipçilerinizle duyurular ve güncellemeler paylaşmaya başlayın.
+                </p>
+                <button
+                  onClick={onCreateChannel}
+                  className="px-3.5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Kanal Oluştur</span>
+                </button>
+              </div>
+            ) : (
+              <div className="divide-y divide-zinc-100 dark:divide-zinc-800/50">
+                {filteredChannels.map((ch) => {
+                  const isSelected = activeChannelId === ch.id;
+                  const isFollowing = followingChannelIds.includes(ch.id);
+
+                  return (
+                    <button
+                      key={ch.id}
+                      id={`sidebar-channel-${ch.id}`}
+                      onClick={() => onSelectChannel?.(ch.id)}
+                      className={`w-full p-3.5 flex items-center gap-3 text-left transition-colors cursor-pointer ${
+                        isSelected
+                          ? 'bg-red-50/70 dark:bg-red-950/20 border-l-4 border-red-600'
+                          : 'hover:bg-zinc-50 dark:hover:bg-zinc-800/50'
+                      }`}
+                    >
+                      {/* Avatar */}
+                      <div className="relative flex-shrink-0">
+                        <div className="w-11 h-11 rounded-2xl overflow-hidden bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 flex items-center justify-center">
+                          {ch.photoURL ? (
+                            <img
+                              src={ch.photoURL}
+                              alt={ch.name}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <Radio className="w-5 h-5 text-red-600" />
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Metin ve Detaylar */}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between mb-0.5">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="font-bold text-xs text-zinc-900 dark:text-zinc-100 truncate">
+                              {ch.name}
+                            </span>
+                            {ch.isVerified && (
+                              <VerifiedBadge badgeUrl={badgeUrl} size="xs" />
+                            )}
+                          </div>
+                          <span className="text-[10px] text-zinc-400 font-mono flex-shrink-0 ml-2">
+                            {formatTime(ch.lastPostTimestamp || ch.createdAt)}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-1.5">
+                          <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate min-w-0">
+                            {ch.lastPostText || ch.description || 'Henüz gönderi yok'}
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            {isFollowing && (
+                              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 font-semibold">
+                                Takipte
+                              </span>
+                            )}
+                            <span className="text-[10px] text-zinc-400 font-mono">
+                              {ch.followerCount || 0} t.
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         ) : (
           // 👥 USERS LIST (DOĞRUDAN SOHBET BAŞLATMA)
           <>

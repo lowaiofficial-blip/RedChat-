@@ -67,6 +67,66 @@
         "updatedAt": { "type": "timestamp", "description": "Last update timestamp" },
         "updatedBy": { "type": "string", "description": "Admin UID or email" }
       }
+    },
+    "Channel": {
+      "path": "channels/{channelId}",
+      "fields": {
+        "id": { "type": "string", "description": "Unique channel ID" },
+        "name": { "type": "string", "description": "Channel display name" },
+        "description": { "type": "string", "description": "Channel description" },
+        "photoURL": { "type": "string", "description": "Channel avatar URL or null" },
+        "isVerified": { "type": "boolean", "description": "Verified badge status" },
+        "followerCount": { "type": "number", "description": "Realtime follower count" },
+        "postCount": { "type": "number", "description": "Total posts count" },
+        "lastPostText": { "type": "string", "description": "Latest post preview" },
+        "lastPostTimestamp": { "type": "timestamp", "description": "Latest post time" },
+        "disabled": { "type": "boolean", "description": "Whether channel is disabled by admin" },
+        "createdAt": { "type": "timestamp", "description": "Creation timestamp" },
+        "updatedAt": { "type": "timestamp", "description": "Last update timestamp" }
+      }
+    },
+    "ChannelPrivateOwner": {
+      "path": "channels/{channelId}/private/owner",
+      "fields": {
+        "ownerId": { "type": "string", "description": "Secret owner UID accessible only by owner or admin" },
+        "createdAt": { "type": "timestamp", "description": "Creation timestamp" }
+      }
+    },
+    "ChannelFollower": {
+      "path": "channels/{channelId}/followers/{uid}",
+      "fields": {
+        "uid": { "type": "string", "description": "Follower user UID" },
+        "displayName": { "type": "string", "description": "Follower display name" },
+        "username": { "type": "string", "description": "Follower username" },
+        "photoURL": { "type": "string", "description": "Follower avatar URL" },
+        "followedAt": { "type": "timestamp", "description": "Follow timestamp" }
+      }
+    },
+    "ChannelPost": {
+      "path": "channels/{channelId}/posts/{postId}",
+      "fields": {
+        "id": { "type": "string", "description": "Post ID" },
+        "channelId": { "type": "string", "description": "Parent channel ID" },
+        "text": { "type": "string", "description": "Post text content" },
+        "imageUrl": { "type": "string", "description": "Post image URL or null" },
+        "viewsCount": { "type": "number", "description": "Unique views count" },
+        "createdAt": { "type": "timestamp", "description": "Post timestamp" }
+      }
+    },
+    "ChannelPostView": {
+      "path": "channels/{channelId}/posts/{postId}/views/{uid}",
+      "fields": {
+        "uid": { "type": "string", "description": "Viewer UID" },
+        "viewedAt": { "type": "timestamp", "description": "View timestamp" }
+      }
+    },
+    "UserMyChannel": {
+      "path": "users/{uid}/myChannels/{channelId}",
+      "fields": {
+        "channelId": { "type": "string", "description": "Channel ID owned by user" },
+        "role": { "type": "string", "description": "Role, e.g. owner" },
+        "createdAt": { "type": "timestamp", "description": "Creation timestamp" }
+      }
     }
   }
 }
