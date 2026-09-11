@@ -205,3 +205,101 @@ export async function uploadImageToImgBB(file: File): Promise<string> {
 
   throw new Error('Görsel yüklenemedi. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.');
 }
+
+/**
+ * 🌟 Mavi Tik Rozet PNG görselini saydamlığı koruyarak optimize eder ve yükler.
+ * Maksimum 128x128 piksel boyutuna getirir, saydam arka planı (alpha) korur.
+ * ImgBB, Firebase Storage veya ultra hafif Base64 PNG olarak döner.
+ */
+export async function uploadBadgeImage(file: File): Promise<string> {
+  if (!file || !file.type.startsWith('image/')) {
+    throw new Error('Lütfen geçerli bir PNG veya görsel dosyası seçin.');
+  }
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = async () => {
+        try {
+          const maxDim = 128;
+          let { width, height } = img;
+
+          if (width > maxDim || height > maxDim) {
+            if (width > height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+
+          if (!ctx) {
+            resolve((e.target?.result as string) || '');
+            return;
+          }
+
+          // Saydamlığı korumak için arka planı boyama!
+          ctx.clearRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+
+          // Saydam PNG formatında dışa aktar
+          const pngDataUrl = canvas.toDataURL('image/png');
+          const rawBase64 = pngDataUrl.split(',')[1];
+          const cleanName = sanitizeFileName(file.name.replace(/\.[^/.]+$/, '') + '.png');
+
+          const imgbbApiKey = import.meta.env.VITE_IMGBB_API_KEY;
+          if (imgbbApiKey && rawBase64) {
+            try {
+              const formData = new FormData();
+              formData.append('image', rawBase64);
+              formData.append('name', `badge_${cleanName}`);
+
+              const response = await fetch(`https://api.imgbb.com/1/upload?key=${imgbbApiKey}`, {
+                method: 'POST',
+                body: formData,
+              });
+
+              if (response.ok) {
+                const data = await response.json();
+                if (data?.data?.url) {
+                  resolve(data.data.url);
+                  return;
+                }
+              }
+            } catch (err) {
+              console.warn('ImgBB rozet yükleme başarısız oldu, alternatife geçiliyor:', err);
+            }
+          }
+
+          if (storage) {
+            try {
+              const storageRef = ref(storage, `badges/${Date.now()}_${cleanName}`);
+              await uploadString(storageRef, pngDataUrl, 'data_url');
+              const downloadURL = await getDownloadURL(storageRef);
+              resolve(downloadURL);
+              return;
+            } catch (err) {
+              console.warn('Firebase Storage rozet yükleme başarısız oldu:', err);
+            }
+          }
+
+          // 128x128 PNG genelde 5-25KB civarındadır ve Firestore 1MB limitine kolayca sığar
+          resolve(pngDataUrl);
+        } catch (canvasErr) {
+          reject(canvasErr);
+        }
+      };
+      img.onerror = () => reject(new Error('Rozet görseli işlenemedi.'));
+      img.src = (e.target?.result as string) || '';
+    };
+    reader.onerror = () => reject(new Error('Dosya okunamadı.'));
+    reader.readAsDataURL(file);
+  });
+}

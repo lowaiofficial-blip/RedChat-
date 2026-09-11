@@ -99,7 +99,7 @@ const sizeConfig = {
 };
 
 export const VerifiedBadge: React.FC<VerifiedBadgeProps> = ({
-  isVerified,
+  isVerified = true,
   badgeUrl,
   size = 'sm',
   className = '',
@@ -109,10 +109,13 @@ export const VerifiedBadge: React.FC<VerifiedBadgeProps> = ({
 }) => {
   const [imgError, setImgError] = useState(false);
   const [showVerifiedModal, setShowVerifiedModal] = useState(false);
-  const [isLoaded, setIsLoaded] = useState<boolean>(() => {
-    if (!badgeUrl || typeof badgeUrl !== 'string') return false;
-    return globalLoadedBadgeUrls.has(badgeUrl.trim());
-  });
+
+  // URL değiştiğinde hata durumunu sıfırla
+  useEffect(() => {
+    setImgError(false);
+  }, [badgeUrl]);
+
+  if (!isVerified) return null;
 
   const validUrl =
     badgeUrl &&
@@ -121,37 +124,6 @@ export const VerifiedBadge: React.FC<VerifiedBadgeProps> = ({
     !imgError
       ? badgeUrl.trim()
       : null;
-
-  // URL değiştiğinde ön yükleme yap
-  useEffect(() => {
-    if (!validUrl) {
-      setIsLoaded(false);
-      return;
-    }
-
-    if (globalLoadedBadgeUrls.has(validUrl)) {
-      setIsLoaded(true);
-      return;
-    }
-
-    let isMounted = true;
-    preloadBadgeImage(validUrl).then((success) => {
-      if (isMounted) {
-        if (success) {
-          setIsLoaded(true);
-          setImgError(false);
-        } else {
-          setImgError(true);
-        }
-      }
-    });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [validUrl]);
-
-  if (!isVerified) return null;
 
   const currentSize = sizeConfig[size] || sizeConfig.sm;
 
@@ -195,7 +167,7 @@ export const VerifiedBadge: React.FC<VerifiedBadgeProps> = ({
             : ''
         } ${currentSize.container} ${className}`}
       >
-        {validUrl && isLoaded ? (
+        {validUrl ? (
           <img
             src={validUrl}
             alt="RedChat Verified"
@@ -203,7 +175,10 @@ export const VerifiedBadge: React.FC<VerifiedBadgeProps> = ({
             draggable={false}
             onContextMenu={handleContextMenu}
             onDragStart={handleDragStart}
-            onError={() => setImgError(true)}
+            onError={() => {
+              console.warn('Mavi tik rozet görseli yüklenemedi:', validUrl);
+              setImgError(true);
+            }}
             className={`w-full h-full object-contain aspect-square select-none pointer-events-none ${currentSize.icon}`}
           />
         ) : (

@@ -37,7 +37,7 @@ interface ChannelViewProps {
   isOwner: boolean;
   isAdmin?: boolean;
   isFollowing: boolean;
-  badgeUrl?: string;
+  badgeUrl?: string | null;
   onBack: () => void;
   onFollowToggle: (channelId: string, follow: boolean) => void | Promise<void>;
   onOpenManage: (channel: Channel) => void;
@@ -235,7 +235,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                 {channel.name}
               </h1>
               {channel.isVerified && (
-                <VerifiedBadge badgeUrl={badgeUrl} size="sm" />
+                <VerifiedBadge isVerified={true} badgeUrl={badgeUrl} size="sm" />
               )}
             </div>
             <div className="flex items-center gap-2 text-xs text-zinc-500">
@@ -380,7 +380,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                           {channel.name}
                         </span>
                         {channel.isVerified && (
-                          <VerifiedBadge badgeUrl={badgeUrl} size="xs" />
+                          <VerifiedBadge isVerified={true} badgeUrl={badgeUrl} size="xs" />
                         )}
                       </div>
                       <span className="text-[10px] text-zinc-400">{postDate}</span>

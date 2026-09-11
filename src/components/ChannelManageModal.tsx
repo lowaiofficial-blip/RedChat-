@@ -7,6 +7,7 @@ import {
 } from '../services/channelService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
+import { VerifiedBadge } from './VerifiedBadge';
 import {
   X,
   Camera,
@@ -24,6 +25,7 @@ import {
 interface ChannelManageModalProps {
   channel: Channel;
   currentUser: UserProfile;
+  badgeUrl?: string | null;
   onClose: () => void;
   onChannelDeleted: () => void;
   onChannelUpdated?: (updated?: Channel) => void;
@@ -32,6 +34,7 @@ interface ChannelManageModalProps {
 export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
   channel,
   currentUser,
+  badgeUrl,
   onClose,
   onChannelDeleted,
   onChannelUpdated,
@@ -166,9 +169,12 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
                   Kurucu
                 </span>
               </h2>
-              <p className="text-[11px] text-zinc-500">
-                {channel.name}
-              </p>
+              <div className="text-[11px] text-zinc-500 flex items-center gap-1 mt-0.5">
+                <span className="truncate max-w-[200px]">{channel.name}</span>
+                {channel.isVerified && (
+                  <VerifiedBadge isVerified={true} badgeUrl={badgeUrl} size="xs" />
+                )}
+              </div>
             </div>
           </div>
           <button

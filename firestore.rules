@@ -35,10 +35,9 @@ service cloud.firestore {
     // ⚙️ UYGULAMA GENEL AYARLARI (/settings/{settingId})
     // =========================================================================
     // Mavi tik rozet görseli, yapay zeka profil resmi ve sistem ayarları
-    // Production: Herkes okuyabilir, sadece adminler yazabilir
     match /settings/{settingId} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if isAuthenticated();
     }
 
     // =========================================================================

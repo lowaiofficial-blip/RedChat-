@@ -22,7 +22,7 @@ import {
   deleteChannel,
   deleteChannelPost,
 } from '../services/channelService';
-import { uploadImageToImgBB } from '../services/imageUploadService';
+import { uploadImageToImgBB, uploadBadgeImage } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
 import { VerifiedBadge, preloadBadgeImage } from './VerifiedBadge';
 import { formatLastSeen } from '../services/chatService';
@@ -231,6 +231,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // Mavi Tik PNG Yükleme State'leri
   const [selectedBadgeFile, setSelectedBadgeFile] = useState<File | null>(null);
   const [badgePreviewUrl, setBadgePreviewUrl] = useState<string | null>(null);
+  const [customBadgeUrlInput, setCustomBadgeUrlInput] = useState('');
   const [uploadingBadge, setUploadingBadge] = useState(false);
   const [badgeActionSuccess, setBadgeActionSuccess] = useState<string | null>(null);
   const [badgeActionError, setBadgeActionError] = useState<string | null>(null);
@@ -381,7 +382,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setBadgeActionSuccess(null);
   };
 
-  // Mavi Tik PNG'yi ImgBB'ye yükle ve Firestore'a kalıcı kaydet
+  // Mavi Tik PNG'yi optimize et, yükle ve Firestore'a kalıcı kaydet
   const handleUploadBadge = async () => {
     if (!selectedBadgeFile || uploadingBadge) return;
 
@@ -390,15 +391,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setBadgeActionSuccess(null);
 
     try {
-      const uploadedUrl = await uploadImageToImgBB(selectedBadgeFile);
+      const uploadedUrl = await uploadBadgeImage(selectedBadgeFile);
       if (!uploadedUrl) {
-        throw new Error('ImgBB görsel yükleme başarısız oldu.');
+        throw new Error('Görsel optimize edilemedi veya yüklenemedi.');
       }
 
       await updateVerifiedBadgeUrl(currentUser, uploadedUrl);
       preloadBadgeImage(uploadedUrl);
 
-      setBadgeActionSuccess('Mavi Tik PNG başarıyla ImgBB ve Firestore veritabanına kaydedildi!');
+      setBadgeActionSuccess('✓ Mavi Tik PNG rozeti başarıyla optimize edilip kaydedildi! Tüm kanallar ve kullanıcılarda canlı olarak görüntülenecek.');
       setSelectedBadgeFile(null);
       setBadgePreviewUrl(null);
       if (fileInputRef.current) {
@@ -407,6 +408,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     } catch (err: any) {
       console.error('Mavi Tik PNG yükleme hatası:', err);
       setBadgeActionError(err?.message || 'Rozet yüklenemedi. Lütfen tekrar deneyin.');
+    } finally {
+      setUploadingBadge(false);
+    }
+  };
+
+  // Mavi Tik Rozet Doğrudan URL Kaydetme
+  const handleSaveBadgeUrl = async () => {
+    if (!customBadgeUrlInput.trim() || uploadingBadge) return;
+
+    setUploadingBadge(true);
+    setBadgeActionError(null);
+    setBadgeActionSuccess(null);
+
+    try {
+      const cleanUrl = customBadgeUrlInput.trim();
+      await updateVerifiedBadgeUrl(currentUser, cleanUrl);
+      preloadBadgeImage(cleanUrl);
+      setBadgeActionSuccess('✓ Mavi Tik PNG bağlantısı başarıyla kaydedildi!');
+      setCustomBadgeUrlInput('');
+    } catch (err: any) {
+      console.error('Mavi Tik URL kaydetme hatası:', err);
+      setBadgeActionError(err?.message || 'Bağlantı kaydedilemedi.');
     } finally {
       setUploadingBadge(false);
     }
@@ -1903,6 +1926,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                   </span>
                                   {ch.isVerified && (
                                     <VerifiedBadge
+                                      isVerified={true}
                                       badgeUrl={appSettings?.verifiedBadgeUrl}
                                       size="sm"
                                     />
@@ -2118,6 +2142,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </div>
                     )}
 
+                    {/* Veya Doğrudan Görsel URL Gir */}
+                    <div className="pt-2 border-t border-zinc-200/60 dark:border-zinc-800 space-y-2">
+                      <label className="text-[11px] font-bold text-zinc-600 dark:text-zinc-400">
+                        Veya Doğrudan PNG Görsel Bağlantısı (URL):
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="url"
+                          placeholder="https://.../mavi_tik.png"
+                          value={customBadgeUrlInput}
+                          onChange={(e) => setCustomBadgeUrlInput(e.target.value)}
+                          className="flex-1 px-3 py-2 text-xs rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <button
+                          onClick={handleSaveBadgeUrl}
+                          disabled={!customBadgeUrlInput.trim() || uploadingBadge}
+                          className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-colors shrink-0 cursor-pointer"
+                        >
+                          Kaydet
+                        </button>
+                      </div>
+                    </div>
+
                     {currentBadgeUrl && (
                       <button
                         onClick={handleRemoveBadge}
@@ -2141,13 +2188,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
 
                   <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                    Mavi Tik PNG rozetinin sohbetler, mesajlar ve kullanıcı listesindeki canlı görünümü:
+                    Mavi Tik PNG rozetinin sohbetler, kullanıcılar ve kanallardaki canlı görünümü:
                   </p>
 
                   {/* Örnek 1: Açık Tema Kartı */}
                   <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-200 space-y-3">
                     <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">
-                      Açık Tema Görünümü
+                      Açık Tema Kullanıcı Görünümü
                     </span>
                     <div className="flex items-center gap-3">
                       <UserAvatar
@@ -2174,7 +2221,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   {/* Örnek 2: Koyu Tema Kartı */}
                   <div className="p-4 bg-zinc-900 rounded-xl border border-zinc-800 space-y-3">
                     <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">
-                      Koyu Tema Görünümü
+                      Koyu Tema Kullanıcı Görünümü
                     </span>
                     <div className="flex items-center gap-3">
                       <UserAvatar
@@ -2193,6 +2240,31 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </div>
                         <div className="text-[11px] text-zinc-400 font-mono">
                           @aysekaya
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Örnek 3: Kanal Başlığı Görünümü */}
+                  <div className="p-4 bg-zinc-50 dark:bg-zinc-800/40 rounded-xl border border-zinc-200 dark:border-zinc-700 space-y-3">
+                    <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">
+                      📢 Kanal Başlığı & Gönderi Görünümü
+                    </span>
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-2xl bg-red-100 dark:bg-red-950/60 text-red-600 flex items-center justify-center font-bold text-sm shrink-0">
+                        <Radio className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                          <span>Örnek Kanal</span>
+                          <VerifiedBadge
+                            isVerified={true}
+                            badgeUrl={badgePreviewUrl || currentBadgeUrl}
+                            size="sm"
+                          />
+                        </div>
+                        <div className="text-[11px] text-zinc-500">
+                          Doğrulanmış Kanal Rozeti Canlı Görünümü
                         </div>
                       </div>
                     </div>

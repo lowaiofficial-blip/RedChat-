@@ -633,6 +633,7 @@ export default function App() {
                   isOwner={isCurrentChannelOwner}
                   isAdmin={isUserAnAdmin}
                   isFollowing={followingChannelIds.includes(activeChannel.id)}
+                  badgeUrl={appSettings?.verifiedBadgeUrl}
                   onBack={() => setActiveChannelId(null)}
                   onFollowToggle={async (channelId, follow) => {
                     if (follow) {
@@ -695,12 +696,15 @@ export default function App() {
         <ChannelManageModal
           channel={managingChannel}
           currentUser={currentUserProfile}
+          badgeUrl={appSettings?.verifiedBadgeUrl}
           onClose={() => setManagingChannel(null)}
           onChannelUpdated={(updated) => {
-            setChannels((prev) =>
-              prev.map((c) => (c.id === updated.id ? updated : c))
-            );
-            setManagingChannel(updated);
+            if (updated) {
+              setChannels((prev) =>
+                prev.map((c) => (c.id === updated.id ? updated : c))
+              );
+              setManagingChannel(updated);
+            }
           }}
           onChannelDeleted={() => {
             setManagingChannel(null);
