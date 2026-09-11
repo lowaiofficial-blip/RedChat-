@@ -7,6 +7,7 @@ import {
   deleteChannel,
   recordPostView,
   toggleChannelPostReaction,
+  clearChannelPostReactions,
 } from '../services/channelService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
 import { VerifiedBadge } from './VerifiedBadge';
@@ -31,6 +32,7 @@ import {
   BellOff,
   Sparkles,
   Plus,
+  RotateCcw,
 } from 'lucide-react';
 
 /**
@@ -141,13 +143,40 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
   // Lightbox modal state (Görseli büyütme)
   const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
 
+  // Takip Et/Çık Loading ve Spam Koruması State'i
+  const [followLoading, setFollowLoading] = useState(false);
+
   // Gönderi Tepki (Reaction) State'leri
   const [activeReactionPostId, setActiveReactionPostId] = useState<string | null>(null);
   const [showReactionEmojiPickerPostId, setShowReactionEmojiPickerPostId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const postsContainerRef = useRef<HTMLDivElement>(null);
+  const postsEndRef = useRef<HTMLDivElement>(null);
   const viewedPostIdsRef = useRef<Set<string>>(new Set());
+
+  // Otomatik en alta (en yeni gönderiye) kaydırma
+  useEffect(() => {
+    if (posts.length > 0) {
+      // İlk yüklemede ve yeni mesaj geldiğinde sohbet gibi en alta kaydır
+      postsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [posts.length, channel.id]);
+
+  // Takip Et / Takipten Çık Tıklama İşleyicisi (Spam ve Hızlı Tıklama Korumalı)
+  const handleFollowClick = async () => {
+    if (followLoading) return;
+    setFollowLoading(true);
+    try {
+      await onFollowToggle(channel.id, !isFollowing);
+    } catch (err) {
+      console.error('Takip işlemi gerçekleştirilemedi:', err);
+    } finally {
+      setTimeout(() => {
+        setFollowLoading(false);
+      }, 500);
+    }
+  };
 
   // Tepkiyi Aç/Kapat (Toggle)
   const handleToggleReaction = async (postId: string, emoji: string) => {
@@ -378,14 +407,20 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
           ) : (
             <button
               id="channel-follow-toggle-btn"
-              onClick={() => onFollowToggle(channel.id, !isFollowing)}
-              className={`px-3.5 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shadow-xs ${
+              onClick={handleFollowClick}
+              disabled={followLoading}
+              className={`px-3.5 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-70 disabled:cursor-not-allowed ${
                 isFollowing
                   ? 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-400'
                   : 'bg-red-600 text-white hover:bg-red-700 shadow-red-600/20'
               }`}
             >
-              {isFollowing ? (
+              {followLoading ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-current" />
+                  <span>{isFollowing ? 'Ayrılınıyor...' : 'Takip ediliyor...'}</span>
+                </>
+              ) : isFollowing ? (
                 <>
                   <Check className="w-3.5 h-3.5" />
                   <span>Takip Ediliyor</span>
@@ -508,16 +543,28 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                       </div>
                     </div>
 
-                    {/* Silme Butonu (Sadece Kurucu veya Admin) */}
+                    {/* Gönderi İşlem Butonları (Sadece Kurucu veya Admin) */}
                     {(isOwner || isAdmin) && (
-                      <button
-                        id={`delete-post-${post.id}`}
-                        onClick={() => setPostToDelete(post.id)}
-                        className="p-1.5 text-zinc-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
-                        title="Gönderiyi Sil"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        {post.reactions && Object.keys(post.reactions).length > 0 && (
+                          <button
+                            id={`clear-reactions-post-${post.id}`}
+                            onClick={() => clearChannelPostReactions(channel.id, post.id)}
+                            className="p-1.5 text-zinc-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/40 rounded-lg transition-colors cursor-pointer"
+                            title="Bu Gönderinin Tepkilerini Sıfırla"
+                          >
+                            <RotateCcw className="w-4 h-4" />
+                          </button>
+                        )}
+                        <button
+                          id={`delete-post-${post.id}`}
+                          onClick={() => setPostToDelete(post.id)}
+                          className="p-1.5 text-zinc-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
+                          title="Gönderiyi Sil"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     )}
                   </div>
 
@@ -636,6 +683,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
             );
           })
         )}
+        {/* En alta otomatik kaydırma referansı */}
+        <div ref={postsEndRef} />
       </div>
 
       {/* 4. ALT ÇUBUK: GÖNDERİ PAYLAŞMA (YALNIZCA KURUCU VEYA ADMİN) */}

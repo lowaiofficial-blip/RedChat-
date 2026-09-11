@@ -4,6 +4,7 @@ import {
   updateChannelInfo,
   deleteChannel,
   subscribeToChannelFollowers,
+  clearAllChannelReactions,
 } from '../services/channelService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
@@ -20,6 +21,8 @@ import {
   Check,
   Calendar,
   ShieldCheck,
+  RotateCcw,
+  Smile,
 } from 'lucide-react';
 
 interface ChannelManageModalProps {
@@ -134,6 +137,23 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
   };
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [clearingReactions, setClearingReactions] = useState(false);
+  const [showClearReactionsConfirm, setShowClearReactionsConfirm] = useState(false);
+
+  const handleExecuteClearReactions = async () => {
+    try {
+      setClearingReactions(true);
+      setError(null);
+      await clearAllChannelReactions(channel.id);
+      setSuccess('Bu kanaldaki tüm gönderilerin emoji tepkileri başarıyla sıfırlandı.');
+      setShowClearReactionsConfirm(false);
+      setTimeout(() => setSuccess(null), 3500);
+    } catch (err: any) {
+      setError(err?.message || 'Tepkiler sıfırlanırken hata oluştu.');
+    } finally {
+      setClearingReactions(false);
+    }
+  };
 
   const handleExecuteDeleteChannel = async () => {
     try {
@@ -353,8 +373,69 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
                 </button>
               </div>
 
+              {/* Hızlı İşlemler: Yalnızca Bu Kanalın Tepkilerini Sıfırla */}
+              <div className="pt-5 border-t border-zinc-200 dark:border-zinc-800">
+                <div className="p-3.5 rounded-xl border border-amber-200 dark:border-amber-950/80 bg-amber-50/50 dark:bg-amber-950/20 flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-xs font-bold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                        <Smile className="w-3.5 h-3.5" />
+                        <span>Kanal Gönderi Tepkilerini Sıfırla</span>
+                      </h4>
+                      <p className="text-[11px] text-zinc-500">
+                        Yalnızca bu kanaldaki gönderilerin emoji tepkilerini temizler. Diğer sohbetleri veya kanalları etkilemez.
+                      </p>
+                    </div>
+                    {!showClearReactionsConfirm && (
+                      <button
+                        type="button"
+                        id="clear-channel-reactions-btn"
+                        onClick={() => setShowClearReactionsConfirm(true)}
+                        disabled={clearingReactions}
+                        className="px-3 py-1.5 text-xs font-bold text-amber-700 dark:text-amber-400 bg-white dark:bg-zinc-900 border border-amber-300 dark:border-amber-800 hover:bg-amber-50 dark:hover:bg-amber-950/40 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Sıfırla</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {showClearReactionsConfirm && (
+                    <div className="p-3 bg-amber-100/90 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 animate-in fade-in duration-150">
+                      <span className="text-xs font-bold text-amber-900 dark:text-amber-200">
+                        Bu kanaldaki tüm tepkileri sıfırlamak istiyor musunuz?
+                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setShowClearReactionsConfirm(false)}
+                          disabled={clearingReactions}
+                          className="px-3 py-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300 hover:bg-white dark:hover:bg-zinc-800 rounded-lg cursor-pointer"
+                        >
+                          Vazgeç
+                        </button>
+                        <button
+                          type="button"
+                          id="confirm-clear-channel-reactions-btn"
+                          onClick={handleExecuteClearReactions}
+                          disabled={clearingReactions}
+                          className="px-3 py-1 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 rounded-lg shadow-sm flex items-center gap-1 cursor-pointer"
+                        >
+                          {clearingReactions ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <RotateCcw className="w-3 h-3" />
+                          )}
+                          <span>Evet, Sıfırla</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {/* Tehlikeli Bölge (Kanal Silme) */}
-              <div className="pt-6 border-t border-zinc-200 dark:border-zinc-800">
+              <div className="pt-3">
                 <div className="p-3.5 rounded-xl border border-red-200 dark:border-red-950/80 bg-red-50/50 dark:bg-red-950/20 flex flex-col gap-3">
                   <div className="flex items-center justify-between">
                     <div>

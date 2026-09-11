@@ -9,9 +9,11 @@ import {
   query,
   where,
   orderBy,
+  limit,
   onSnapshot,
   serverTimestamp,
   increment,
+  runTransaction,
   type Unsubscribe,
 } from 'firebase/firestore';
 import { db } from './firebase';
@@ -147,6 +149,7 @@ export function subscribeToChannels(callback: (channels: Channel[]) => void): Un
           channels.push({
             ...data,
             id: docSnap.id,
+            followerCount: Math.max(0, data.followerCount || 0),
           });
         }
       });
@@ -172,11 +175,42 @@ export function subscribeToChannel(
   }
 
   const docRef = doc(db, 'channels', channelId);
+  const followersCol = collection(db, 'channels', channelId, 'followers');
+
+  // Gerçek takipçi dokümanlarını sayıp gerekirse senkronize et
+  getDocs(followersCol)
+    .then((snap) => {
+      const actualCount = snap.size;
+      getDoc(docRef)
+        .then((docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data() as Channel;
+            if (data.followerCount !== actualCount) {
+              updateDoc(docRef, { followerCount: actualCount }).catch(() => {});
+            }
+          }
+        })
+        .catch(() => {});
+    })
+    .catch(() => {});
+
   return onSnapshot(
     docRef,
     (docSnap) => {
       if (docSnap.exists()) {
-        callback({ ...(docSnap.data() as Channel), id: docSnap.id });
+        const data = docSnap.data() as Channel;
+        const safeCount = Math.max(0, data.followerCount || 0);
+
+        // Veritabanında eksiye düşmüşse arka planda otomatik düzelt
+        if (data.followerCount !== undefined && data.followerCount < 0) {
+          updateDoc(docRef, { followerCount: safeCount }).catch(() => {});
+        }
+
+        callback({
+          ...data,
+          id: docSnap.id,
+          followerCount: safeCount,
+        });
       } else {
         callback(null);
       }
@@ -238,6 +272,15 @@ export function subscribeToChannelFollowers(
       snapshot.forEach((docSnap) => {
         list.push(docSnap.data() as ChannelFollower);
       });
+
+      // Gerçek takipçi listesi boyutunu kanal ana dokümanıyla otomatik senkronize et
+      if (channelId && db) {
+        const channelRef = doc(db, 'channels', channelId);
+        updateDoc(channelRef, {
+          followerCount: list.length,
+        }).catch(() => {});
+      }
+
       callback(list);
     },
     (error) => {
@@ -248,65 +291,98 @@ export function subscribeToChannelFollowers(
 }
 
 /**
- * ➕ Kanalı Takip Et
+ * ➕ Kanalı Takip Et (Spam ve Mükerrer Tıklama Korumalı)
  */
 export async function followChannel(channelId: string, user: UserProfile): Promise<void> {
   if (!db || !channelId || !user?.uid) throw new Error('Kullanıcı veya kanal bilgisi eksik.');
 
-  // 1. Kanal followers koleksiyonuna ekle
   const followerRef = doc(db, 'channels', channelId, 'followers', user.uid);
-  await setDoc(followerRef, {
-    uid: user.uid,
-    displayName: user.displayName || user.username,
-    username: user.username,
-    photoURL: user.photoURL || null,
-    followedAt: serverTimestamp(),
-  });
-
-  // 2. Kullanıcının takip ettikleri dizinine ekle
   const followingRef = doc(db, 'users', user.uid, 'followingChannels', channelId);
-  await setDoc(followingRef, {
-    channelId,
-    followedAt: serverTimestamp(),
-  });
-
-  // 3. Takipçi sayısını artır
   const channelRef = doc(db, 'channels', channelId);
-  await updateDoc(channelRef, {
-    followerCount: increment(1),
-    updatedAt: serverTimestamp(),
+
+  await runTransaction(db, async (transaction) => {
+    const followerDoc = await transaction.get(followerRef);
+    if (followerDoc.exists()) {
+      // Kullanıcı zaten takip ediyor, mükerrer artış yapma
+      return;
+    }
+
+    const channelDoc = await transaction.get(channelRef);
+    const currentCount = channelDoc.exists()
+      ? Math.max(0, channelDoc.data()?.followerCount || 0)
+      : 0;
+
+    // 1. Kanal followers koleksiyonuna ekle
+    transaction.set(followerRef, {
+      uid: user.uid,
+      displayName: user.displayName || user.username,
+      username: user.username,
+      photoURL: user.photoURL || null,
+      followedAt: serverTimestamp(),
+    });
+
+    // 2. Kullanıcının takip ettikleri dizinine ekle
+    transaction.set(followingRef, {
+      channelId,
+      followedAt: serverTimestamp(),
+    });
+
+    // 3. Takipçi sayısını artır
+    if (channelDoc.exists()) {
+      transaction.update(channelRef, {
+        followerCount: currentCount + 1,
+        updatedAt: serverTimestamp(),
+      });
+    }
   });
 }
 
 /**
- * ➖ Kanalı Takipten Çık
+ * ➖ Kanalı Takipten Çık (Spam ve Eksiye Düşme Korumalı)
  */
 export async function unfollowChannel(channelId: string, userId: string): Promise<void> {
   if (!db || !channelId || !userId) throw new Error('Kullanıcı veya kanal bilgisi eksik.');
 
-  // 1. Takipçi dokümanını sil
   const followerRef = doc(db, 'channels', channelId, 'followers', userId);
-  await deleteDoc(followerRef);
-
-  // 2. Kullanıcının takip ettiklerinden sil
   const followingRef = doc(db, 'users', userId, 'followingChannels', channelId);
-  await deleteDoc(followingRef);
-
-  // 3. Takipçi sayısını azalt
   const channelRef = doc(db, 'channels', channelId);
-  await updateDoc(channelRef, {
-    followerCount: increment(-1),
-    updatedAt: serverTimestamp(),
+
+  await runTransaction(db, async (transaction) => {
+    const followerDoc = await transaction.get(followerRef);
+    if (!followerDoc.exists()) {
+      // Kullanıcı zaten takip etmiyor, sahte veya mükerrer azaltma yapma!
+      return;
+    }
+
+    const channelDoc = await transaction.get(channelRef);
+    const currentCount = channelDoc.exists()
+      ? Math.max(0, channelDoc.data()?.followerCount || 0)
+      : 0;
+    const newCount = Math.max(0, currentCount - 1);
+
+    // 1. Takipçi dokümanını sil
+    transaction.delete(followerRef);
+
+    // 2. Kullanıcının takip ettiklerinden sil
+    transaction.delete(followingRef);
+
+    // 3. Takipçi sayısını güvenle güncelle (asla 0'ın altına düşmez)
+    if (channelDoc.exists()) {
+      transaction.update(channelRef, {
+        followerCount: newCount,
+        updatedAt: serverTimestamp(),
+      });
+    }
   });
 }
 
 /**
- * 📝 Kanal Gönderilerini Tek Seferlik Çek
+ * 📝 Kanal Gönderilerini Tek Seferlik Çek (Eski üstte, Yeni altta)
  */
 export async function fetchChannelPosts(channelId: string): Promise<ChannelPost[]> {
   if (!db || !channelId) return [];
   try {
-    const q = query(collection(db, 'channels', channelId, 'posts'), orderBy('createdAt', 'desc'));
+    const q = query(collection(db, 'channels', channelId, 'posts'), orderBy('createdAt', 'asc'));
     const snap = await getDocs(q);
     const posts: ChannelPost[] = [];
     snap.forEach((docSnap) => {
@@ -316,6 +392,11 @@ export async function fetchChannelPosts(channelId: string): Promise<ChannelPost[
         channelId,
       });
     });
+    posts.sort((a, b) => {
+      const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+      const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+      return timeA - timeB;
+    });
     return posts;
   } catch (err) {
     console.warn('Gönderiler çekilirken hata:', err);
@@ -324,7 +405,7 @@ export async function fetchChannelPosts(channelId: string): Promise<ChannelPost[
 }
 
 /**
- * 📝 Kanal Gönderilerini Gerçek Zamanlı Dinle
+ * 📝 Kanal Gönderilerini Gerçek Zamanlı Dinle (Eski üstte, Yeni altta - Mesajlaşma Sırası)
  */
 export function subscribeToChannelPosts(
   channelId: string,
@@ -335,7 +416,7 @@ export function subscribeToChannelPosts(
     return () => {};
   }
 
-  const q = query(collection(db, 'channels', channelId, 'posts'), orderBy('createdAt', 'desc'));
+  const q = query(collection(db, 'channels', channelId, 'posts'), orderBy('createdAt', 'asc'));
 
   return onSnapshot(
     q,
@@ -348,6 +429,33 @@ export function subscribeToChannelPosts(
           channelId,
         });
       });
+      posts.sort((a, b) => {
+        const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+        const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+        return timeA - timeB;
+      });
+
+      // Kanal ana dokümanındaki son gönderi önizlemesini (lastPostText) otomatik senkronize et
+      if (channelId && db) {
+        const channelRef = doc(db, 'channels', channelId);
+        if (posts.length > 0) {
+          const latestPost = posts[posts.length - 1];
+          const latestText = latestPost.text || (latestPost.imageUrl ? 'Fotoğraf' : null);
+          const latestTimestamp = latestPost.createdAt || null;
+          updateDoc(channelRef, {
+            postCount: posts.length,
+            lastPostText: latestText,
+            lastPostTimestamp: latestTimestamp,
+          }).catch(() => {});
+        } else {
+          updateDoc(channelRef, {
+            postCount: 0,
+            lastPostText: null,
+            lastPostTimestamp: null,
+          }).catch(() => {});
+        }
+      }
+
       callback(posts);
     },
     (error) => {
@@ -430,16 +538,40 @@ export async function createChannelPost(
 export async function deleteChannelPost(channelId: string, postId: string): Promise<void> {
   if (!db || !channelId || !postId) return;
 
+  // 1. Gönderi dokümanını sil
   await deleteDoc(doc(db, 'channels', channelId, 'posts', postId));
 
   try {
+    // 2. Kalan tüm gönderileri çekerek en güncelini bul ve kanal önizlemesini düzelt
+    const postsQuery = query(
+      collection(db, 'channels', channelId, 'posts'),
+      orderBy('createdAt', 'desc'),
+      limit(1)
+    );
+    const postsSnap = await getDocs(postsQuery);
+
+    let lastPostText: string | null = null;
+    let lastPostTimestamp: any = null;
+
+    if (!postsSnap.empty) {
+      const latestData = postsSnap.docs[0].data() as ChannelPost;
+      lastPostText = latestData.text || (latestData.imageUrl ? 'Fotoğraf' : null);
+      lastPostTimestamp = latestData.createdAt || null;
+    }
+
+    // Toplam kalan gönderi sayısını hesapla
+    const allPostsSnap = await getDocs(collection(db, 'channels', channelId, 'posts'));
+    const remainingCount = allPostsSnap.size;
+
     const channelRef = doc(db, 'channels', channelId);
     await updateDoc(channelRef, {
-      postCount: increment(-1),
+      postCount: remainingCount,
+      lastPostText: lastPostText,
+      lastPostTimestamp: lastPostTimestamp,
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
-    console.warn('postCount güncellenemedi:', err);
+    console.warn('Gönderi silindikten sonra kanal son mesajı güncellenemedi:', err);
   }
 }
 
@@ -633,4 +765,33 @@ export async function toggleChannelPostReaction(
     reactions: currentReactions,
   });
 }
+
+/**
+ * 🧹 Belirli bir kanal gönderisinin tepkilerini sıfırla (Sadece bu gönderiyi temizler)
+ */
+export async function clearChannelPostReactions(
+  channelId: string,
+  postId: string
+): Promise<void> {
+  if (!db || !channelId || !postId) return;
+  const postDocRef = doc(db, 'channels', channelId, 'posts', postId);
+  await updateDoc(postDocRef, {
+    reactions: {},
+  });
+}
+
+/**
+ * 🧹 YALNIZCA BU KANALDAKİ tüm gönderilerin tepkilerini sıfırla (Diğer kanallara veya sohbetlere asla dokunmaz)
+ */
+export async function clearAllChannelReactions(channelId: string): Promise<void> {
+  if (!db || !channelId) return;
+  const postsSnap = await getDocs(collection(db, 'channels', channelId, 'posts'));
+  const promises = postsSnap.docs.map((docSnap) => {
+    return updateDoc(doc(db, 'channels', channelId, 'posts', docSnap.id), {
+      reactions: {},
+    });
+  });
+  await Promise.all(promises);
+}
+
 
