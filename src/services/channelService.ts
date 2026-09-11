@@ -14,10 +14,18 @@ import {
   serverTimestamp,
   increment,
   runTransaction,
+  writeBatch,
   type Unsubscribe,
 } from 'firebase/firestore';
 import { db } from './firebase';
-import type { Channel, ChannelPost, ChannelFollower, UserProfile } from '../types';
+import type {
+  Channel,
+  ChannelPost,
+  ChannelFollower,
+  UserProfile,
+  ChannelNotification,
+  ChannelOwnerPrivate,
+} from '../types';
 import { sendPushNotification } from './messagingService';
 
 /**
@@ -98,9 +106,8 @@ export async function createChannel(
 }
 
 /**
- * 👑 Kullanıcının Bu Kanalın Sahibi Olup Olmadığını Kontrol Eder
- * Normal kullanıcılarda 'channels/{id}/private/owner' okuma yetkisi olmadığı için
- * Firestore rules permission-denied döner, bu durumda false döndürülür.
+ * 👑 Kullanıcının Bu Kanalın Sahibi / Kurucusu Olup Olmadığını Kontrol Eder
+ * Hem asıl kurucuyu (ownerId) hem de kurucu yetkisi verilmiş ortak kurucuları (coOwnerIds) doğrular.
  */
 export async function checkIsChannelOwner(
   channelId: string,
@@ -116,15 +123,133 @@ export async function checkIsChannelOwner(
       return true;
     }
 
-    // 2. Gizli owner belgesini doğrula
+    // 2. Gizli owner belgesini doğrula (ownerId veya coOwnerIds listesinde var mı)
     const ownerDoc = await getDoc(doc(db, 'channels', channelId, 'private', 'owner'));
-    if (ownerDoc.exists() && ownerDoc.data()?.ownerId === currentUid) {
-      return true;
+    if (ownerDoc.exists()) {
+      const data = ownerDoc.data();
+      if (data?.ownerId === currentUid) {
+        return true;
+      }
+      if (Array.isArray(data?.coOwnerIds) && data.coOwnerIds.includes(currentUid)) {
+        return true;
+      }
     }
     return false;
   } catch {
     return false;
   }
+}
+
+/**
+ * 👑 Kanala Yeni Kurucu / Ortak Kurucu Yetkisi Ver
+ */
+export async function addChannelCoOwner(
+  channelId: string,
+  targetUser: { uid: string; displayName?: string; username?: string; photoURL?: string | null }
+): Promise<void> {
+  if (!db || !channelId || !targetUser?.uid) throw new Error('Geçersiz parametre');
+
+  const ownerRef = doc(db, 'channels', channelId, 'private', 'owner');
+  const ownerSnap = await getDoc(ownerRef);
+  let coOwnerIds: string[] = [];
+  if (ownerSnap.exists()) {
+    coOwnerIds = ownerSnap.data()?.coOwnerIds || [];
+  }
+  if (!coOwnerIds.includes(targetUser.uid)) {
+    coOwnerIds.push(targetUser.uid);
+  }
+
+  await updateDoc(ownerRef, {
+    coOwnerIds,
+    updatedAt: serverTimestamp(),
+  });
+
+  // Hedef kullanıcının myChannels dizinine ekle (Kurucu yetkisiyle)
+  const myChannelRef = doc(db, 'users', targetUser.uid, 'myChannels', channelId);
+  await setDoc(myChannelRef, {
+    channelId,
+    role: 'co-owner',
+    createdAt: serverTimestamp(),
+  });
+}
+
+/**
+ * 👑 Kanal Ortak Kurucu Yetkisini Geri Al
+ */
+export async function removeChannelCoOwner(
+  channelId: string,
+  targetUid: string
+): Promise<void> {
+  if (!db || !channelId || !targetUid) throw new Error('Geçersiz parametre');
+
+  const ownerRef = doc(db, 'channels', channelId, 'private', 'owner');
+  const ownerSnap = await getDoc(ownerRef);
+  if (ownerSnap.exists()) {
+    const currentCoOwners: string[] = ownerSnap.data()?.coOwnerIds || [];
+    const newCoOwners = currentCoOwners.filter((id) => id !== targetUid);
+    await updateDoc(ownerRef, {
+      coOwnerIds: newCoOwners,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  // Kullanıcının myChannels dizininden sil
+  const myChannelRef = doc(db, 'users', targetUid, 'myChannels', channelId);
+  await deleteDoc(myChannelRef).catch(() => {});
+}
+
+/**
+ * 👑 Kanal Kurucularını Getir (ownerId ve coOwnerIds)
+ */
+export async function getChannelOwners(
+  channelId: string
+): Promise<{ ownerId: string; coOwnerIds: string[] }> {
+  if (!db || !channelId) return { ownerId: '', coOwnerIds: [] };
+  try {
+    const ownerSnap = await getDoc(doc(db, 'channels', channelId, 'private', 'owner'));
+    if (ownerSnap.exists()) {
+      const data = ownerSnap.data();
+      return {
+        ownerId: data?.ownerId || '',
+        coOwnerIds: Array.isArray(data?.coOwnerIds) ? data.coOwnerIds : [],
+      };
+    }
+  } catch (err) {
+    console.warn('Kurucu bilgisi alınamadı:', err);
+  }
+  return { ownerId: '', coOwnerIds: [] };
+}
+
+/**
+ * 👑 Kanal Kurucularını Gerçek Zamanlı Dinle
+ */
+export function subscribeToChannelOwners(
+  channelId: string,
+  callback: (info: { ownerId: string; coOwnerIds: string[] }) => void
+): Unsubscribe {
+  if (!db || !channelId) {
+    callback({ ownerId: '', coOwnerIds: [] });
+    return () => {};
+  }
+
+  const ownerRef = doc(db, 'channels', channelId, 'private', 'owner');
+  return onSnapshot(
+    ownerRef,
+    (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        callback({
+          ownerId: data?.ownerId || '',
+          coOwnerIds: Array.isArray(data?.coOwnerIds) ? data.coOwnerIds : [],
+        });
+      } else {
+        callback({ ownerId: '', coOwnerIds: [] });
+      }
+    },
+    () => {
+      callback({ ownerId: '', coOwnerIds: [] });
+    }
+  );
 }
 
 /**
@@ -469,12 +594,17 @@ export function subscribeToChannelPosts(
  * 📢 Yeni Kanal Gönderisi Paylaş (Kurucu veya Admin)
  * ⚠️ GİZLİLİK KURALI: Gönderide kurucunun adı, avatarı veya UID'si saklanmaz!
  * Gönderi tamamen kanalın kendisine aittir.
+ *
+ * 🔔 BİLDİRİM KURALI:
+ * Kanalda gönderi paylaşıldığında kurucu/paylaşan HARİÇ tüm takipçilere uygulama içi
+ * bildirim (users/{followerUid}/channelNotifications/{postId}) ve web push bildirimi iletilir.
  */
 export async function createChannelPost(
   channelId: string,
   text: string,
   imageUrl?: string | null,
-  channelName?: string
+  channelName?: string,
+  authorUid?: string
 ): Promise<string> {
   if (!db || !channelId) throw new Error('Kanal ID eksik.');
   const trimmedText = text.trim();
@@ -496,6 +626,11 @@ export async function createChannelPost(
 
   // Kanal ana dokümanını güncelle
   const channelRef = doc(db, 'channels', channelId);
+  const channelSnap = await getDoc(channelRef);
+  const channelData = channelSnap.exists() ? (channelSnap.data() as Channel) : null;
+  const finalChannelName = channelName || channelData?.name || 'Kanal';
+  const finalChannelPhoto = channelData?.photoURL || null;
+
   await updateDoc(channelRef, {
     postCount: increment(1),
     lastPostText: trimmedText || 'Fotoğraf',
@@ -503,19 +638,72 @@ export async function createChannelPost(
     updatedAt: serverTimestamp(),
   });
 
-  // 🔔 Takipçilere push bildirimi gönder (Arka planda)
+  // 🔔 Kurucu/Paylaşan HARİÇ takip edenlere Uygulama İçi Bildirim ve Push Bildirimi Gönder
   try {
     const followersSnap = await getDocs(collection(db, 'channels', channelId, 'followers'));
-    const followerIds: string[] = [];
+    
+    // Kurucu ve ortak kurucu ID'lerini al
+    let excludedUids = new Set<string>();
+    if (authorUid) excludedUids.add(authorUid);
+
+    try {
+      const ownerSnap = await getDoc(doc(db, 'channels', channelId, 'private', 'owner'));
+      if (ownerSnap.exists()) {
+        const ownerData = ownerSnap.data();
+        if (ownerData.ownerId) excludedUids.add(ownerData.ownerId);
+        if (Array.isArray(ownerData.coOwnerIds)) {
+          ownerData.coOwnerIds.forEach((id: string) => excludedUids.add(id));
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    const targetFollowerIds: string[] = [];
     followersSnap.forEach((d) => {
-      followerIds.push(d.id);
+      const followerUid = d.id;
+      if (!excludedUids.has(followerUid)) {
+        targetFollowerIds.push(followerUid);
+      }
     });
 
-    if (followerIds.length > 0) {
-      const notifTitle = channelName || 'Kanal Güncellemesi';
-      const notifBody = trimmedText ? (trimmedText.length > 100 ? trimmedText.slice(0, 97) + '...' : trimmedText) : 'Yeni bir görsel paylaştı.';
+    if (targetFollowerIds.length > 0) {
+      // 1. Firestore Uygulama İçi Bildirimleri Oluştur (Batch)
+      // Firestore batch max 500 işlem destekler
+      const batchChunks: string[][] = [];
+      for (let i = 0; i < targetFollowerIds.length; i += 450) {
+        batchChunks.push(targetFollowerIds.slice(i, i + 450));
+      }
+
+      for (const chunk of batchChunks) {
+        const batch = writeBatch(db);
+        for (const followerId of chunk) {
+          const notifDocRef = doc(db, 'users', followerId, 'channelNotifications', postId);
+          batch.set(notifDocRef, {
+            id: postId,
+            channelId,
+            channelName: finalChannelName,
+            channelPhotoURL: finalChannelPhoto,
+            postId,
+            text: trimmedText,
+            imageUrl: imageUrl || null,
+            createdAt: serverTimestamp(),
+            read: false,
+          });
+        }
+        await batch.commit().catch((e) => console.warn('Kanal bildirim batch hatası:', e));
+      }
+
+      // 2. Web Push Bildirimi Gönder
+      const notifTitle = finalChannelName;
+      const notifBody = trimmedText
+        ? trimmedText.length > 100
+          ? trimmedText.slice(0, 97) + '...'
+          : trimmedText
+        : 'Yeni bir görsel paylaştı.';
+
       sendPushNotification({
-        receiverIds: followerIds,
+        receiverIds: targetFollowerIds,
         title: `📢 ${notifTitle}`,
         body: notifBody,
         data: {
@@ -523,7 +711,7 @@ export async function createChannelPost(
           channelId,
           postId,
         },
-      }).catch((err) => console.warn('Kanal bildirim hatası:', err));
+      }).catch((err) => console.warn('Kanal push bildirim hatası:', err));
     }
   } catch (err) {
     console.warn('Takipçi listesi alınırken bildirim uyarısı:', err);
@@ -792,6 +980,97 @@ export async function clearAllChannelReactions(channelId: string): Promise<void>
     });
   });
   await Promise.all(promises);
+}
+
+/**
+ * 🔔 Kullanıcının Takip Ettiği Kanallardan Gelen Bildirimleri Gerçek Zamanlı Dinle
+ */
+export function subscribeToUserChannelNotifications(
+  userId: string,
+  callback: (notifications: ChannelNotification[]) => void
+): Unsubscribe {
+  if (!db || !userId) {
+    callback([]);
+    return () => {};
+  }
+
+  const notifQuery = query(
+    collection(db, 'users', userId, 'channelNotifications'),
+    orderBy('createdAt', 'desc'),
+    limit(50)
+  );
+
+  return onSnapshot(
+    notifQuery,
+    (snapshot) => {
+      const list: ChannelNotification[] = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data() as ChannelNotification;
+        list.push({
+          ...data,
+          id: docSnap.id,
+        });
+      });
+      callback(list);
+    },
+    (error) => {
+      console.warn('Kanal bildirimleri dinlenirken hata:', error);
+      callback([]);
+    }
+  );
+}
+
+/**
+ * 🔔 Kanal Bildirimini Okundu Olarak İşaretle
+ */
+export async function markChannelNotificationAsRead(
+  userId: string,
+  notificationId: string
+): Promise<void> {
+  if (!db || !userId || !notificationId) return;
+  const notifRef = doc(db, 'users', userId, 'channelNotifications', notificationId);
+  await updateDoc(notifRef, {
+    read: true,
+  }).catch(() => {});
+}
+
+/**
+ * 🔔 Tüm Kanal Bildirimlerini Okundu Olarak İşaretle
+ */
+export async function markAllChannelNotificationsAsRead(userId: string): Promise<void> {
+  if (!db || !userId) return;
+  const notifSnap = await getDocs(
+    query(
+      collection(db, 'users', userId, 'channelNotifications'),
+      where('read', '==', false)
+    )
+  );
+
+  if (notifSnap.empty) return;
+
+  const batch = writeBatch(db);
+  notifSnap.forEach((docSnap) => {
+    batch.update(docSnap.ref, { read: true });
+  });
+  await batch.commit().catch(() => {});
+}
+
+/**
+ * 🗑️ Tüm Kanal Bildirimlerini Temizle
+ */
+export async function clearAllChannelNotifications(userId: string): Promise<void> {
+  if (!db || !userId) return;
+  const notifSnap = await getDocs(
+    collection(db, 'users', userId, 'channelNotifications')
+  );
+
+  if (notifSnap.empty) return;
+
+  const batch = writeBatch(db);
+  notifSnap.forEach((docSnap) => {
+    batch.delete(docSnap.ref);
+  });
+  await batch.commit().catch(() => {});
 }
 
 

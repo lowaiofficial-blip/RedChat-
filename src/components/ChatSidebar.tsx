@@ -39,6 +39,8 @@ interface ChatSidebarProps {
   followingChannelIds?: string[];
   badgeUrl?: string | null;
   aiProfilePhotoUrl?: string | null;
+  unreadChannelNotificationsCount?: number;
+  onOpenChannelNotifications?: () => void;
   onSelectConversation: (conversationId: string) => void;
   onSelectChannel?: (channelId: string) => void;
   onCreateChannel?: () => void;
@@ -71,6 +73,8 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
   followingChannelIds = [],
   badgeUrl,
   aiProfilePhotoUrl,
+  unreadChannelNotificationsCount = 0,
+  onOpenChannelNotifications,
   onSelectConversation,
   onSelectChannel,
   onCreateChannel,
@@ -229,7 +233,22 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          {/* 🔔 Kanal Bildirimleri Butonu */}
+          <button
+            id="channel-notifications-bell-btn"
+            onClick={onOpenChannelNotifications}
+            className="relative p-2 text-zinc-600 dark:text-zinc-300 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-xl transition-colors cursor-pointer"
+            title="Kanal Bildirimleri"
+          >
+            <Bell className="w-4 h-4" />
+            {unreadChannelNotificationsCount > 0 && (
+              <span className="absolute 0 top-1 right-1 min-w-4 h-4 px-1 rounded-full bg-red-600 text-white text-[9px] font-black flex items-center justify-center ring-2 ring-white dark:ring-zinc-900 animate-pulse shadow-sm shadow-red-600/50">
+                {unreadChannelNotificationsCount > 99 ? '99+' : unreadChannelNotificationsCount}
+              </span>
+            )}
+          </button>
+
           {isUserAdmin(currentUser) && (
             <button
               onClick={() => {
@@ -310,7 +329,13 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
           >
             <Radio className="w-3.5 h-3.5 shrink-0 text-red-600" />
             <span className="truncate">Kanallar</span>
-            <span className="text-zinc-400 text-[10px] shrink-0">({channels.length})</span>
+            {unreadChannelNotificationsCount > 0 ? (
+              <span className="px-1.5 py-0.2 rounded-full bg-red-600 text-white text-[9px] font-black shrink-0 animate-pulse shadow-xs">
+                {unreadChannelNotificationsCount > 99 ? '99+' : unreadChannelNotificationsCount}
+              </span>
+            ) : (
+              <span className="text-zinc-400 text-[10px] shrink-0">({channels.length})</span>
+            )}
           </button>
 
           <button

@@ -70,12 +70,17 @@ service cloud.firestore {
 
       // 🗂️ KULLANICININ TAKİP ETTİĞİ KANALLAR
       match /followingChannels/{channelId} {
-        allow read, write: if isAuthenticated() && (isOwner(userId) || isAdmin());
+        allow read, write: if isAuthenticated();
       }
 
-      // 🗂️ KULLANICININ OLUŞTURDUĞU KANALLAR
+      // 🗂️ KULLANICININ OLUŞTURDUĞU / KURUCU OLDUĞU KANALLAR
       match /myChannels/{channelId} {
-        allow read, write: if isAuthenticated() && (isOwner(userId) || isAdmin());
+        allow read, write: if isAuthenticated();
+      }
+
+      // 🔔 KULLANICININ KANAL BİLDİRİMLERİ (/users/{userId}/channelNotifications/{notifId})
+      match /channelNotifications/{notifId} {
+        allow read, write: if isAuthenticated();
       }
     }
     

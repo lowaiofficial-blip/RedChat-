@@ -160,6 +160,20 @@ export interface ChannelFollower {
 
 export interface ChannelOwnerPrivate {
   ownerId: string;
+  coOwnerIds?: string[];
   createdAt: any;
+  updatedAt?: any;
+}
+
+export interface ChannelNotification {
+  id: string;
+  channelId: string;
+  channelName: string;
+  channelPhotoURL?: string | null;
+  postId: string;
+  text: string;
+  imageUrl?: string | null;
+  createdAt: any;
+  read: boolean;
 }
 

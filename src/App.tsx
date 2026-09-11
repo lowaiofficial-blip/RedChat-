@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { User } from 'firebase/auth';
-import type { UserProfile, Conversation, AppSettings, GroupedNotificationData, GroupedNotificationMessage, Channel } from './types';
+import type { UserProfile, Conversation, AppSettings, GroupedNotificationData, GroupedNotificationMessage, Channel, ChannelNotification } from './types';
 import {
   subscribeToAuthState,
   subscribeToUserProfile,
@@ -20,6 +20,10 @@ import {
   followChannel,
   unfollowChannel,
   ensureOfficialRedChatChannel,
+  subscribeToUserChannelNotifications,
+  markChannelNotificationAsRead,
+  markAllChannelNotificationsAsRead,
+  clearAllChannelNotifications,
 } from './services/channelService';
 import { subscribeToAppSettings, ADMIN_EMAILS } from './services/adminService';
 import { setupForegroundListener, requestNotificationPermissionAndToken } from './services/messagingService';
@@ -34,6 +38,7 @@ import { ProfileModal } from './components/ProfileModal';
 import { CreateGroupModal } from './components/CreateGroupModal';
 import { CreateChannelModal } from './components/CreateChannelModal';
 import { ChannelManageModal } from './components/ChannelManageModal';
+import { ChannelNotificationsModal } from './components/ChannelNotificationsModal';
 import { ChannelView } from './components/ChannelView';
 import { AdminPanel } from './components/AdminPanel';
 import { BannedScreen } from './components/BannedScreen';
@@ -54,6 +59,11 @@ export default function App() {
   const [isCurrentChannelOwner, setIsCurrentChannelOwner] = useState<boolean>(false);
   const [showCreateChannelModal, setShowCreateChannelModal] = useState<boolean>(false);
   const [managingChannel, setManagingChannel] = useState<Channel | null>(null);
+
+  // 🔔 Kanal Bildirimleri State'i
+  const [channelNotifications, setChannelNotifications] = useState<ChannelNotification[]>([]);
+  const [showChannelNotificationsModal, setShowChannelNotificationsModal] = useState<boolean>(false);
+
   const [inspectingUser, setInspectingUser] = useState<UserProfile | null>(null);
   const [modalTab, setModalTab] = useState<'profile' | 'settings'>('profile');
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
@@ -160,6 +170,23 @@ export default function App() {
       unsubscribeFollowing();
     };
   }, [currentUserAuth]);
+
+  // 3b2. 🔔 Realtime Channel Notifications Listener
+  useEffect(() => {
+    if (!currentUserAuth?.uid) {
+      setChannelNotifications([]);
+      return;
+    }
+
+    const unsubscribeNotifs = subscribeToUserChannelNotifications(
+      currentUserAuth.uid,
+      (notifs) => {
+        setChannelNotifications(notifs);
+      }
+    );
+
+    return () => unsubscribeNotifs();
+  }, [currentUserAuth?.uid]);
 
   // 3c. 👑 Aktif Kanal Kuruculuk Kontrolü (Owner Check)
   const isUserAnAdmin = Boolean(
@@ -598,6 +625,8 @@ export default function App() {
                 followingChannelIds={followingChannelIds}
                 badgeUrl={appSettings?.verifiedBadgeUrl}
                 aiProfilePhotoUrl={appSettings?.aiProfilePhotoUrl}
+                unreadChannelNotificationsCount={channelNotifications.filter((n) => !n.read).length}
+                onOpenChannelNotifications={() => setShowChannelNotificationsModal(true)}
                 onSelectConversation={(id) => {
                   setActiveConversationId(id);
                   setActiveChannelId(null);
@@ -677,6 +706,34 @@ export default function App() {
           </>
         );
       })()}
+
+      {/* 🔔 Kanal Bildirimleri Modalı */}
+      {showChannelNotificationsModal && currentUserProfile && (
+        <ChannelNotificationsModal
+          notifications={channelNotifications}
+          channels={channels}
+          onClose={() => setShowChannelNotificationsModal(false)}
+          onSelectChannel={(chId) => {
+            setActiveChannelId(chId);
+            setActiveConversationId(null);
+          }}
+          onMarkAsRead={(notifId) => {
+            if (currentUserProfile?.uid) {
+              markChannelNotificationAsRead(currentUserProfile.uid, notifId);
+            }
+          }}
+          onMarkAllAsRead={() => {
+            if (currentUserProfile?.uid) {
+              markAllChannelNotificationsAsRead(currentUserProfile.uid);
+            }
+          }}
+          onClearAll={() => {
+            if (currentUserProfile?.uid) {
+              clearAllChannelNotifications(currentUserProfile.uid);
+            }
+          }}
+        />
+      )}
 
       {/* 📢 Kanal Oluşturma Modalı */}
       {showCreateChannelModal && currentUserProfile && (

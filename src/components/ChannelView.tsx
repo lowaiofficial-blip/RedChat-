@@ -259,7 +259,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
         finalImageUrl = await uploadImageToImgBB(selectedPhotoFile);
       }
 
-      await createChannelPost(channel.id, trimmed, finalImageUrl, channel.name);
+      await createChannelPost(channel.id, trimmed, finalImageUrl, channel.name, currentUser.uid);
 
       // Formu temizle
       setPostText('');

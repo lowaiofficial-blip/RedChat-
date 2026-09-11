@@ -5,6 +5,9 @@ import {
   deleteChannel,
   subscribeToChannelFollowers,
   clearAllChannelReactions,
+  subscribeToChannelOwners,
+  addChannelCoOwner,
+  removeChannelCoOwner,
 } from '../services/channelService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
@@ -23,6 +26,10 @@ import {
   ShieldCheck,
   RotateCcw,
   Smile,
+  Crown,
+  ShieldAlert,
+  UserCheck,
+  UserMinus,
 } from 'lucide-react';
 
 interface ChannelManageModalProps {
@@ -48,6 +55,13 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
   const [followers, setFollowers] = useState<ChannelFollower[]>([]);
   const [loadingFollowers, setLoadingFollowers] = useState(true);
 
+  // Kurucu & Ortak Kurucular
+  const [ownerInfo, setOwnerInfo] = useState<{ ownerId: string; coOwnerIds: string[] }>({
+    ownerId: '',
+    coOwnerIds: [],
+  });
+  const [managingOwnerUid, setManagingOwnerUid] = useState<string | null>(null);
+
   // Fotoğraf state'leri
   const [selectedPhotoFile, setSelectedPhotoFile] = useState<File | null>(null);
   const [previewPhotoUrl, setPreviewPhotoUrl] = useState<string | null>(channel.photoURL || null);
@@ -58,15 +72,56 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Takipçileri dinle
+  // Takipçileri ve Kurucuları dinle
   useEffect(() => {
     setLoadingFollowers(true);
-    const unsubscribe = subscribeToChannelFollowers(channel.id, (list) => {
+    const unsubscribeFollowers = subscribeToChannelFollowers(channel.id, (list) => {
       setFollowers(list);
       setLoadingFollowers(false);
     });
-    return () => unsubscribe();
+
+    const unsubscribeOwners = subscribeToChannelOwners(channel.id, (info) => {
+      setOwnerInfo(info);
+    });
+
+    return () => {
+      unsubscribeFollowers();
+      unsubscribeOwners();
+    };
   }, [channel.id]);
+
+  const handleGrantFounder = async (follower: ChannelFollower) => {
+    try {
+      setManagingOwnerUid(follower.uid);
+      setError(null);
+      await addChannelCoOwner(channel.id, {
+        uid: follower.uid,
+        displayName: follower.displayName,
+        username: follower.username,
+        photoURL: follower.photoURL,
+      });
+      setSuccess(`@${follower.username} kullanıcısına Kurucu yetkisi verildi.`);
+      setTimeout(() => setSuccess(null), 3500);
+    } catch (err: any) {
+      setError(err?.message || 'Kurucu yetkisi verilirken hata oluştu.');
+    } finally {
+      setManagingOwnerUid(null);
+    }
+  };
+
+  const handleRevokeFounder = async (followerUid: string, username: string) => {
+    try {
+      setManagingOwnerUid(followerUid);
+      setError(null);
+      await removeChannelCoOwner(channel.id, followerUid);
+      setSuccess(`@${username} kullanıcısının Kurucu yetkisi geri alındı.`);
+      setTimeout(() => setSuccess(null), 3500);
+    } catch (err: any) {
+      setError(err?.message || 'Kurucu yetkisi kaldırılırken hata oluştu.');
+    } finally {
+      setManagingOwnerUid(null);
+    }
+  };
 
   const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -494,10 +549,18 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
             </form>
           )}
 
-          {/* TAB 2: TAKİPÇİ LİSTESİ (SADECE KURUCU VE ADMİN) */}
+          {/* TAB 2: TAKİPÇİ VE KURUCU YÖNETİMİ (SADECE KURUCU VE ADMİN) */}
           {activeTab === 'followers' && (
-            <div>
-              <div className="mb-3 flex items-center justify-between">
+            <div className="space-y-3">
+              {/* Kurucu Yetki Bilgilendirme Kartı */}
+              <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/50 flex items-start gap-2.5">
+                <Crown className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                <div className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed">
+                  <span className="font-bold">Kurucu Yetkisi:</span> Başka bir kullanıcıya Kurucu yetkisi verdiğinizde, o kişi de sizin gibi kanalda gönderi paylaşabilir, fotoğraf yükleyebilir ve kanalı yönetebilir.
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-zinc-500">
                   Toplam {followers.length} Takipçi
                 </span>
@@ -516,26 +579,46 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
                   Henüz takipçi bulunmuyor.
                 </div>
               ) : (
-                <div className="divide-y divide-zinc-100 dark:divide-zinc-800/60 max-h-72 overflow-y-auto">
+                <div className="divide-y divide-zinc-100 dark:divide-zinc-800/60 max-h-80 overflow-y-auto pr-1">
                   {followers.map((f) => {
+                    const isMainOwner = ownerInfo.ownerId === f.uid;
+                    const isCoOwner = Boolean(ownerInfo.coOwnerIds?.includes(f.uid));
+                    const isSelf = currentUser.uid === f.uid;
+                    const isProcessing = managingOwnerUid === f.uid;
+
                     const followedDate = f.followedAt?.toDate
                       ? f.followedAt.toDate().toLocaleDateString('tr-TR')
                       : '';
+
                     return (
                       <div
                         key={f.uid}
-                        className="py-2.5 flex items-center justify-between gap-3"
+                        className="py-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5"
                       >
-                        <div className="flex items-center gap-2.5">
+                        <div className="flex items-center gap-2.5 min-w-0">
                           <UserAvatar
                             photoURL={f.photoURL}
                             name={f.displayName || f.username}
                             username={f.username}
                             size="sm"
                           />
-                          <div>
-                            <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
-                              {f.displayName || f.username}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate">
+                                {f.displayName || f.username}
+                              </span>
+                              {isMainOwner && (
+                                <span className="px-1.5 py-0.2 text-[10px] font-bold text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/80 rounded-md flex items-center gap-0.5">
+                                  <Crown className="w-3 h-3 text-amber-600 fill-amber-500" />
+                                  <span>Kurucu</span>
+                                </span>
+                              )}
+                              {isCoOwner && !isMainOwner && (
+                                <span className="px-1.5 py-0.2 text-[10px] font-bold text-red-700 dark:text-red-300 bg-red-100 dark:bg-red-950/80 rounded-md flex items-center gap-0.5">
+                                  <Crown className="w-3 h-3 text-red-600 fill-red-500" />
+                                  <span>Ortak Kurucu</span>
+                                </span>
+                              )}
                             </div>
                             <div className="text-[11px] text-zinc-400">
                               @{f.username}
@@ -543,12 +626,53 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
                           </div>
                         </div>
 
-                        {followedDate && (
-                          <div className="text-[10px] text-zinc-400 flex items-center gap-1">
-                            <Calendar className="w-3 h-3" />
-                            <span>{followedDate}</span>
-                          </div>
-                        )}
+                        {/* Aksiyonlar (Kurucu Yetkisi Verme / Geri Alma) */}
+                        <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                          {isMainOwner ? (
+                            <span className="text-[10px] font-semibold text-zinc-400 bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded-lg">
+                              Kanal Sahibi
+                            </span>
+                          ) : isCoOwner ? (
+                            <button
+                              type="button"
+                              id={`revoke-founder-${f.uid}`}
+                              onClick={() => handleRevokeFounder(f.uid, f.username)}
+                              disabled={isProcessing}
+                              className="px-2.5 py-1 text-xs font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/60 border border-red-200 dark:border-red-900/60 rounded-lg transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                              title="Kurucu Yetkisini Kaldır"
+                            >
+                              {isProcessing ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <UserMinus className="w-3 h-3" />
+                              )}
+                              <span>Yetkiyi Kaldır</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              id={`grant-founder-${f.uid}`}
+                              onClick={() => handleGrantFounder(f)}
+                              disabled={isProcessing}
+                              className="px-2.5 py-1 text-xs font-bold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-950/70 border border-amber-300 dark:border-amber-800 rounded-lg transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 shadow-2xs"
+                              title="Bu kullanıcıya Kurucu yetkisi ver"
+                            >
+                              {isProcessing ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <Crown className="w-3.5 h-3.5 text-amber-600 fill-amber-500" />
+                              )}
+                              <span>Kurucu Yap</span>
+                            </button>
+                          )}
+
+                          {followedDate && (
+                            <div className="text-[10px] text-zinc-400 hidden sm:flex items-center gap-1">
+                              <Calendar className="w-3 h-3" />
+                              <span>{followedDate}</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
