@@ -9,6 +9,7 @@ import {
   addChannelCoOwner,
   removeChannelCoOwner,
 } from '../services/channelService';
+import { isUserAdmin } from '../services/adminService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
@@ -61,6 +62,9 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
     coOwnerIds: [],
   });
   const [managingOwnerUid, setManagingOwnerUid] = useState<string | null>(null);
+
+  const isSystemAdmin = isUserAdmin(currentUser);
+  const isPrimaryOwner = Boolean(ownerInfo.ownerId && ownerInfo.ownerId === currentUser.uid);
 
   // Fotoğraf state'leri
   const [selectedPhotoFile, setSelectedPhotoFile] = useState<File | null>(null);
@@ -556,7 +560,12 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
               <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/50 flex items-start gap-2.5">
                 <Crown className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                 <div className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed">
-                  <span className="font-bold">Kurucu Yetkisi:</span> Başka bir kullanıcıya Kurucu yetkisi verdiğinizde, o kişi de sizin gibi kanalda gönderi paylaşabilir, fotoğraf yükleyebilir ve kanalı yönetebilir.
+                  <span className="font-bold">Kurucu Yetkisi:</span> Başka bir kullanıcıya Kurucu yetkisi verdiğinizde, o kişi de sizin gibi kanalda gönderi paylaşabilir ve fotoğraf yükleyebilir.
+                  {!isPrimaryOwner && !isSystemAdmin && (
+                    <span className="block mt-1 text-amber-700 dark:text-amber-300 font-semibold">
+                      ℹ️ Ortak kurucular diğer kullanıcıların kurucu yetkisini değiştiremez veya kendi yetkilerini kaldıramaz. Bu yetki yalnızca asıl kanal sahibine aittir.
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -585,6 +594,7 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
                     const isCoOwner = Boolean(ownerInfo.coOwnerIds?.includes(f.uid));
                     const isSelf = currentUser.uid === f.uid;
                     const isProcessing = managingOwnerUid === f.uid;
+                    const canManageFounders = isPrimaryOwner || isSystemAdmin;
 
                     const followedDate = f.followedAt?.toDate
                       ? f.followedAt.toDate().toLocaleDateString('tr-TR')
@@ -607,6 +617,11 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
                               <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100 truncate">
                                 {f.displayName || f.username}
                               </span>
+                              {isSelf && (
+                                <span className="text-[10px] font-semibold text-zinc-400 bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.2 rounded-md">
+                                  (Sen)
+                                </span>
+                              )}
                               {isMainOwner && (
                                 <span className="px-1.5 py-0.2 text-[10px] font-bold text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/80 rounded-md flex items-center gap-0.5">
                                   <Crown className="w-3 h-3 text-amber-600 fill-amber-500" />
@@ -633,37 +648,48 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
                               Kanal Sahibi
                             </span>
                           ) : isCoOwner ? (
-                            <button
-                              type="button"
-                              id={`revoke-founder-${f.uid}`}
-                              onClick={() => handleRevokeFounder(f.uid, f.username)}
-                              disabled={isProcessing}
-                              className="px-2.5 py-1 text-xs font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/60 border border-red-200 dark:border-red-900/60 rounded-lg transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                              title="Kurucu Yetkisini Kaldır"
-                            >
-                              {isProcessing ? (
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                              ) : (
-                                <UserMinus className="w-3 h-3" />
-                              )}
-                              <span>Yetkiyi Kaldır</span>
-                            </button>
+                            canManageFounders && !isSelf ? (
+                              <button
+                                type="button"
+                                id={`revoke-founder-${f.uid}`}
+                                onClick={() => handleRevokeFounder(f.uid, f.username)}
+                                disabled={isProcessing}
+                                className="px-2.5 py-1 text-xs font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-950/60 border border-red-200 dark:border-red-900/60 rounded-lg transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                title="Kurucu Yetkisini Kaldır"
+                              >
+                                {isProcessing ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <UserMinus className="w-3 h-3" />
+                                )}
+                                <span>Yetkiyi Kaldır</span>
+                              </button>
+                            ) : (
+                              <span className="text-[10px] font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 px-2 py-1 rounded-lg border border-red-200 dark:border-red-900/50 flex items-center gap-1">
+                                <Crown className="w-3 h-3 fill-red-500" />
+                                <span>Ortak Kurucu</span>
+                              </span>
+                            )
                           ) : (
-                            <button
-                              type="button"
-                              id={`grant-founder-${f.uid}`}
-                              onClick={() => handleGrantFounder(f)}
-                              disabled={isProcessing}
-                              className="px-2.5 py-1 text-xs font-bold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-950/70 border border-amber-300 dark:border-amber-800 rounded-lg transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 shadow-2xs"
-                              title="Bu kullanıcıya Kurucu yetkisi ver"
-                            >
-                              {isProcessing ? (
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                              ) : (
-                                <Crown className="w-3.5 h-3.5 text-amber-600 fill-amber-500" />
-                              )}
-                              <span>Kurucu Yap</span>
-                            </button>
+                            canManageFounders ? (
+                              <button
+                                type="button"
+                                id={`grant-founder-${f.uid}`}
+                                onClick={() => handleGrantFounder(f)}
+                                disabled={isProcessing}
+                                className="px-2.5 py-1 text-xs font-bold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-950/70 border border-amber-300 dark:border-amber-800 rounded-lg transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 shadow-2xs"
+                                title="Bu kullanıcıya Kurucu yetkisi ver"
+                              >
+                                {isProcessing ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Crown className="w-3.5 h-3.5 text-amber-600 fill-amber-500" />
+                                )}
+                                <span>Kurucu Yap</span>
+                              </button>
+                            ) : (
+                              <span className="text-[10px] text-zinc-400">Takipçi</span>
+                            )
                           )}
 
                           {followedDate && (
