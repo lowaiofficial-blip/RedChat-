@@ -65,12 +65,21 @@ export interface VerifiedUserInfo {
   photoURL?: string | null;
 }
 
+export interface VerifiedChannelInfo {
+  id?: string;
+  name?: string;
+  photoURL?: string | null;
+  description?: string;
+}
+
 export interface VerifiedBadgeProps {
   isVerified?: boolean;
   badgeUrl?: string | null;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
   className?: string;
   user?: VerifiedUserInfo;
+  channel?: VerifiedChannelInfo;
+  type?: 'user' | 'channel';
   interactive?: boolean; // Tıklanınca RedChat Verified kartı açılsın mı (varsayılan: true)
   title?: string;
 }
@@ -99,13 +108,15 @@ const sizeConfig = {
 };
 
 export const VerifiedBadge: React.FC<VerifiedBadgeProps> = ({
-  isVerified = true,
+  isVerified = false,
   badgeUrl,
   size = 'sm',
   className = '',
   user,
+  channel,
+  type,
   interactive = true,
-  title = 'Doğrulanmış Hesap',
+  title,
 }) => {
   const [imgError, setImgError] = useState(false);
   const [showVerifiedModal, setShowVerifiedModal] = useState(false);
@@ -115,7 +126,11 @@ export const VerifiedBadge: React.FC<VerifiedBadgeProps> = ({
     setImgError(false);
   }, [badgeUrl]);
 
-  if (!isVerified) return null;
+  // isVerified kesin olarak true olmalıdır; undefined veya falsy ise ASLA gösterilmez!
+  if (!Boolean(isVerified)) return null;
+
+  const isChannel = type === 'channel' || Boolean(channel);
+  const defaultTitle = isChannel ? 'Doğrulanmış Kanal' : 'Doğrulanmış Hesap';
 
   const validUrl =
     badgeUrl &&
@@ -154,7 +169,7 @@ export const VerifiedBadge: React.FC<VerifiedBadgeProps> = ({
         onDragStart={handleDragStart}
         role={interactive ? 'button' : undefined}
         tabIndex={interactive ? 0 : undefined}
-        title={title}
+        title={title || defaultTitle}
         style={{
           WebkitTouchCallout: 'none',
           WebkitUserSelect: 'none',
@@ -170,7 +185,7 @@ export const VerifiedBadge: React.FC<VerifiedBadgeProps> = ({
         {validUrl ? (
           <img
             src={validUrl}
-            alt="RedChat Verified"
+            alt={isChannel ? "Doğrulanmış Kanal" : "RedChat Verified"}
             referrerPolicy="no-referrer"
             draggable={false}
             onContextMenu={handleContextMenu}
@@ -198,6 +213,8 @@ export const VerifiedBadge: React.FC<VerifiedBadgeProps> = ({
       {showVerifiedModal && (
         <RedChatVerifiedCardModal
           user={user}
+          channel={channel}
+          type={isChannel ? 'channel' : 'user'}
           badgeUrl={validUrl}
           onClose={() => setShowVerifiedModal(false)}
         />
@@ -208,12 +225,16 @@ export const VerifiedBadge: React.FC<VerifiedBadgeProps> = ({
 
 interface RedChatVerifiedCardModalProps {
   user?: VerifiedUserInfo;
+  channel?: VerifiedChannelInfo;
+  type?: 'user' | 'channel';
   badgeUrl?: string | null;
   onClose: () => void;
 }
 
 export const RedChatVerifiedCardModal: React.FC<RedChatVerifiedCardModalProps> = ({
   user,
+  channel,
+  type = 'user',
   badgeUrl,
   onClose,
 }) => {
@@ -239,6 +260,8 @@ export const RedChatVerifiedCardModal: React.FC<RedChatVerifiedCardModalProps> =
     e.stopPropagation();
   };
 
+  const isChannel = type === 'channel' || Boolean(channel);
+
   return (
     <div
       onClick={handleBackdropClick}
@@ -262,8 +285,41 @@ export const RedChatVerifiedCardModal: React.FC<RedChatVerifiedCardModalProps> =
         </button>
 
         <div className="flex flex-col items-center text-center space-y-3 pt-1">
-          {/* Kullanıcı Profili (Varsa) */}
-          {user && (user.displayName || user.username) ? (
+          {/* 📢 KANAL MODU */}
+          {isChannel ? (
+            <div className="flex flex-col items-center mb-1">
+              <div className="relative mb-2">
+                <div className="w-16 h-16 rounded-2xl overflow-hidden bg-red-100 dark:bg-red-950/60 border border-red-200 dark:border-red-900/60 flex items-center justify-center shrink-0 shadow-sm">
+                  {channel?.photoURL ? (
+                    <img
+                      src={channel.photoURL}
+                      alt={channel?.name || 'Kanal'}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span className="text-2xl">📢</span>
+                  )}
+                </div>
+                <span className="absolute -bottom-1 -right-1">
+                  <VerifiedBadge
+                    isVerified={true}
+                    type="channel"
+                    badgeUrl={badgeUrl}
+                    size="sm"
+                    interactive={false}
+                  />
+                </span>
+              </div>
+
+              <div className="font-bold text-sm text-zinc-900 dark:text-zinc-100 truncate max-w-[200px]">
+                {channel?.name || 'Yayın Kanalı'}
+              </div>
+              <div className="text-xs font-medium text-red-600 dark:text-red-400 mt-0.5">
+                Resmi Yayın Kanalı
+              </div>
+            </div>
+          ) : user && (user.displayName || user.username) ? (
+            /* 👤 KULLANICI MODU (PROFİL İLE) */
             <div className="flex flex-col items-center mb-1">
               <div className="relative mb-2">
                 <UserAvatar
@@ -275,6 +331,7 @@ export const RedChatVerifiedCardModal: React.FC<RedChatVerifiedCardModalProps> =
                 <span className="absolute -bottom-1 -right-1">
                   <VerifiedBadge
                     isVerified={true}
+                    type="user"
                     badgeUrl={badgeUrl}
                     size="sm"
                     interactive={false}
@@ -296,6 +353,7 @@ export const RedChatVerifiedCardModal: React.FC<RedChatVerifiedCardModalProps> =
             <div className="w-12 h-12 rounded-2xl bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 flex items-center justify-center shadow-xs">
               <VerifiedBadge
                 isVerified={true}
+                type={isChannel ? 'channel' : 'user'}
                 badgeUrl={badgeUrl}
                 size="lg"
                 interactive={false}
@@ -307,16 +365,20 @@ export const RedChatVerifiedCardModal: React.FC<RedChatVerifiedCardModalProps> =
           <div className="space-y-1">
             <div className="flex items-center justify-center gap-1.5 font-black text-sm text-zinc-900 dark:text-white">
               <span>🔵</span>
-              <span>RedChat Verified</span>
+              <span>{isChannel ? 'Doğrulanmış Kanal' : 'RedChat Verified'}</span>
             </div>
             <p className="text-xs font-semibold text-zinc-700 dark:text-zinc-200">
-              Bu hesap RedChat tarafından doğrulanmıştır.
+              {isChannel
+                ? 'Bu kanal RedChat tarafından doğrulanmıştır.'
+                : 'Bu hesap RedChat tarafından doğrulanmıştır.'}
             </p>
           </div>
 
           {/* Açıklama Metni */}
-          <div className="p-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-2xl border border-zinc-100 dark:border-zinc-800 text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
-            Doğrulanmış hesap rozeti, hesabın RedChat tarafından doğrulandığını gösterir.
+          <div className="p-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-2xl border border-zinc-100 dark:border-zinc-800 text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed text-center">
+            {isChannel
+              ? 'Doğrulanmış kanal rozeti, bu kanalın resmi, güvenilir ve özgün bir yayın kanalı olduğunu onaylar.'
+              : 'Doğrulanmış hesap rozeti, bu kullanıcının kimliğinin RedChat tarafından doğrulandığını gösterir.'}
           </div>
 
           {/* Anladım / Kapat Butonu */}

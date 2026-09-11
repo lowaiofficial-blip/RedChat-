@@ -6,6 +6,7 @@ import {
   deleteChannelPost,
   deleteChannel,
   recordPostView,
+  toggleChannelPostReaction,
 } from '../services/channelService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
 import { VerifiedBadge } from './VerifiedBadge';
@@ -29,7 +30,77 @@ import {
   Bell,
   BellOff,
   Sparkles,
+  Plus,
 } from 'lucide-react';
+
+/**
+ * WhatsApp Kalitesinde Metin Formatlayıcı:
+ * - Paragraflar ve satır boşluklarını korur
+ * - Linkleri (URL) otomatik algılayıp tıklanabilir yapar
+ * - *kalın* ve _italik_ vurgularını destekler
+ */
+function FormattedPostText({ text }: { text: string }) {
+  if (!text) return null;
+
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+
+  const parseInline = (chunk: string, lineKey: number) => {
+    // *kalın* ve _italik_ parçalama
+    const tokens = chunk.split(/(\*[^*]+\*|_[^_]+_)/g);
+    return tokens.map((token, idx) => {
+      if (token.startsWith('*') && token.endsWith('*') && token.length > 2) {
+        return (
+          <strong key={`${lineKey}-${idx}`} className="font-bold text-zinc-950 dark:text-white">
+            {token.slice(1, -1)}
+          </strong>
+        );
+      }
+      if (token.startsWith('_') && token.endsWith('_') && token.length > 2) {
+        return (
+          <em key={`${lineKey}-${idx}`} className="italic">
+            {token.slice(1, -1)}
+          </em>
+        );
+      }
+      return token;
+    });
+  };
+
+  const lines = text.split('\n');
+
+  return (
+    <div className="space-y-2 text-zinc-900 dark:text-zinc-100 text-[14px] sm:text-[15px] leading-relaxed select-text font-normal">
+      {lines.map((line, lineIdx) => {
+        if (!line.trim()) {
+          return <div key={lineIdx} className="h-2.5" />;
+        }
+
+        const parts = line.split(urlRegex);
+        return (
+          <p key={lineIdx} className="break-words">
+            {parts.map((part, pIdx) => {
+              if (part.match(urlRegex)) {
+                return (
+                  <a
+                    key={pIdx}
+                    href={part}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="text-emerald-600 dark:text-emerald-400 font-medium hover:underline inline-flex items-baseline break-all"
+                  >
+                    {part}
+                  </a>
+                );
+              }
+              return parseInline(part, lineIdx);
+            })}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
 
 interface ChannelViewProps {
   channel: Channel;
@@ -70,9 +141,22 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
   // Lightbox modal state (Görseli büyütme)
   const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
 
+  // Gönderi Tepki (Reaction) State'leri
+  const [activeReactionPostId, setActiveReactionPostId] = useState<string | null>(null);
+  const [showReactionEmojiPickerPostId, setShowReactionEmojiPickerPostId] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const postsContainerRef = useRef<HTMLDivElement>(null);
   const viewedPostIdsRef = useRef<Set<string>>(new Set());
+
+  // Tepkiyi Aç/Kapat (Toggle)
+  const handleToggleReaction = async (postId: string, emoji: string) => {
+    try {
+      await toggleChannelPostReaction(channel.id, postId, currentUser.uid, emoji);
+    } catch (err) {
+      console.error('Kanal gönderisine tepki verilemedi:', err);
+    }
+  };
 
   // Gönderileri canlı dinle
   useEffect(() => {
@@ -235,7 +319,18 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                 {channel.name}
               </h1>
               {channel.isVerified && (
-                <VerifiedBadge isVerified={true} badgeUrl={badgeUrl} size="sm" />
+                <VerifiedBadge
+                  isVerified={true}
+                  type="channel"
+                  channel={{
+                    id: channel.id,
+                    name: channel.name,
+                    photoURL: channel.photoURL,
+                    description: channel.description,
+                  }}
+                  badgeUrl={badgeUrl}
+                  size="sm"
+                />
               )}
             </div>
             <div className="flex items-center gap-2 text-xs text-zinc-500">
@@ -358,73 +453,183 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
               <article
                 key={post.id}
                 id={`channel-post-${post.id}`}
-                className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800/80 rounded-2xl shadow-xs overflow-hidden transition-all hover:border-zinc-300 dark:hover:border-zinc-700"
+                className="bg-white dark:bg-zinc-900 border border-zinc-200/90 dark:border-zinc-800 rounded-2xl shadow-xs overflow-hidden transition-all hover:border-zinc-300 dark:hover:border-zinc-700"
               >
-                {/* Gönderi Başlığı: Kanal Bilgisi (KESİNLİKLE KURUCU BİLGİSİ YOK!) */}
-                <div className="p-3.5 pb-2 flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-xl overflow-hidden bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 flex items-center justify-center shrink-0">
-                      {channel.photoURL ? (
-                        <img
-                          src={channel.photoURL}
-                          alt={channel.name}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <Radio className="w-4 h-4 text-red-600" />
-                      )}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-1">
-                        <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
-                          {channel.name}
-                        </span>
-                        {channel.isVerified && (
-                          <VerifiedBadge isVerified={true} badgeUrl={badgeUrl} size="xs" />
-                        )}
-                      </div>
-                      <span className="text-[10px] text-zinc-400">{postDate}</span>
-                    </div>
-                  </div>
-
-                  {/* Silme Butonu (Sadece Kurucu veya Admin) */}
-                  {(isOwner || isAdmin) && (
-                    <button
-                      id={`delete-post-${post.id}`}
-                      onClick={() => setPostToDelete(post.id)}
-                      className="p-1.5 text-zinc-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
-                      title="Gönderiyi Sil"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-
-                {/* Gönderi Metni */}
-                {post.text && (
-                  <div className="px-4 py-2 text-xs sm:text-sm text-zinc-800 dark:text-zinc-200 leading-relaxed whitespace-pre-wrap break-words">
-                    {post.text}
-                  </div>
-                )}
-
-                {/* Gönderi Görseli */}
+                {/* 1. Gönderi Görseli (WhatsApp Tarzı En Üstte Tam Genişlik) */}
                 {post.imageUrl && (
-                  <div className="mt-2 relative bg-black/5 dark:bg-black/30 overflow-hidden flex justify-center">
+                  <div className="relative bg-black/5 dark:bg-black/30 overflow-hidden flex justify-center cursor-pointer group">
                     <img
                       src={post.imageUrl}
                       alt="Kanal Paylaşımı"
                       onClick={() => setLightboxImageUrl(post.imageUrl || null)}
-                      className="w-full max-h-96 object-cover cursor-pointer hover:opacity-95 transition-opacity"
+                      className="w-full max-h-[460px] object-cover hover:opacity-95 transition-opacity"
                       loading="lazy"
                     />
                   </div>
                 )}
 
-                {/* Gönderi Alt Çubuğu: Görüntülenme Sayısı */}
-                <div className="px-4 py-2.5 bg-zinc-50/50 dark:bg-zinc-800/30 border-t border-zinc-100 dark:border-zinc-800/60 flex items-center justify-between text-[11px] text-zinc-400">
-                  <div className="flex items-center gap-1.5 font-medium">
-                    <Eye className="w-3.5 h-3.5 text-zinc-400" />
-                    <span>{post.viewsCount || 0} görüntülenme</span>
+                {/* 2. Gönderi İçeriği: Başlık, WhatsApp Formatlı Metin ve Tepkiler */}
+                <div className="p-4 sm:p-5 pt-3.5 pb-3 space-y-3">
+                  {/* Başlık: Kanal Adı, Rozet ve Tarih */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl overflow-hidden bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 flex items-center justify-center shrink-0">
+                        {channel.photoURL ? (
+                          <img
+                            src={channel.photoURL}
+                            alt={channel.name}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <Radio className="w-4 h-4 text-red-600" />
+                        )}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-1">
+                          <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                            {channel.name}
+                          </span>
+                          {channel.isVerified && (
+                            <VerifiedBadge
+                              isVerified={true}
+                              type="channel"
+                              channel={{
+                                id: channel.id,
+                                name: channel.name,
+                                photoURL: channel.photoURL,
+                                description: channel.description,
+                              }}
+                              badgeUrl={badgeUrl}
+                              size="xs"
+                            />
+                          )}
+                        </div>
+                        <span className="text-[10px] text-zinc-400">{postDate}</span>
+                      </div>
+                    </div>
+
+                    {/* Silme Butonu (Sadece Kurucu veya Admin) */}
+                    {(isOwner || isAdmin) && (
+                      <button
+                        id={`delete-post-${post.id}`}
+                        onClick={() => setPostToDelete(post.id)}
+                        className="p-1.5 text-zinc-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
+                        title="Gönderiyi Sil"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* WhatsApp Kalitesinde Gönderi Metni (Geniş Paragraflar ve Tıklanabilir Linkler) */}
+                  {post.text && (
+                    <div className="pt-0.5">
+                      <FormattedPostText text={post.text} />
+                    </div>
+                  )}
+
+                  {/* 3. Gönderi Alt Çubuğu: Tepkiler (Kullanıcılar ve Kurucu) & Görüntülenme (Sadece Kurucu/Admin) */}
+                  <div className="pt-2.5 border-t border-zinc-100 dark:border-zinc-800/60 flex items-center justify-between gap-2 flex-wrap">
+                    {/* Sol: Tepki Ekle ve Mevcut Tepkiler */}
+                    <div className="flex items-center gap-1.5 flex-wrap relative">
+                      {/* Hızlı Tepki Ekle Butonu */}
+                      <div className="relative">
+                        <button
+                          type="button"
+                          id={`post-reaction-btn-${post.id}`}
+                          onClick={() => {
+                            setActiveReactionPostId(
+                              activeReactionPostId === post.id ? null : post.id
+                            );
+                            setShowReactionEmojiPickerPostId(null);
+                          }}
+                          className="px-2.5 py-1 text-zinc-500 dark:text-zinc-400 hover:text-red-600 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-full transition-colors cursor-pointer flex items-center gap-1 text-xs border border-zinc-200/80 dark:border-zinc-700/80 bg-zinc-50/50 dark:bg-zinc-800/40"
+                          title="Tepki Ekle"
+                        >
+                          <Smile className="w-3.5 h-3.5" />
+                          <span className="text-[11px] font-medium">Tepki</span>
+                        </button>
+
+                        {/* Hızlı Tepki Açılır Çubuğu (WhatsApp Stili) */}
+                        {activeReactionPostId === post.id && (
+                          <div className="absolute bottom-full left-0 mb-2 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-2xl shadow-xl p-1.5 flex items-center gap-1 z-30 animate-in zoom-in-95 duration-150">
+                            {['❤️', '👍', '🔥', '👏', '😂', '🎉', '🥊', '🇹🇷'].map((emoji) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => {
+                                  handleToggleReaction(post.id, emoji);
+                                  setActiveReactionPostId(null);
+                                }}
+                                className="w-8 h-8 flex items-center justify-center text-lg hover:scale-125 active:scale-95 transition-transform rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-700 cursor-pointer"
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowReactionEmojiPickerPostId(post.id);
+                                setActiveReactionPostId(null);
+                              }}
+                              className="w-8 h-8 flex items-center justify-center text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-700 rounded-xl transition-colors cursor-pointer"
+                              title="Daha fazla emoji"
+                            >
+                              <Plus className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Tam Emoji Seçici Açılır Penceresi */}
+                        {showReactionEmojiPickerPostId === post.id && (
+                          <div className="absolute bottom-full left-0 mb-2 z-50">
+                            <EmojiPicker
+                              onSelectEmoji={(emoji) => {
+                                handleToggleReaction(post.id, emoji);
+                                setShowReactionEmojiPickerPostId(null);
+                              }}
+                              onClose={() => setShowReactionEmojiPickerPostId(null)}
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Mevcut Tepki Hapları (Pills) */}
+                      {post.reactions &&
+                        Object.entries(post.reactions).map(([emoji, uids]) => {
+                          if (!uids || uids.length === 0) return null;
+                          const hasReacted = uids.includes(currentUser.uid);
+                          return (
+                            <button
+                              key={emoji}
+                              type="button"
+                              onClick={() => handleToggleReaction(post.id, emoji)}
+                              className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs transition-all cursor-pointer border ${
+                                hasReacted
+                                  ? 'bg-red-50 dark:bg-red-950/50 border-red-300 dark:border-red-800 text-red-600 dark:text-red-400 font-semibold shadow-2xs'
+                                  : 'bg-zinc-100/80 dark:bg-zinc-800/80 border-zinc-200/80 dark:border-zinc-700 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200/80 dark:hover:bg-zinc-700'
+                              }`}
+                              title={`${uids.length} kişi bu tepkiyi verdi`}
+                            >
+                              <span>{emoji}</span>
+                              <span className="text-[10px] font-mono">{uids.length}</span>
+                            </button>
+                          );
+                        })}
+                    </div>
+
+                    {/* Sağ: Görüntülenme Sayısı (YALNIZCA Kurucu ve Admin) */}
+                    <div className="flex items-center gap-2 ml-auto">
+                      {(isOwner || isAdmin) && (
+                        <div
+                          className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-zinc-100 dark:bg-zinc-800/60 text-[11px] text-zinc-500 dark:text-zinc-400 font-medium"
+                          title="Görüntülenme Sayısı (Yalnızca Kurucu ve Yöneticiler görebilir)"
+                        >
+                          <Eye className="w-3.5 h-3.5 text-zinc-400" />
+                          <span>{post.viewsCount || 0}</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </article>
@@ -435,10 +640,10 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
 
       {/* 4. ALT ÇUBUK: GÖNDERİ PAYLAŞMA (YALNIZCA KURUCU VEYA ADMİN) */}
       {(isOwner || isAdmin) ? (
-        <div className="p-3 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 shrink-0 z-20">
+        <div className="p-3.5 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 shrink-0 z-20 shadow-sm">
           <div className="max-w-2xl mx-auto">
             {postError && (
-              <div className="mb-2 p-2 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-xl flex items-center gap-2 text-red-600 dark:text-red-400 text-xs">
+              <div className="mb-2.5 p-2 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-xl flex items-center gap-2 text-red-600 dark:text-red-400 text-xs">
                 <AlertCircle className="w-3.5 h-3.5 shrink-0" />
                 <span>{postError}</span>
               </div>
@@ -446,11 +651,11 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
 
             {/* Fotoğraf Önizlemesi */}
             {previewPhotoUrl && (
-              <div className="relative mb-2 inline-block">
+              <div className="relative mb-2.5 inline-block">
                 <img
                   src={previewPhotoUrl}
                   alt="Önizleme"
-                  className="h-20 w-auto rounded-xl object-cover border border-zinc-200 dark:border-zinc-700 shadow-sm"
+                  className="h-24 w-auto rounded-xl object-cover border border-zinc-200 dark:border-zinc-700 shadow-sm"
                 />
                 <button
                   type="button"
@@ -464,7 +669,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
 
             {/* Emoji Seçici Açılır Penceresi */}
             {showEmojiPicker && (
-              <div className="absolute bottom-20 left-4 sm:left-auto z-50">
+              <div className="absolute bottom-24 left-4 sm:left-auto z-50">
                 <EmojiPicker
                   onSelectEmoji={handleEmojiSelect}
                   onClose={() => setShowEmojiPicker(false)}
@@ -472,7 +677,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
               </div>
             )}
 
-            <form onSubmit={handlePublishPost} className="flex items-center gap-2">
+            <form onSubmit={handlePublishPost} className="flex flex-col gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -481,62 +686,76 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                 className="hidden"
               />
 
-              {/* Görsel Ekle Butonu */}
-              <button
-                type="button"
-                id="channel-attach-photo-btn"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={posting}
-                className="p-2.5 text-zinc-500 dark:text-zinc-400 hover:text-red-600 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors cursor-pointer"
-                title="Görsel Ekle"
-              >
-                <ImageIcon className="w-5 h-5" />
-              </button>
+              {/* WhatsApp Kalitesinde Çok Satırlı Giriş Alanı */}
+              <div className="relative flex items-start rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/60 focus-within:ring-2 focus-within:ring-red-500/20 focus-within:border-red-500 transition-all p-1.5">
+                <textarea
+                  id="channel-post-input"
+                  rows={2}
+                  value={postText}
+                  onChange={(e) => setPostText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                      e.preventDefault();
+                      handlePublishPost(e as any);
+                    }
+                  }}
+                  placeholder="Kanalınızda yeni bir güncelleme paylaşın...&#10;Paragraflar oluşturabilir, link ve görsel ekleyebilirsiniz."
+                  disabled={posting}
+                  className="flex-1 px-3 py-2 text-xs sm:text-sm bg-transparent text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none resize-none min-h-[50px] max-h-40 leading-relaxed font-normal"
+                />
 
-              {/* Emoji Butonu */}
-              <button
-                type="button"
-                id="channel-emoji-picker-btn"
-                onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-                disabled={posting}
-                className="p-2.5 text-zinc-500 dark:text-zinc-400 hover:text-red-600 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors cursor-pointer"
-                title="Emoji"
-              >
-                <Smile className="w-5 h-5" />
-              </button>
+                <div className="flex items-center gap-1 self-end pb-1 pr-1">
+                  {/* Görsel Ekle Butonu */}
+                  <button
+                    type="button"
+                    id="channel-attach-photo-btn"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={posting}
+                    className="p-2 text-zinc-500 dark:text-zinc-400 hover:text-red-600 hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 rounded-xl transition-colors cursor-pointer"
+                    title="Görsel Ekle"
+                  >
+                    <ImageIcon className="w-4.5 h-4.5" />
+                  </button>
 
-              {/* Metin Giriş Alanı */}
-              <input
-                id="channel-post-input"
-                type="text"
-                value={postText}
-                onChange={(e) => setPostText(e.target.value)}
-                placeholder="Kanalınızda yeni bir güncelleme paylaşın..."
-                disabled={posting}
-                className="flex-1 px-4 py-2.5 text-xs sm:text-sm rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-800/60 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 transition-all"
-              />
+                  {/* Emoji Butonu */}
+                  <button
+                    type="button"
+                    id="channel-emoji-picker-btn"
+                    onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                    disabled={posting}
+                    className="p-2 text-zinc-500 dark:text-zinc-400 hover:text-red-600 hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 rounded-xl transition-colors cursor-pointer"
+                    title="Emoji"
+                  >
+                    <Smile className="w-4.5 h-4.5" />
+                  </button>
 
-              {/* Paylaş Butonu */}
-              <button
-                type="submit"
-                id="channel-publish-btn"
-                disabled={posting || (!postText.trim() && !selectedPhotoFile)}
-                className="p-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:pointer-events-none text-white rounded-xl shadow-md shadow-red-600/20 transition-all cursor-pointer flex items-center justify-center shrink-0"
-                title="Yayınla"
-              >
-                {posting ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                ) : (
-                  <Send className="w-5 h-5" />
-                )}
-              </button>
+                  {/* Paylaş Butonu */}
+                  <button
+                    type="submit"
+                    id="channel-publish-btn"
+                    disabled={posting || (!postText.trim() && !selectedPhotoFile)}
+                    className="p-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:pointer-events-none text-white rounded-xl shadow-md shadow-red-600/20 transition-all cursor-pointer flex items-center justify-center shrink-0"
+                    title="Paylaş (Ctrl+Enter)"
+                  >
+                    {posting ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Send className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between text-[11px] text-zinc-400 px-1">
+                <span>💡 Paragraf ve boşluklar korunur. Ctrl+Enter ile hızlıca paylaşabilirsiniz.</span>
+              </div>
             </form>
           </div>
         </div>
       ) : (
         /* Normal Kullanıcılar İçin Bilgilendirici Alt Çubuk */
         <div className="p-3 bg-zinc-100/70 dark:bg-zinc-900/70 border-t border-zinc-200 dark:border-zinc-800 text-center text-xs text-zinc-500 shrink-0">
-          📢 Bu kanalda yalnızca yöneticiler gönderi paylaşabilir.
+          📢 Bu kanalda yalnızca yöneticiler gönderi paylaşabilir. Takipçiler tepki ekleyebilir.
         </div>
       )}
 

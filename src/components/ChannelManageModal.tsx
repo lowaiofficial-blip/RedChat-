@@ -172,7 +172,18 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
               <div className="text-[11px] text-zinc-500 flex items-center gap-1 mt-0.5">
                 <span className="truncate max-w-[200px]">{channel.name}</span>
                 {channel.isVerified && (
-                  <VerifiedBadge isVerified={true} badgeUrl={badgeUrl} size="xs" />
+                  <VerifiedBadge
+                    isVerified={true}
+                    type="channel"
+                    channel={{
+                      id: channel.id,
+                      name: channel.name,
+                      photoURL: channel.photoURL,
+                      description: channel.description,
+                    }}
+                    badgeUrl={badgeUrl}
+                    size="xs"
+                  />
                 )}
               </div>
             </div>

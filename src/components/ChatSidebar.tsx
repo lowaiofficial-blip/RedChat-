@@ -727,7 +727,18 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                               {ch.name}
                             </span>
                             {ch.isVerified && (
-                              <VerifiedBadge isVerified={true} badgeUrl={badgeUrl} size="xs" />
+                              <VerifiedBadge
+                                isVerified={true}
+                                type="channel"
+                                channel={{
+                                  id: ch.id,
+                                  name: ch.name,
+                                  photoURL: ch.photoURL,
+                                  description: ch.description,
+                                }}
+                                badgeUrl={badgeUrl}
+                                size="xs"
+                              />
                             )}
                           </div>
                           <span className="text-[10px] text-zinc-400 font-mono flex-shrink-0 ml-2">

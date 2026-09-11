@@ -146,6 +146,7 @@ export interface ChannelPost {
   text: string;
   imageUrl?: string | null;
   viewsCount: number;
+  reactions?: { [emoji: string]: string[] };
   createdAt: any;
 }
 

@@ -589,3 +589,48 @@ export async function ensureOfficialRedChatChannel(_creatorUid: string): Promise
   // Kullanıcı izni olmadan otomatik kanal oluşturulmaz
   return;
 }
+
+/**
+ * ❤️ Kanal gönderisine emoji tepkisi ekle / kaldır (Toggle).
+ * Hem kanal kurucuları hem de takipçi kullanıcılar tepki verebilir.
+ */
+export async function toggleChannelPostReaction(
+  channelId: string,
+  postId: string,
+  userId: string,
+  emoji: string
+): Promise<void> {
+  if (!db || !channelId || !postId || !userId || !emoji) return;
+
+  const postDocRef = doc(db, 'channels', channelId, 'posts', postId);
+  const postSnap = await getDoc(postDocRef);
+  if (!postSnap.exists()) return;
+
+  const data = postSnap.data();
+  const currentReactions: { [key: string]: string[] } = { ...(data.reactions || {}) };
+
+  const userList: string[] = Array.isArray(currentReactions[emoji])
+    ? [...currentReactions[emoji]]
+    : [];
+
+  const userIndex = userList.indexOf(userId);
+
+  if (userIndex > -1) {
+    // Kullanıcı zaten bu tepkiyi vermiş -> Kaldır
+    userList.splice(userIndex, 1);
+    if (userList.length === 0) {
+      delete currentReactions[emoji];
+    } else {
+      currentReactions[emoji] = userList;
+    }
+  } else {
+    // Kullanıcı bu tepkiyi vermemiş -> Ekle
+    userList.push(userId);
+    currentReactions[emoji] = userList;
+  }
+
+  await updateDoc(postDocRef, {
+    reactions: currentReactions,
+  });
+}
+

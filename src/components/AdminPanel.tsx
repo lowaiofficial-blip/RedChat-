@@ -1927,6 +1927,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                   {ch.isVerified && (
                                     <VerifiedBadge
                                       isVerified={true}
+                                      type="channel"
+                                      channel={{
+                                        id: ch.id,
+                                        name: ch.name,
+                                        photoURL: ch.photoURL,
+                                        description: ch.description,
+                                      }}
                                       badgeUrl={appSettings?.verifiedBadgeUrl}
                                       size="sm"
                                     />
