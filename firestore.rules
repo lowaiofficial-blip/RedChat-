@@ -31,6 +31,13 @@ service cloud.firestore {
       );
     }
 
+    // Kullanıcı Susturuldu mu? (Muted)
+    function isUserMuted() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isMuted == true;
+    }
+
     // =========================================================================
     // ⚙️ UYGULAMA GENEL AYARLARI (/settings/{settingId})
     // =========================================================================
@@ -177,7 +184,11 @@ service cloud.firestore {
 
       // 📝 GÖNDERİLER (/channels/{channelId}/posts/{postId})
       match /posts/{postId} {
-        allow read, write: if isAuthenticated();
+        allow read: if isAuthenticated();
+        // Create is blocked if the user is muted
+        allow create: if isAuthenticated() && !isUserMuted();
+        // Update/Delete are allowed for authenticated users (owner/admin logic applied in UI)
+        allow update, delete: if isAuthenticated();
 
         // 👁️ BENZERSİZ GÖRÜNTÜLENME KAYITLARI (/channels/{channelId}/posts/{postId}/views/{viewerUid})
         match /views/{viewerUid} {

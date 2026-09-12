@@ -689,9 +689,21 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
 
       {/* 4. ALT ÇUBUK: GÖNDERİ PAYLAŞMA (YALNIZCA KURUCU VEYA ADMİN) */}
       {(isOwner || isAdmin) ? (
-        <div className="p-3.5 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 shrink-0 z-20 shadow-sm">
-          <div className="max-w-2xl mx-auto">
-            {postError && (
+        currentUser.isMuted ? (
+          <div className="p-3.5 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 shrink-0 z-20 shadow-sm">
+            <div className="max-w-2xl mx-auto">
+              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 flex flex-col items-center justify-center text-center gap-2">
+                <AlertCircle className="w-5 h-5 text-red-500" />
+                <div className="text-xs text-red-600 dark:text-red-400 font-medium">
+                  Hesabınız susturulduğu için şu anda kanalınızda paylaşım yapamazsınız.
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="p-3.5 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 shrink-0 z-20 shadow-sm">
+            <div className="max-w-2xl mx-auto">
+              {postError && (
               <div className="mb-2.5 p-2 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-xl flex items-center gap-2 text-red-600 dark:text-red-400 text-xs">
                 <AlertCircle className="w-3.5 h-3.5 shrink-0" />
                 <span>{postError}</span>
@@ -801,6 +813,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
             </form>
           </div>
         </div>
+        )
       ) : (
         /* Normal Kullanıcılar İçin Bilgilendirici Alt Çubuk */
         <div className="p-3 bg-zinc-100/70 dark:bg-zinc-900/70 border-t border-zinc-200 dark:border-zinc-800 text-center text-xs text-zinc-500 shrink-0">
