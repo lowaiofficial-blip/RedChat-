@@ -17,7 +17,6 @@ import { ChatMessageItem } from './ChatMessageItem';
 import { EmojiPicker } from './EmojiPicker';
 import { GroupInfoModal } from './GroupInfoModal';
 import { VerifiedBadge } from './VerifiedBadge';
-import { RadialPulseLoader } from './RadialPulseLoader';
 import { SequentialTypingDots } from './SequentialTypingDots';
 import { getTypingInfo } from '../utils/typingHelper';
 import { MarkdownMessage } from './MarkdownMessage';
