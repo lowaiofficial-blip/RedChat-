@@ -12,6 +12,7 @@ import {
 import { uploadImageToImgBB } from '../services/imageUploadService';
 import { VerifiedBadge } from './VerifiedBadge';
 import { EmojiPicker } from './EmojiPicker';
+import { ChannelProfileModal } from './ChannelProfileModal';
 import {
   ArrowLeft,
   Radio,
@@ -131,6 +132,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
 }) => {
   const [posts, setPosts] = useState<ChannelPost[]>([]);
   const [loadingPosts, setLoadingPosts] = useState(true);
+  const [showChannelProfile, setShowChannelProfile] = useState(false);
 
   // Yeni gönderi state'leri (Kurucu / Admin için)
   const [postText, setPostText] = useState('');
@@ -327,7 +329,11 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
           </button>
 
           {/* Kanal Avatarı */}
-          <div className="relative shrink-0">
+          <button 
+            onClick={() => setShowChannelProfile(true)}
+            className="relative shrink-0 hover:opacity-80 transition-opacity focus:outline-none"
+            title="Kanal Profilini Görüntüle"
+          >
             <div className="w-10 h-10 rounded-2xl overflow-hidden bg-zinc-200 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 flex items-center justify-center">
               {channel.photoURL ? (
                 <img
@@ -339,11 +345,14 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                 <Radio className="w-5 h-5 text-red-600" />
               )}
             </div>
-          </div>
+          </button>
 
           {/* Kanal Başlığı & Takipçi Bilgisi */}
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5 leading-tight">
+            <button 
+              onClick={() => setShowChannelProfile(true)}
+              className="flex items-center gap-1.5 leading-tight hover:underline focus:outline-none text-left"
+            >
               <h1 className="font-bold text-sm sm:text-base text-zinc-900 dark:text-zinc-100 truncate">
                 {channel.name}
               </h1>
@@ -361,7 +370,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                   size="sm"
                 />
               )}
-            </div>
+            </button>
             <div className="flex items-center gap-2 text-xs text-zinc-500">
               <span className="flex items-center gap-1 font-medium">
                 <Users className="w-3.5 h-3.5 text-zinc-400" />
@@ -436,7 +445,19 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
         </div>
       </div>
 
-      {/* 2. KANAL AÇIKLAMA VE BİLGİ KARTI */}
+      {/* 2. KANAL BANNERI */}
+      {channel.bannerUrl && (
+        <div className="w-full h-32 sm:h-48 shrink-0 relative">
+          <img
+            src={channel.bannerUrl}
+            alt="Kanal Bannerı"
+            className="w-full h-full object-cover"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent pointer-events-none" />
+        </div>
+      )}
+
+      {/* 3. KANAL AÇIKLAMA VE BİLGİ KARTI */}
       <div className="px-4 py-3 bg-white/50 dark:bg-zinc-900/50 border-b border-zinc-200/60 dark:border-zinc-800/60 shrink-0">
         <div className="max-w-2xl mx-auto flex items-start gap-3">
           <div className="w-7 h-7 rounded-xl bg-red-50 dark:bg-red-950/30 text-red-600 flex items-center justify-center shrink-0 mt-0.5">
@@ -508,7 +529,10 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                   {/* Başlık: Kanal Adı, Rozet ve Tarih */}
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-xl overflow-hidden bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 flex items-center justify-center shrink-0">
+                      <button 
+                        onClick={() => setShowChannelProfile(true)}
+                        className="w-8 h-8 rounded-xl overflow-hidden bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 flex items-center justify-center shrink-0 hover:opacity-80 transition-opacity focus:outline-none"
+                      >
                         {channel.photoURL ? (
                           <img
                             src={channel.photoURL}
@@ -518,12 +542,15 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                         ) : (
                           <Radio className="w-4 h-4 text-red-600" />
                         )}
-                      </div>
+                      </button>
                       <div>
                         <div className="flex items-center gap-1">
-                          <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                          <button 
+                            onClick={() => setShowChannelProfile(true)}
+                            className="text-xs font-bold text-zinc-900 dark:text-zinc-100 hover:underline focus:outline-none text-left"
+                          >
                             {channel.name}
-                          </span>
+                          </button>
                           {channel.isVerified && (
                             <VerifiedBadge
                               isVerified={true}
@@ -934,6 +961,14 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {showChannelProfile && (
+        <ChannelProfileModal
+          channel={channel}
+          badgeUrl={badgeUrl}
+          onClose={() => setShowChannelProfile(false)}
+        />
       )}
     </div>
   );

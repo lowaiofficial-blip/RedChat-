@@ -28,10 +28,13 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
   const [channelDescription, setChannelDescription] = useState('');
   const [selectedPhotoFile, setSelectedPhotoFile] = useState<File | null>(null);
   const [previewPhotoUrl, setPreviewPhotoUrl] = useState<string | null>(null);
+  const [selectedBannerFile, setSelectedBannerFile] = useState<File | null>(null);
+  const [previewBannerUrl, setPreviewBannerUrl] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bannerInputRef = useRef<HTMLInputElement>(null);
 
   const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -54,15 +57,43 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
     setPreviewPhotoUrl(objectUrl);
   };
 
+  const handleBannerSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setError('Lütfen geçerli bir görsel dosyası seçin (PNG, JPG, WEBP).');
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setError('Görsel boyutu en fazla 10MB olabilir.');
+      return;
+    }
+
+    setError(null);
+    setSelectedBannerFile(file);
+
+    const objectUrl = URL.createObjectURL(file);
+    setPreviewBannerUrl(objectUrl);
+  };
+
   const handleRemovePhoto = () => {
     setSelectedPhotoFile(null);
     if (previewPhotoUrl) {
       URL.revokeObjectURL(previewPhotoUrl);
       setPreviewPhotoUrl(null);
     }
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleRemoveBanner = () => {
+    setSelectedBannerFile(null);
+    if (previewBannerUrl) {
+      URL.revokeObjectURL(previewBannerUrl);
+      setPreviewBannerUrl(null);
     }
+    if (bannerInputRef.current) bannerInputRef.current.value = '';
   };
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -94,10 +125,16 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
         finalPhotoUrl = await uploadImageToImgBB(selectedPhotoFile);
       }
 
+      let finalBannerUrl: string | null = null;
+      if (selectedBannerFile) {
+        finalBannerUrl = await uploadImageToImgBB(selectedBannerFile);
+      }
+
       const newChannelId = await createChannel(currentUser, {
         name: trimmedName,
         description: trimmedDesc,
         photoURL: finalPhotoUrl,
+        bannerUrl: finalBannerUrl,
       });
 
       onChannelCreated(newChannelId);
@@ -211,6 +248,58 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
             />
             <span className="text-[11px] text-zinc-400 mt-2">
               Kanal profil görseli (isteğe bağlı)
+            </span>
+          </div>
+
+          {/* Kanal Banneri Seçimi */}
+          <div className="flex flex-col items-center justify-center py-2">
+            <div className="relative group w-full max-w-sm">
+              <div className="w-full h-32 rounded-2xl overflow-hidden bg-zinc-100 dark:bg-zinc-800 border-2 border-dashed border-zinc-300 dark:border-zinc-700 flex items-center justify-center">
+                {previewBannerUrl ? (
+                  <img
+                    src={previewBannerUrl}
+                    alt="Kanal Banner Önizleme"
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-zinc-400 p-2 text-center">
+                    <Camera className="w-8 h-8 stroke-[1.5] mb-1 text-zinc-400" />
+                    <span className="text-[10px] font-medium">Banner Yükle</span>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => bannerInputRef.current?.click()}
+                disabled={creating}
+                className="absolute -bottom-2 -right-2 p-2 bg-red-600 text-white rounded-xl shadow-md hover:bg-red-700 transition-colors cursor-pointer"
+                title="Banner Seç"
+              >
+                <Camera className="w-4 h-4" />
+              </button>
+
+              {previewBannerUrl && (
+                <button
+                  type="button"
+                  onClick={handleRemoveBanner}
+                  disabled={creating}
+                  className="absolute -top-2 -right-2 p-1.5 bg-zinc-900 text-zinc-200 rounded-lg shadow-md hover:bg-zinc-800 transition-colors cursor-pointer"
+                  title="Bannerı Kaldır"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <input
+              ref={bannerInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleBannerSelect}
+              className="hidden"
+            />
+            <span className="text-[11px] text-zinc-400 mt-2">
+              Kanal arka plan görseli (isteğe bağlı)
             </span>
           </div>
 

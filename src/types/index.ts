@@ -130,6 +130,7 @@ export interface Channel {
   name: string;
   description: string;
   photoURL?: string | null;
+  bannerUrl?: string | null;
   isVerified?: boolean;
   followerCount: number;
   postCount?: number;

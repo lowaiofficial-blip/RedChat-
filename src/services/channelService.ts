@@ -42,6 +42,7 @@ export async function createChannel(
     name: string;
     description: string;
     photoURL?: string | null;
+    bannerUrl?: string | null;
   }
 ): Promise<string> {
   if (!db || !user?.uid) throw new Error('Veritabanı veya kullanıcı oturumu bulunamadı.');
@@ -60,6 +61,7 @@ export async function createChannel(
     name: trimmedName,
     description: trimmedDesc,
     photoURL: data.photoURL || null,
+    bannerUrl: data.bannerUrl || null,
     isVerified: false,
     followerCount: 1, // Kurucu otomatik ilk takipçidir
     postCount: 0,
@@ -806,6 +808,7 @@ export async function updateChannelInfo(
     name?: string;
     description?: string;
     photoURL?: string | null;
+    bannerUrl?: string | null;
   }
 ): Promise<void> {
   if (!db || !channelId) return;
@@ -817,6 +820,7 @@ export async function updateChannelInfo(
   if (data.name !== undefined) updates.name = data.name.trim();
   if (data.description !== undefined) updates.description = data.description.trim();
   if (data.photoURL !== undefined) updates.photoURL = data.photoURL;
+  if (data.bannerUrl !== undefined) updates.bannerUrl = data.bannerUrl;
 
   await updateDoc(doc(db, 'channels', channelId), updates);
 }

@@ -69,12 +69,15 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
   // Fotoğraf state'leri
   const [selectedPhotoFile, setSelectedPhotoFile] = useState<File | null>(null);
   const [previewPhotoUrl, setPreviewPhotoUrl] = useState<string | null>(channel.photoURL || null);
+  const [selectedBannerFile, setSelectedBannerFile] = useState<File | null>(null);
+  const [previewBannerUrl, setPreviewBannerUrl] = useState<string | null>(channel.bannerUrl || null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bannerInputRef = useRef<HTMLInputElement>(null);
 
   // Takipçileri ve Kurucuları dinle
   useEffect(() => {
@@ -147,10 +150,36 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
     setError(null);
   };
 
+  const handleBannerSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setError('Lütfen geçerli bir görsel dosyası seçin.');
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setError('Görsel boyutu en fazla 10MB olabilir.');
+      return;
+    }
+
+    setSelectedBannerFile(file);
+    const objUrl = URL.createObjectURL(file);
+    setPreviewBannerUrl(objUrl);
+    setError(null);
+  };
+
   const handleRemovePhoto = () => {
     setSelectedPhotoFile(null);
     setPreviewPhotoUrl(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleRemoveBanner = () => {
+    setSelectedBannerFile(null);
+    setPreviewBannerUrl(null);
+    if (bannerInputRef.current) bannerInputRef.current.value = '';
   };
 
   const handleSaveSettings = async (e: React.FormEvent) => {
@@ -173,10 +202,16 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
         finalPhotoUrl = await uploadImageToImgBB(selectedPhotoFile);
       }
 
+      let finalBannerUrl = previewBannerUrl;
+      if (selectedBannerFile) {
+        finalBannerUrl = await uploadImageToImgBB(selectedBannerFile);
+      }
+
       await updateChannelInfo(channel.id, {
         name: trimmedName,
         description: trimmedDesc,
         photoURL: finalPhotoUrl,
+        bannerUrl: finalBannerUrl,
       });
 
       const updatedChannel: Channel = {
@@ -184,6 +219,7 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
         name: trimmedName,
         description: trimmedDesc,
         photoURL: finalPhotoUrl,
+        bannerUrl: finalBannerUrl,
       };
       setSuccess('Kanal bilgileri başarıyla güncellendi.');
       onChannelUpdated?.(updatedChannel);
@@ -372,14 +408,46 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
                   onChange={handlePhotoSelect}
                   className="hidden"
                 />
-                <div className="text-xs text-zinc-500">
-                  <div className="font-semibold text-zinc-800 dark:text-zinc-200">
-                    Kanal Profil Fotoğrafı
+                
+                {/* Banner Görseli Düzenleme */}
+                <div className="relative flex-1">
+                  <div className="w-full h-16 rounded-2xl overflow-hidden bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 flex items-center justify-center">
+                    {previewBannerUrl ? (
+                      <img
+                        src={previewBannerUrl}
+                        alt="Kanal Bannerı"
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <span className="text-[10px] text-zinc-400 font-medium">Banner (Opsiyonel)</span>
+                    )}
                   </div>
-                  <div className="text-[11px] text-zinc-400">
-                    JPG, PNG veya WEBP (Maks 10MB)
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => bannerInputRef.current?.click()}
+                    className="absolute -bottom-1 -right-1 p-1.5 bg-red-600 text-white rounded-lg shadow-sm hover:bg-red-700 transition-colors cursor-pointer"
+                    title="Bannerı Değiştir"
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                  </button>
+                  {previewBannerUrl && (
+                    <button
+                      type="button"
+                      onClick={handleRemoveBanner}
+                      className="absolute -top-1 -right-1 p-1 bg-zinc-900 text-zinc-200 rounded-md shadow-sm hover:bg-zinc-800 transition-colors cursor-pointer"
+                      title="Bannerı Kaldır"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
                 </div>
+                <input
+                  ref={bannerInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleBannerSelect}
+                  className="hidden"
+                />
               </div>
 
               {/* Kanal Adı */}
