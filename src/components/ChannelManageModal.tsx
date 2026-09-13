@@ -360,8 +360,9 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
 
           {/* TAB 1: KANAL AYARLARI */}
           {activeTab === 'settings' && (
-            <form onSubmit={handleSaveSettings} className="space-y-4">
-              {/* Gizlilik Bildirimi */}
+            <div className="space-y-5">
+              <form onSubmit={handleSaveSettings} className="space-y-4">
+                {/* Gizlilik Bildirimi */}
               <div className="p-3 bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-200 dark:border-zinc-800 rounded-xl flex items-start gap-2.5 text-zinc-600 dark:text-zinc-400 text-xs">
                 <ShieldCheck className="w-4 h-4 flex-shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />
                 <span>
@@ -500,8 +501,9 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
                   )}
                 </button>
               </div>
+            </form>
 
-              {/* Kanal Mavi Tik Başvurusu */}
+            {/* Kanal Mavi Tik Başvurusu */}
               {(isPrimaryOwner || isSystemAdmin) && (
                 <ChannelVerificationForm channel={channel} />
               )}
@@ -624,7 +626,7 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
                   )}
                 </div>
               </div>
-            </form>
+            </div>
           )}
 
           {/* TAB 2: TAKİPÇİ VE KURUCU YÖNETİMİ (SADECE KURUCU VE ADMİN) */}

@@ -98,7 +98,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     return map;
   }, [localUsers]);
 
-  const [activeTab, setActiveTab] = useState<'users' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
   const [searchQuery, setSearchQuery] = useState('');
   const [userFilter, setUserFilter] = useState<'all' | 'online' | 'banned' | 'muted' | 'verified'>('all');
 
@@ -1006,10 +1006,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
               }`}
             >
-              <span>Kullanıcılar</span>
+              <Users className="w-3.5 h-3.5" />
+              <span>Kullanıcılar ({localUsers.length})</span>
             </button>
             <button
-              onClick={() => setActiveTab('verifications' as any)}
+              onClick={() => setActiveTab('verifications')}
               className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                 activeTab === 'verifications'
                   ? 'bg-white dark:bg-zinc-900 text-red-600 dark:text-red-400 shadow-xs'
@@ -1018,9 +1019,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             >
               <ShieldCheck className="w-3.5 h-3.5" />
               <span>Doğrulamalar</span>
-
-              <Users className="w-3.5 h-3.5" />
-              <span>Kullanıcılar ({localUsers.length})</span>
             </button>
 
             <button

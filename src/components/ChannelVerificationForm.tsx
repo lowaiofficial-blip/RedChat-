@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { submitVerificationRequest, subscribeToMyVerificationRequests } from '../services/verificationService';
 import type { VerificationRequest, Channel } from '../types';
-import { Loader2, CheckCircle, Clock, XCircle, ShieldCheck } from 'lucide-react';
+import { Loader2, CheckCircle, Clock, XCircle, ShieldCheck, Send } from 'lucide-react';
 
 interface ChannelVerificationFormProps {
   channel: Channel;
@@ -12,6 +12,7 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
 
   const [category, setCategory] = useState('Topluluk');
@@ -29,9 +30,14 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
     };
   }, [channel.id]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e?: React.SyntheticEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     setError(null);
+    setSuccessMsg(null);
+
     if (!reason.trim()) {
       setError('Lütfen neden doğrulanmak istediğinizi belirtin.');
       return;
@@ -52,7 +58,10 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
       setReason('');
       setLinks('');
       setExtraInfo('');
+      setSuccessMsg('Kanal mavi tik başvurunuz başarıyla alındı!');
+      setTimeout(() => setSuccessMsg(null), 5000);
     } catch (err: any) {
+      console.error('Channel verification submit error:', err);
       setError(err.message || 'Başvuru gönderilirken bir hata oluştu.');
     } finally {
       setSubmitting(false);
@@ -71,6 +80,14 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
           <span>Kanal Mavi Tik Doğrulaması</span>
         </h4>
       </div>
+
+      {/* Başarı Bildirimi */}
+      {successMsg && (
+        <div className="mb-3 p-3 rounded-xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/70 dark:bg-emerald-950/30 text-xs text-emerald-700 dark:text-emerald-400 flex items-center gap-2">
+          <CheckCircle className="w-4 h-4 shrink-0 text-emerald-500" />
+          <span>{successMsg}</span>
+        </div>
+      )}
 
       {loading ? (
         <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/60 flex items-center justify-center">
@@ -118,8 +135,12 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
               )}
               <button 
                 type="button"
-                onClick={() => setShowForm(true)}
-                className="self-start text-[11px] font-bold text-red-600 dark:text-red-400 hover:underline pt-1 cursor-pointer"
+                id="reapply-channel-verification-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowForm(true);
+                }}
+                className="self-start text-xs font-bold text-red-600 dark:text-red-400 hover:underline pt-1 cursor-pointer min-h-[36px] flex items-center active:scale-95 transition-all"
               >
                 Yeniden Başvur →
               </button>
@@ -139,8 +160,12 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
               </div>
               <button 
                 type="button"
-                onClick={() => setShowForm(true)}
-                className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer shrink-0"
+                id="open-channel-verification-form-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowForm(true);
+                }}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer shrink-0 min-h-[40px] flex items-center justify-center"
               >
                 Başvur
               </button>
@@ -149,7 +174,7 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
 
           {/* Form */}
           {showForm && (
-            <form onSubmit={handleSubmit} className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/60 space-y-3 animate-in fade-in">
+            <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/60 space-y-3 animate-in fade-in">
               <div>
                 <label className="block text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
                   Kategori
@@ -190,7 +215,6 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
                   value={reason}
                   onChange={(e) => setReason(e.target.value)}
                   placeholder="Bu kanalın neden doğrulanması gerektiğini açıklayın..."
-                  required
                   rows={3}
                   className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                 />
@@ -210,30 +234,46 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
               </div>
               
               {error && (
-                <div className="p-2 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/40 rounded-lg text-red-600 dark:text-red-400 text-xs">
+                <div className="p-2.5 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/40 rounded-lg text-red-600 dark:text-red-400 text-xs">
                   {error}
                 </div>
               )}
               
-              <div className="flex items-center justify-end gap-2 pt-1">
+              <div className="flex items-center justify-end gap-2 pt-2">
                 <button 
                   type="button"
-                  onClick={() => setShowForm(false)}
+                  id="cancel-channel-verification-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowForm(false);
+                    setError(null);
+                  }}
                   disabled={submitting}
-                  className="px-3 py-1.5 text-xs font-semibold text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl cursor-pointer transition-colors"
+                  className="px-4 py-2 text-xs font-semibold text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 active:scale-95 rounded-xl cursor-pointer transition-all min-h-[40px] flex items-center justify-center"
                 >
                   Vazgeç
                 </button>
                 <button 
-                  type="submit"
+                  type="button"
+                  id="submit-channel-verification-btn"
+                  onClick={handleSubmit}
                   disabled={submitting}
-                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-xs"
+                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-xs transition-all min-h-[40px] justify-center"
                 >
-                  {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                  <span>Başvuruyu Gönder</span>
+                  {submitting ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Gönderiliyor...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-3.5 h-3.5" />
+                      <span>Başvuruyu Gönder</span>
+                    </>
+                  )}
                 </button>
               </div>
-            </form>
+            </div>
           )}
         </>
       )}
