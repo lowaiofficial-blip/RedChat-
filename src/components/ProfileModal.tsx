@@ -593,15 +593,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               <div className="mb-6">
                 <h4 className="text-xs font-semibold text-zinc-900 dark:text-white mb-2.5 flex items-center gap-1.5">
                   <Bell className="w-4 h-4 text-zinc-500" />
-              <UserVerificationForm user={user} />
-
                   Bildirimler
                 </h4>
                 <div className="flex items-center justify-between p-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
                   <div className="flex flex-col">
                     <span className="text-xs font-medium text-zinc-900 dark:text-zinc-100">
-              <UserVerificationForm user={user} />
-
                       Anlık Bildirimler
                     </span>
                     <span className="text-[10px] text-zinc-500">
@@ -615,8 +611,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       pushEnabled ? 'bg-red-600' : 'bg-zinc-200 dark:bg-zinc-700'
                     } ${pushLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
                   >
-              <UserVerificationForm user={user} />
-
                     <span className="sr-only">Bildirimleri Aç</span>
                     <span
                       aria-hidden="true"
@@ -627,6 +621,9 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   </button>
                 </div>
               </div>
+
+              {/* Mavi Tik Doğrulama Başvurusu */}
+              {isCurrentUser && <UserVerificationForm user={user} />}
 
               <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800">
                 <button

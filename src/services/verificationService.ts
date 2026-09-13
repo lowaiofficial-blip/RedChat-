@@ -17,16 +17,18 @@ import type { VerificationRequest } from '../types';
 export async function submitVerificationRequest(data: Omit<VerificationRequest, 'id' | 'status' | 'createdAt' | 'updatedAt'>): Promise<void> {
   if (!db) throw new Error('Firestore hazır değil');
   
-  // Check pending
+  // Check pending using single-field query to prevent composite index issues
+  const targetField = data.type === 'user' ? 'userId' : 'channelId';
+  const targetVal = data.type === 'user' ? data.userId : data.channelId;
+
   const reqQuery = query(
     collection(db, 'verificationRequests'),
-    where('type', '==', data.type),
-    where(data.type === 'user' ? 'userId' : 'channelId', '==', data.type === 'user' ? data.userId : data.channelId),
-    where('status', '==', 'pending')
+    where(targetField, '==', targetVal)
   );
   
   const snapshot = await getDocs(reqQuery);
-  if (!snapshot.empty) {
+  const hasPending = snapshot.docs.some(d => d.data().status === 'pending');
+  if (hasPending) {
     throw new Error('Halihazırda bekleyen bir doğrulama başvurunuz bulunuyor.');
   }
 
@@ -46,18 +48,26 @@ export function subscribeToMyVerificationRequests(
 ) {
   if (!db) return () => {};
   
+  const targetField = type === 'user' ? 'userId' : 'channelId';
   const reqQuery = query(
     collection(db, 'verificationRequests'),
-    where('type', '==', type),
-    where(type === 'user' ? 'userId' : 'channelId', '==', id),
-    orderBy('createdAt', 'desc')
+    where(targetField, '==', id)
   );
 
   return onSnapshot(reqQuery, (snapshot) => {
-    const requests = snapshot.docs.map(d => d.data() as VerificationRequest);
+    const requests = snapshot.docs
+      .map(d => d.data() as VerificationRequest)
+      .filter(r => r.type === type);
+
+    requests.sort((a, b) => {
+      const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt?.seconds ? a.createdAt.seconds * 1000 : 0);
+      const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt?.seconds ? b.createdAt.seconds * 1000 : 0);
+      return timeB - timeA;
+    });
     onUpdate(requests);
   }, (err) => {
     console.error("Verification req error", err);
+    onUpdate([]);
   });
 }
 
@@ -66,16 +76,19 @@ export function subscribeToAllVerificationRequests(
 ) {
   if (!db) return () => {};
   
-  const reqQuery = query(
-    collection(db, 'verificationRequests'),
-    orderBy('createdAt', 'desc')
-  );
+  const reqQuery = collection(db, 'verificationRequests');
 
   return onSnapshot(reqQuery, (snapshot) => {
     const requests = snapshot.docs.map(d => d.data() as VerificationRequest);
+    requests.sort((a, b) => {
+      const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt?.seconds ? a.createdAt.seconds * 1000 : 0);
+      const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt?.seconds ? b.createdAt.seconds * 1000 : 0);
+      return timeB - timeA;
+    });
     onUpdate(requests);
   }, (err) => {
     console.error("Verification admin fetch error", err);
+    onUpdate([]);
   });
 }
 

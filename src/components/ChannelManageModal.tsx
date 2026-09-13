@@ -501,6 +501,11 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
                 </button>
               </div>
 
+              {/* Kanal Mavi Tik Başvurusu */}
+              {(isPrimaryOwner || isSystemAdmin) && (
+                <ChannelVerificationForm channel={channel} />
+              )}
+
               {/* Hızlı İşlemler: Yalnızca Bu Kanalın Tepkilerini Sıfırla */}
               <div className="pt-5 border-t border-zinc-200 dark:border-zinc-800">
                 <div className="p-3.5 rounded-xl border border-amber-200 dark:border-amber-950/80 bg-amber-50/50 dark:bg-amber-950/20 flex flex-col gap-3">

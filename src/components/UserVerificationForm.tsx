@@ -25,7 +25,9 @@ export const UserVerificationForm: React.FC<UserVerificationFormProps> = ({ user
       setRequests(data);
       setLoading(false);
     });
-    return () => unsub();
+    return () => {
+      if (typeof unsub === 'function') unsub();
+    };
   }, [user.uid]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -59,144 +61,179 @@ export const UserVerificationForm: React.FC<UserVerificationFormProps> = ({ user
     }
   };
 
-  if (loading) {
-    return <div className="p-4 flex justify-center"><Loader2 className="w-5 h-5 animate-spin text-zinc-400" /></div>;
-  }
-
   const pendingReq = requests.find(r => r.status === 'pending');
   const lastReq = requests[0];
+  const isUserVerified = Boolean(user.isVerified || (lastReq?.status === 'approved' && !pendingReq));
 
   return (
-    <div className="mt-6 mb-4">
-      <h4 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mb-2 flex items-center gap-1.5">
+    <div className="mb-6">
+      <h4 className="text-xs font-semibold text-zinc-900 dark:text-white mb-2.5 flex items-center gap-1.5">
         <ShieldCheck className="w-4 h-4 text-blue-500" />
-        Doğrulama Başvurusu
+        <span>Doğrulama Başvurusu</span>
       </h4>
 
-      {!showForm && pendingReq && (
-        <div className="p-4 rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-500/10 dark:border-amber-500/20 text-sm">
-          <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 font-medium mb-1">
-            <Clock className="w-4 h-4" />
-            Başvurunuz inceleniyor
-          </div>
-          <p className="text-xs text-amber-600/80 dark:text-amber-400/80">
-            RedChat ekibi başvurunuzu inceliyor. Bu işlem biraz zaman alabilir.
-          </p>
+      {loading ? (
+        <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex items-center justify-center">
+          <Loader2 className="w-4 h-4 animate-spin text-zinc-400" />
         </div>
-      )}
-
-      {!showForm && !pendingReq && lastReq?.status === 'approved' && user.isVerified && (
-        <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50 dark:bg-emerald-500/10 dark:border-emerald-500/20 text-sm">
-          <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400 font-medium mb-1">
-            <CheckCircle className="w-4 h-4" />
-            Hesabınız doğrulandı
-          </div>
-          <p className="text-xs text-emerald-600/80 dark:text-emerald-400/80">
-            Mavi tik rozetiniz profilinizde görüntüleniyor.
-          </p>
-        </div>
-      )}
-
-      {!showForm && !pendingReq && lastReq?.status === 'rejected' && (
-        <div className="p-4 rounded-xl border border-red-200 bg-red-50 dark:bg-red-500/10 dark:border-red-500/20 text-sm mb-3">
-          <div className="flex items-center gap-2 text-red-700 dark:text-red-400 font-medium mb-1">
-            <XCircle className="w-4 h-4" />
-            Başvurunuz onaylanmadı
-          </div>
-          {lastReq.rejectionReason && (
-            <p className="text-xs text-red-600/80 dark:text-red-400/80 mb-2">
-              Neden: {lastReq.rejectionReason}
-            </p>
+      ) : (
+        <>
+          {/* Durum 1: Doğrulanmış Hesap */}
+          {!showForm && isUserVerified && (
+            <div className="p-3.5 rounded-xl border border-blue-200 dark:border-blue-900/40 bg-blue-50/50 dark:bg-blue-950/20 text-xs">
+              <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold mb-1">
+                <CheckCircle className="w-4 h-4 text-blue-500 shrink-0" />
+                <span>Hesabınız Doğrulandı</span>
+              </div>
+              <p className="text-[11px] text-zinc-600 dark:text-zinc-400">
+                Profilinizde resmi mavi tik rozeti aktiftir.
+              </p>
+            </div>
           )}
-          <button 
-            onClick={() => setShowForm(true)}
-            className="text-xs font-semibold text-red-600 hover:underline"
-          >
-            Tekrar Başvur
-          </button>
-        </div>
-      )}
 
-      {!showForm && !pendingReq && lastReq?.status !== 'approved' && lastReq?.status !== 'rejected' && (
-         <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50 flex flex-col items-start gap-2">
-           <p className="text-xs text-zinc-600 dark:text-zinc-400">Resmi bir figür, içerik üreticisi veya markaysanız mavi tik başvurusu yapabilirsiniz.</p>
-           <button 
-             onClick={() => setShowForm(true)}
-             className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold rounded-lg transition-colors"
-           >
-             Başvuru Yap
-           </button>
-         </div>
-      )}
+          {/* Durum 2: Bekleyen Başvuru */}
+          {!showForm && !isUserVerified && pendingReq && (
+            <div className="p-3.5 rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50/50 dark:bg-amber-950/20 text-xs">
+              <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 font-semibold mb-1">
+                <Clock className="w-4 h-4 text-amber-500 shrink-0" />
+                <span>Başvurunuz İnceleniyor</span>
+              </div>
+              <p className="text-[11px] text-amber-800/80 dark:text-amber-400/80">
+                Yetkililer başvurunuzu değerlendiriyor. Sonuçlandığında bildirim alacaksınız.
+              </p>
+            </div>
+          )}
 
-      {showForm && (
-        <form onSubmit={handleSubmit} className="space-y-3 p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50">
-          <div>
-            <label className="block text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 mb-1">Hesap Türü</label>
-            <select 
-              value={accountType}
-              onChange={(e) => setAccountType(e.target.value)}
-              className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option>İçerik Üreticisi</option>
-              <option>Marka</option>
-              <option>Kuruluş</option>
-              <option>Kamuya Mal Olmuş Kişi</option>
-              <option>Diğer</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 mb-1">Web Sitesi / Sosyal Medya (İsteğe Bağlı)</label>
-            <input 
-              type="text"
-              value={links}
-              onChange={(e) => setLinks(e.target.value)}
-              placeholder="https://"
-              className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 mb-1">Neden Doğrulanmak İstiyorsunuz?</label>
-            <textarea 
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="Kısaca açıklayın..."
-              required
-              rows={3}
-              className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 mb-1">Ek Bilgi (İsteğe Bağlı)</label>
-            <textarea 
-              value={extraInfo}
-              onChange={(e) => setExtraInfo(e.target.value)}
-              placeholder="Eklemek istedikleriniz..."
-              rows={2}
-              className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-            />
-          </div>
-          
-          {error && <div className="text-red-500 text-xs">{error}</div>}
-          
-          <div className="flex items-center justify-end gap-2 pt-2">
-            <button 
-              type="button"
-              onClick={() => setShowForm(false)}
-              className="px-3 py-1.5 text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-800 rounded-lg"
-            >
-              İptal
-            </button>
-            <button 
-              type="submit"
-              disabled={submitting}
-              className="px-4 py-1.5 bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 disabled:opacity-50"
-            >
-              {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              Gönder
-            </button>
-          </div>
-        </form>
+          {/* Durum 3: Reddedilen Başvuru */}
+          {!showForm && !isUserVerified && !pendingReq && lastReq?.status === 'rejected' && (
+            <div className="p-3.5 rounded-xl border border-red-200 dark:border-red-900/40 bg-red-50/50 dark:bg-red-950/20 text-xs flex flex-col gap-2">
+              <div className="flex items-center gap-2 text-red-600 dark:text-red-400 font-semibold">
+                <XCircle className="w-4 h-4 text-red-500 shrink-0" />
+                <span>Son Başvurunuz Onaylanmadı</span>
+              </div>
+              {lastReq.rejectionReason && (
+                <p className="text-[11px] text-red-700/80 dark:text-red-400/80">
+                  <span className="font-bold">Gerekçe:</span> {lastReq.rejectionReason}
+                </p>
+              )}
+              <button 
+                type="button"
+                onClick={() => setShowForm(true)}
+                className="self-start text-[11px] font-bold text-red-600 dark:text-red-400 hover:underline pt-1 cursor-pointer"
+              >
+                Yeni Başvuru Gönder →
+              </button>
+            </div>
+          )}
+
+          {/* Durum 4: Henüz Başvuru Yapmamış */}
+          {!showForm && !isUserVerified && !pendingReq && lastReq?.status !== 'rejected' && (
+            <div className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                  Mavi Tik Başvurusu
+                </p>
+                <p className="text-[10px] text-zinc-500">
+                  Tanınmış kişi, içerik üreticisi veya kurumlar için
+                </p>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setShowForm(true)}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer shrink-0"
+              >
+                Başvur
+              </button>
+            </div>
+          )}
+
+          {/* Başvuru Formu */}
+          {showForm && (
+            <form onSubmit={handleSubmit} className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 space-y-3 animate-in fade-in">
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                  Hesap Türü
+                </label>
+                <select 
+                  value={accountType}
+                  onChange={(e) => setAccountType(e.target.value)}
+                  className="w-full px-3 py-2 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option>İçerik Üreticisi</option>
+                  <option>Marka / Şirket</option>
+                  <option>Kuruluş / Topluluk</option>
+                  <option>Kamuya Mal Olmuş Kişi</option>
+                  <option>Diğer</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                  Sosyal Medya veya Web Sitesi (İsteğe bağlı)
+                </label>
+                <input 
+                  type="url"
+                  value={links}
+                  onChange={(e) => setLinks(e.target.value)}
+                  placeholder="https://instagram.com/kullaniciadi"
+                  className="w-full px-3 py-2 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                  Doğrulanma Gerekçesi <span className="text-red-500">*</span>
+                </label>
+                <textarea 
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder="Hesabınızın neden doğrulanması gerektiğini açıklayın..."
+                  required
+                  rows={3}
+                  className="w-full px-3 py-2 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                  Ek Bilgi (İsteğe bağlı)
+                </label>
+                <textarea 
+                  value={extraInfo}
+                  onChange={(e) => setExtraInfo(e.target.value)}
+                  placeholder="Eklemek istediğiniz diğer detaylar..."
+                  rows={2}
+                  className="w-full px-3 py-2 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                />
+              </div>
+              
+              {error && (
+                <div className="p-2 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/40 rounded-lg text-red-600 dark:text-red-400 text-xs">
+                  {error}
+                </div>
+              )}
+              
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button 
+                  type="button"
+                  onClick={() => setShowForm(false)}
+                  disabled={submitting}
+                  className="px-3 py-1.5 text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl cursor-pointer"
+                >
+                  Vazgeç
+                </button>
+                <button 
+                  type="submit"
+                  disabled={submitting}
+                  className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-xs"
+                >
+                  {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>Başvuruyu Gönder</span>
+                </button>
+              </div>
+            </form>
+          )}
+        </>
       )}
     </div>
   );
