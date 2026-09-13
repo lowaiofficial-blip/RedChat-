@@ -33,8 +33,16 @@ export async function submitVerificationRequest(data: Omit<VerificationRequest, 
   }
 
   const reqRef = doc(collection(db, 'verificationRequests'));
+  // Remove any undefined keys to satisfy Firestore constraints
+  const cleanData: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value !== undefined) {
+      cleanData[key] = value;
+    }
+  }
+
   await setDoc(reqRef, {
-    ...data,
+    ...cleanData,
     id: reqRef.id,
     status: 'pending',
     createdAt: serverTimestamp()

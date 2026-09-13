@@ -45,15 +45,17 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
 
     setSubmitting(true);
     try {
-      await submitVerificationRequest({
+      const reqPayload: Record<string, any> = {
         type: 'channel',
         channelId: channel.id,
         channelName: channel.name,
         category,
-        links: links.trim() || undefined,
         reason: reason.trim(),
-        extraInfo: extraInfo.trim() || undefined,
-      });
+      };
+      if (links.trim()) reqPayload.links = links.trim();
+      if (extraInfo.trim()) reqPayload.extraInfo = extraInfo.trim();
+
+      await submitVerificationRequest(reqPayload as any);
       setShowForm(false);
       setReason('');
       setLinks('');
