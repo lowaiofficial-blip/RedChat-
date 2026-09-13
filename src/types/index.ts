@@ -178,3 +178,22 @@ export interface ChannelNotification {
   read: boolean;
 }
 
+
+export interface VerificationRequest {
+  id: string;
+  type: 'user' | 'channel';
+  userId?: string;
+  username?: string;
+  displayName?: string;
+  accountType?: string;
+  channelId?: string;
+  channelName?: string;
+  category?: string;
+  links?: string;
+  reason: string;
+  extraInfo?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  rejectionReason?: string;
+  createdAt: any;
+  updatedAt?: any;
+}

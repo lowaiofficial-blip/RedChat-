@@ -1,3 +1,4 @@
+import { AdminVerificationTab } from './AdminVerificationTab';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { UserProfile, AppSettings, Conversation, ChatMessage, Channel, ChannelPost } from '../types';
 import {
@@ -1005,6 +1006,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
               }`}
             >
+              <span>Kullanıcılar</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('verifications' as any)}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                activeTab === 'verifications'
+                  ? 'bg-white dark:bg-zinc-900 text-red-600 dark:text-red-400 shadow-xs'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+              }`}
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Doğrulamalar</span>
+
               <Users className="w-3.5 h-3.5" />
               <span>Kullanıcılar ({localUsers.length})</span>
             </button>
@@ -1083,6 +1097,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       <main className="flex-1 w-full overflow-y-auto overflow-x-hidden p-3 sm:p-5 md:p-8">
         <div className="max-w-7xl mx-auto space-y-6">
           {/* TAB 1: KULLANICI YÖNETİMİ & MODERASYON */}
+          {activeTab === 'verifications' && <AdminVerificationTab />}
+
           {activeTab === 'users' && (
             <div className="space-y-5">
               {/* Bildirim Çubukları */}

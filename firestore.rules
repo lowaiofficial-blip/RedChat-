@@ -39,6 +39,13 @@ service cloud.firestore {
     }
 
     // =========================================================================
+    // 🛡️ DOĞRULAMA BAŞVURULARI (/verificationRequests/{requestId})
+    // =========================================================================
+    match /verificationRequests/{requestId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // =========================================================================
     // ⚙️ UYGULAMA GENEL AYARLARI (/settings/{settingId})
     // =========================================================================
     // Mavi tik rozet görseli, yapay zeka profil resmi ve sistem ayarları

@@ -1,3 +1,4 @@
+import { ChannelVerificationForm } from './ChannelVerificationForm';
 import React, { useState, useEffect, useRef } from 'react';
 import type { Channel, ChannelFollower, UserProfile } from '../types';
 import {
