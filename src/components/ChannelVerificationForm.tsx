@@ -73,14 +73,14 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
       </div>
 
       {loading ? (
-        <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-850 flex items-center justify-center">
+        <div className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/60 flex items-center justify-center">
           <Loader2 className="w-4 h-4 animate-spin text-zinc-400" />
         </div>
       ) : (
         <>
           {/* Kanal Doğrulanmış */}
           {!showForm && isChannelVerified && (
-            <div className="p-3.5 rounded-xl border border-blue-200 dark:border-blue-900/40 bg-blue-50/50 dark:bg-blue-950/20 text-xs">
+            <div className="p-3.5 rounded-xl border border-blue-200 dark:border-blue-900/50 bg-blue-50/50 dark:bg-blue-950/30 text-xs">
               <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 font-semibold mb-1">
                 <CheckCircle className="w-4 h-4 text-blue-500 shrink-0" />
                 <span>Kanalınız Doğrulandı</span>
@@ -93,7 +93,7 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
 
           {/* Bekleyen Başvuru */}
           {!showForm && !isChannelVerified && pendingReq && (
-            <div className="p-3.5 rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50/50 dark:bg-amber-950/20 text-xs">
+            <div className="p-3.5 rounded-xl border border-amber-200 dark:border-amber-900/50 bg-amber-50/50 dark:bg-amber-950/30 text-xs">
               <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400 font-semibold mb-1">
                 <Clock className="w-4 h-4 text-amber-500 shrink-0" />
                 <span>Kanal Başvurusu İnceleniyor</span>
@@ -106,7 +106,7 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
 
           {/* Reddedilen Başvuru */}
           {!showForm && !isChannelVerified && !pendingReq && lastReq?.status === 'rejected' && (
-            <div className="p-3.5 rounded-xl border border-red-200 dark:border-red-900/40 bg-red-50/50 dark:bg-red-950/20 text-xs flex flex-col gap-2">
+            <div className="p-3.5 rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50/50 dark:bg-red-950/30 text-xs flex flex-col gap-2">
               <div className="flex items-center gap-2 text-red-600 dark:text-red-400 font-semibold">
                 <XCircle className="w-4 h-4 text-red-500 shrink-0" />
                 <span>Son Başvuru Onaylanmadı</span>
@@ -128,19 +128,19 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
 
           {/* Başvuru Yapılmamış */}
           {!showForm && !isChannelVerified && !pendingReq && lastReq?.status !== 'rejected' && (
-            <div className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-850 flex items-center justify-between gap-3">
+            <div className="p-3.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/60 flex items-center justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
                   Resmi Kanal Doğrulaması
                 </p>
-                <p className="text-[10px] text-zinc-500">
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
                   Kanalınızı resmi onaylı hale getirmek için başvuru yapın.
                 </p>
               </div>
               <button 
                 type="button"
                 onClick={() => setShowForm(true)}
-                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer shrink-0"
+                className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer shrink-0"
               >
                 Başvur
               </button>
@@ -149,7 +149,7 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
 
           {/* Form */}
           {showForm && (
-            <form onSubmit={handleSubmit} className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-850 space-y-3 animate-in fade-in">
+            <form onSubmit={handleSubmit} className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-800/60 space-y-3 animate-in fade-in">
               <div>
                 <label className="block text-[11px] font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
                   Kategori
@@ -220,7 +220,7 @@ export const ChannelVerificationForm: React.FC<ChannelVerificationFormProps> = (
                   type="button"
                   onClick={() => setShowForm(false)}
                   disabled={submitting}
-                  className="px-3 py-1.5 text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl cursor-pointer"
+                  className="px-3 py-1.5 text-xs font-semibold text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl cursor-pointer transition-colors"
                 >
                   Vazgeç
                 </button>

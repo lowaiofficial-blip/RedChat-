@@ -109,9 +109,9 @@ export const AdminVerificationTab: React.FC = () => {
                   </div>
                 </div>
                 <div>
-                  {req.status === 'pending' && <span className="px-2.5 py-1 bg-amber-100 text-amber-700 text-xs font-semibold rounded-full">Bekliyor</span>}
-                  {req.status === 'approved' && <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 text-xs font-semibold rounded-full">Onaylandı</span>}
-                  {req.status === 'rejected' && <span className="px-2.5 py-1 bg-red-100 text-red-700 text-xs font-semibold rounded-full">Reddedildi</span>}
+                  {req.status === 'pending' && <span className="px-2.5 py-1 bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-900/50 text-xs font-semibold rounded-full">Bekliyor</span>}
+                  {req.status === 'approved' && <span className="px-2.5 py-1 bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/50 text-xs font-semibold rounded-full">Onaylandı</span>}
+                  {req.status === 'rejected' && <span className="px-2.5 py-1 bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-900/50 text-xs font-semibold rounded-full">Reddedildi</span>}
                 </div>
               </div>
 
