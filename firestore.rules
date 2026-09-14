@@ -118,7 +118,12 @@ service cloud.firestore {
       allow create: if isAuthenticated();
       
       // Son mesaj metni, son mesaj zamanı, okunmamış sayaçları (unreadCounts), grup üyeleri güncelleme
-      allow update: if isAuthenticated();
+      // Sonlandırılmış (terminated) oturumun durumunu normal kullanıcılar tekrar aktife çekemez
+      allow update: if isAuthenticated() && (
+        resource.data.get('securityStatus', 'active') != 'terminated' ||
+        request.resource.data.get('securityStatus', 'terminated') == 'terminated' ||
+        isAdmin()
+      );
       
       // Grubu silme veya sohbetten ayrılma
       allow delete: if isAuthenticated();
@@ -134,7 +139,12 @@ service cloud.firestore {
         // - Normal kullanıcı mesajları
         // - Sistem mesajları (gruba katıldı, ayrıldı, grup adı değişti vb.)
         // - RedChat AI tarafından üretilen yanıtlar (senderId: system_redchat_ai)
-        allow create: if isAuthenticated();
+        // - Sonlandırılmış (terminated) sohbete normal kullanıcı mesaj yazamaz
+        allow create: if isAuthenticated() && (
+          get(/databases/$(database)/documents/conversations/$(conversationId)).data.get('securityStatus', 'active') != 'terminated' ||
+          request.resource.data.get('isSecurityWarning', false) == true ||
+          isAdmin()
+        );
         
         // Mesaj düzenleme (isEdited: true) ve emoji reaksiyonları ekleme/kaldırma
         allow update: if isAuthenticated();

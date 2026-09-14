@@ -43,7 +43,11 @@
         "memberRoles": { "type": "map", "description": "Map of UID to role ('owner'|'admin'|'member')" },
         "unreadCounts": { "type": "map", "description": "Unread message count per user" },
         "lastMessageText": { "type": "string", "description": "Last message preview" },
-        "lastMessageTimestamp": { "type": "timestamp", "description": "Last message time" }
+        "lastMessageTimestamp": { "type": "timestamp", "description": "Last message time" },
+        "securityStatus": { "type": "string", "description": "Security status: 'active' | 'terminated'" },
+        "terminatedAt": { "type": "timestamp", "description": "Timestamp when session was terminated" },
+        "terminatedReason": { "type": "string", "description": "Reason for termination (e.g. abusive_language)" },
+        "abusiveCount": { "type": "number", "description": "Escalation counter for offensive messages in AI chat" }
       }
     },
     "ChatMessage": {
@@ -57,6 +61,8 @@
         "imageUrl": { "type": "string", "description": "Attached image URL" },
         "isSystemMessage": { "type": "boolean", "description": "Whether message is an automated system announcement" },
         "systemType": { "type": "string", "description": "System event type" },
+        "isSecurityWarning": { "type": "boolean", "description": "Whether message is a security termination/warning box" },
+        "securityType": { "type": "string", "description": "Type of security alert" },
         "createdAt": { "type": "timestamp", "description": "Message send timestamp" }
       }
     },

@@ -21,6 +21,9 @@ import { SequentialTypingDots } from './SequentialTypingDots';
 import { getTypingInfo } from '../utils/typingHelper';
 import { MarkdownMessage } from './MarkdownMessage';
 import { isRedChatAI, requestAIChatResponse, requestAIChatStream, getRedChatAIProfile, REDCHAT_AI_UID } from '../services/aiService';
+import { isAbusiveMessage } from '../services/moderationService';
+import { SecurityTerminationAlert, SECURITY_TERMINATION_MESSAGE_TEXT } from './SecurityTerminationAlert';
+import { updateAbusiveCount, terminateAIConversation } from '../services/chatService';
 import {
   Send,
   ArrowLeft,
@@ -165,6 +168,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     if (conversation?.isGroup) return false;
     return isRedChatAI(otherUserObj || otherParticipantId);
   }, [conversation?.isGroup, otherUserObj, otherParticipantId]);
+
+  // RedChat AI sohbet oturumunun güvenlik ihlali (hakaret/küfür) nedeniyle sonlandırılmış olup olmadığı
+  const isSessionTerminated = useMemo(() => {
+    return Boolean(isDirectAIChat && conversation?.securityStatus === 'terminated');
+  }, [isDirectAIChat, conversation?.securityStatus]);
 
   const displayName = isDirectAIChat
     ? 'RedChat AI'
@@ -541,6 +549,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       return;
     }
 
+    if (isSessionTerminated) {
+      setImageUploadError('Bu sohbet oturumu güvenlik ihlali (hakaret/küfür) nedeniyle sonlandırılmıştır.');
+      return;
+    }
+
     const textToSend = inputText.trim();
     if (!textToSend && !selectedImageFile) return;
 
@@ -587,6 +600,57 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         (async () => {
           const aiPhoto = aiProfilePhotoUrl || photoURL || null;
           const aiProfile = getRedChatAIProfile(aiPhoto);
+
+          // 🛡️ BİREBİR REDCHAT AI SOHBETİNDE HAKARET / KÜFÜR GÜVENLİK KORUMASI (3 AŞAMALI ESKALASYON)
+          if (isDirectAIChat) {
+            const isAbusive = isAbusiveMessage(textToSend);
+            if (isAbusive) {
+              const currentAbusiveCount = conversation?.abusiveCount || 0;
+
+              if (currentAbusiveCount === 0) {
+                // 🟢 1. AŞAMA (İLK HAKARET): Sakin ve kısa uyarı
+                await updateAbusiveCount(conversation.id, 1);
+                await sendMessage(
+                  conversation.id,
+                  aiProfile,
+                  "Sakin ol 😄 Böyle konuşmadan da devam edebiliriz."
+                );
+                return;
+              } else if (currentAbusiveCount === 1) {
+                // 🟡 2. AŞAMA (TEKRAR EDEN HAKARET): İkinci ve daha net uyarı
+                await updateAbusiveCount(conversation.id, 2);
+                await sendMessage(
+                  conversation.id,
+                  aiProfile,
+                  "Devam edersen bu sohbeti sonlandıracağım."
+                );
+                return;
+              } else {
+                // 🔴 3. AŞAMA (UYARI SONRASI TEKRAR HAKARET): Oturumu kalıcı olarak sonlandır
+                if (aiTypewriterRef.current.timeoutId) {
+                  clearTimeout(aiTypewriterRef.current.timeoutId);
+                }
+                setActiveAiStream(null);
+                await terminateAIConversation(
+                  conversation.id,
+                  aiProfile,
+                  SECURITY_TERMINATION_MESSAGE_TEXT
+                );
+                return;
+              }
+            }
+          } else if (isGroupChat && isAiMentioned) {
+            // Grup sohbetinde @RedChat AI etiketlenerek hakaret edilmişse grubu kapatmadan sakin uyarı ver
+            const isAbusive = isAbusiveMessage(textToSend);
+            if (isAbusive) {
+              await sendMessage(
+                conversation.id,
+                aiProfile,
+                "Sakin ol 😄 Böyle konuşmadan da devam edebiliriz."
+              );
+              return;
+            }
+          }
           
           let aiMsgId: string | null = null;
           let firestoreSyncTimeout: any = null;
@@ -1038,6 +1102,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           </div>
         ) : (
           messages.map((msg) => {
+            // 🛡️ Kırmızı Güvenlik Uyarısı Mesajı (Oturum Sonlandırma Kutusu)
+            if (msg.isSecurityWarning || msg.securityType === 'terminated') {
+              return (
+                <div
+                  key={msg.id}
+                  id={`message-${msg.id}`}
+                  className="w-full flex justify-center my-2 select-none animate-in fade-in"
+                >
+                  <SecurityTerminationAlert id={`security-alert-${msg.id}`} />
+                </div>
+              );
+            }
+
             // 🔔 Gerçek Firestore Sistem Mesajı (Örn: "Test1, Test2'yi gruba ekledi", "Test1 kuruculuğu Test2'ye devretti")
             if (msg.isSystemMessage) {
               const isOwnership = msg.systemType === 'ownership_transfer' || msg.text?.includes('kuruculuğu');
@@ -1135,7 +1212,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           })
         )}
 
-        
+        {/* 🛡️ Sonlandırılmış sohbet durumunda yedek kırmızı güvenlik kutusu (eğer mesaj listesinde henüz yoksa) */}
+        {isSessionTerminated && !messages.some((m) => m.isSecurityWarning || m.securityType === 'terminated') && (
+          <div className="w-full flex justify-center my-2 select-none animate-in fade-in">
+            <SecurityTerminationAlert id="security-alert-fallback" />
+          </div>
+        )}
 
         {/* Kullanıcı / Grup Üyeleri Yazıyor Bildirimi (Bubble) */}
         {typingInfo && (
@@ -1628,6 +1710,14 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           <div className="flex items-center justify-center gap-2.5 p-3.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-2xl text-amber-600 dark:text-amber-400 text-xs font-semibold text-center">
             <VolumeX className="w-4 h-4 shrink-0 text-amber-600" />
             <span>Hesabınız susturulmuştur. Sohbetleri okuyabilirsiniz ancak mesaj gönderemezsiniz.</span>
+          </div>
+        ) : isSessionTerminated ? (
+          <div
+            id="terminated-input-banner"
+            className="flex items-center justify-center gap-2.5 p-3.5 bg-red-500/10 dark:bg-red-950/40 border border-red-500/30 dark:border-red-900/60 rounded-2xl text-red-700 dark:text-red-300 text-xs font-semibold text-center select-none"
+          >
+            <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+            <span>Bu sohbet oturumu güvenlik ihlali (hakaret/küfür) nedeniyle sonlandırılmıştır.</span>
           </div>
         ) : editingMessage ? (
           <form onSubmit={handleSaveEdit} className="flex items-center gap-2">

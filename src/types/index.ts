@@ -69,6 +69,10 @@ export interface Conversation {
   typingUsers?: {
     [uid: string]: number;
   };
+  securityStatus?: 'active' | 'terminated';
+  terminatedAt?: any;
+  terminatedReason?: string;
+  abusiveCount?: number;
   createdAt: any;
   updatedAt: any;
 }
@@ -102,6 +106,8 @@ export interface ChatMessage {
   systemType?: 'leave' | 'join' | 'create' | 'info' | 'role_change' | 'ownership_transfer' | 'name_change' | 'photo_change';
   isThinking?: boolean;
   isStreaming?: boolean;
+  isSecurityWarning?: boolean;
+  securityType?: 'terminated' | 'warning';
 }
 
 export interface GroupedNotificationMessage {

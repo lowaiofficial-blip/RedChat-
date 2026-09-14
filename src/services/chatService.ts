@@ -891,7 +891,12 @@ export async function sendMessage(
   text: string = '',
   imageUrl?: string | null,
   replyTo?: ChatReplyReference | null,
-  options?: { isThinking?: boolean, isStreaming?: boolean }
+  options?: {
+    isThinking?: boolean;
+    isStreaming?: boolean;
+    isSecurityWarning?: boolean;
+    securityType?: 'terminated' | 'warning';
+  }
 ): Promise<string> {
   if (!db) throw new Error('Firestore hazır değil');
   
@@ -906,7 +911,7 @@ export async function sendMessage(
   const cleanText = text.trim();
   const cleanImageUrl = imageUrl?.trim() || null;
 
-  if (!cleanText && !cleanImageUrl && !options?.isThinking) return '';
+  if (!cleanText && !cleanImageUrl && !options?.isThinking && !options?.isSecurityWarning) return '';
 
   const messagesCol = collection(db, 'conversations', conversationId, 'messages');
   const convDocRef = doc(db, 'conversations', conversationId);
@@ -923,6 +928,10 @@ export async function sendMessage(
     isEdited: false,
     ...(options?.isThinking && { isThinking: true }),
     ...(options?.isStreaming && { isStreaming: true }),
+    ...(options?.isSecurityWarning && {
+      isSecurityWarning: true,
+      securityType: options.securityType || 'terminated',
+    }),
   };
 
   if (cleanImageUrl) {
@@ -1302,3 +1311,59 @@ export async function setUserTypingStatus(
     console.debug('Failed to update typing status', err);
   }
 }
+
+/**
+ * RedChat AI sohbet oturumunun hakaret/küfür ihlali sayacını günceller.
+ */
+export async function updateAbusiveCount(
+  conversationId: string,
+  count: number
+): Promise<void> {
+  if (!db || !conversationId) return;
+  const convRef = doc(db, 'conversations', conversationId);
+  await updateDoc(convRef, {
+    abusiveCount: count,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/**
+ * RedChat AI sohbet oturumunu hakaret/küfür ihlali nedeniyle kalıcı olarak sonlandırır.
+ * Firestore Conversation dokümanını 'terminated' olarak işaretler ve kırmızı güvenlik uyarısı mesajını kaydeder.
+ */
+export async function terminateAIConversation(
+  conversationId: string,
+  aiProfile: UserProfile,
+  warningText: string
+): Promise<string> {
+  if (!db || !conversationId) return '';
+
+  const convRef = doc(db, 'conversations', conversationId);
+
+  // 1. Konuşma dokümanını kalıcı olarak sonlandır
+  await updateDoc(convRef, {
+    securityStatus: 'terminated',
+    terminatedAt: serverTimestamp(),
+    terminatedReason: 'abusive_language',
+    abusiveCount: 3,
+    lastMessageText: 'Sohbet güvenliği uyarısı: Oturum sonlandırıldı.',
+    lastMessageTimestamp: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  // 2. Kırmızı güvenlik uyarısı mesajını kalıcı olarak mesajlar koleksiyonuna ekle
+  const msgId = await sendMessage(
+    conversationId,
+    aiProfile,
+    warningText,
+    null,
+    null,
+    {
+      isSecurityWarning: true,
+      securityType: 'terminated',
+    }
+  );
+
+  return msgId;
+}
+
