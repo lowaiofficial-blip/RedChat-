@@ -2444,7 +2444,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           />
                         </div>
                         <div className="text-[11px] text-fuchsia-600 font-mono font-medium">
-                          @redchat_ai • Flash Lite 1.0
+                          @redchat_ai • Flash Lite 2.0
                         </div>
                       </div>
                     </div>
@@ -2472,7 +2472,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           />
                         </div>
                         <div className="text-[11px] text-fuchsia-400 font-mono font-medium">
-                          @redchat_ai • Flash Lite 1.0
+                          @redchat_ai • Flash Lite 2.0
                         </div>
                       </div>
                     </div>

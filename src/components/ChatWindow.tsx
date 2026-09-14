@@ -1678,7 +1678,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                   </div>
                   {candidate.isAi ? (
                     <span className="px-2 py-0.5 text-[10px] font-bold bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-900/50 rounded-md shrink-0">
-                      Flash Lite 1.0
+                      Flash Lite 2.0
                     </span>
                   ) : null}
                 </button>
@@ -1714,9 +1714,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         ) : isSessionTerminated ? (
           <div
             id="terminated-input-banner"
-            className="flex items-center justify-center gap-2.5 p-3.5 bg-red-500/10 dark:bg-red-950/40 border border-red-500/30 dark:border-red-900/60 rounded-2xl text-red-700 dark:text-red-300 text-xs font-semibold text-center select-none"
+            className="flex items-center justify-center gap-2.5 p-3.5 bg-[#2e1216] dark:bg-[#240c10] border border-red-900/60 dark:border-red-900/80 rounded-2xl text-zinc-100 dark:text-zinc-100 text-xs font-normal text-center select-none shadow-xs"
           >
-            <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+            <AlertCircle className="w-4 h-4 shrink-0 text-zinc-200" />
             <span>Bu sohbet oturumu güvenlik ihlali (hakaret/küfür) nedeniyle sonlandırılmıştır.</span>
           </div>
         ) : editingMessage ? (

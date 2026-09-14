@@ -479,7 +479,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                         <div className="flex items-center justify-between text-xs text-zinc-600 dark:text-zinc-300">
                           <span className="text-zinc-400">Model:</span>
                           <span className="font-semibold text-zinc-800 dark:text-zinc-100">
-                            Flash Lite 1.0
+                            Flash Lite 2.0
                           </span>
                         </div>
                       </div>
