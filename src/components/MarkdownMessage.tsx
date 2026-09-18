@@ -9,7 +9,7 @@ interface MarkdownMessageProps {
 }
 
 // Markdown sözdizimi tespiti (Önbellek/Bypass için hızlı regex kontrolü)
-const MARKDOWN_REGEX = /[`*_~#|\[\]<>\\]|https?:\/\/|@(?:RedChat\s+AI|[a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ]+)/i;
+const MARKDOWN_REGEX = /[`*_~#|\[\]<>\\]|https?:\/\/|@(?:DeepRed\s+AI|DeepRed|RedChat\s+AI|[a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ]+)/i;
 
 export const MarkdownMessage: React.FC<MarkdownMessageProps> = React.memo(({ content, isMe = false }) => {
   const [copiedCodeIndex, setCopiedCodeIndex] = useState<number | null>(null);

@@ -62,7 +62,7 @@ export const MemoryModal: React.FC<MemoryModalProps> = ({ userId, onClose }) => 
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-100 dark:border-zinc-800">
           <div className="flex items-center gap-3 text-zinc-900 dark:text-zinc-100">
             <Book className="w-5 h-5 text-red-500" />
-            <h2 className="text-lg font-bold">RedChat AI Belleği</h2>
+            <h2 className="text-lg font-bold">DeepRed AI Belleği</h2>
           </div>
           <button onClick={onClose} className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-full transition-colors">
             <X className="w-5 h-5 text-zinc-500" />

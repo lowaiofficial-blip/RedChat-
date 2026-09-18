@@ -489,10 +489,10 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
               const isOnline = isAi ? true : (otherUserObj?.isOnline ?? false);
 
               const displayName = isAi
-                ? 'RedChat AI'
+                ? 'DeepRed AI'
                 : (otherUserObj?.displayName || otherInfo?.displayName || otherUserObj?.username || otherInfo?.username || 'Kullanıcı');
               const username = isAi
-                ? 'redchat_ai'
+                ? 'deepred_ai'
                 : (otherUserObj?.username || otherInfo?.username || '');
               const photoURL = otherUserObj?.photoURL || otherInfo?.photoURL || null;
               const isVerified = isAi ? true : Boolean(otherUserObj?.isVerified);
@@ -885,7 +885,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                     <button
                       onClick={() => onSelectUser(user)}
                       className="px-3 py-1.5 text-xs font-semibold text-white rounded-lg shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 bg-red-600 hover:bg-red-700"
-                      title={isAi ? 'RedChat AI ile Sohbet Et' : 'Doğrudan Sohbet Başlat'}
+                      title={isAi ? 'DeepRed AI ile Sohbet Et' : 'Doğrudan Sohbet Başlat'}
                     >
                       <MessageSquare className="w-3.5 h-3.5" />
                       <span>Sohbet Et</span>
@@ -1003,17 +1003,17 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
         </button>
       </div>
 
-      {/* 🌸 WhatsApp Tarzı Sağ Altta Kayan RedChat AI Butonu (Kompakt ve Zarif) */}
+      {/* 🌸 WhatsApp Tarzı Sağ Altta Kayan DeepRed AI Butonu (Kompakt ve Zarif) */}
       <button
         id="whatsapp-ai-floating-btn"
         onClick={handleStartAIChat}
-        title="RedChat AI ile Sohbet Et"
+        title="DeepRed AI ile Sohbet Et"
         className="absolute right-4 bottom-18 z-20 w-10 h-10 rounded-xl bg-zinc-900/95 dark:bg-zinc-800 text-white shadow-lg shadow-black/40 border border-zinc-700/80 hover:border-red-500/80 hover:scale-105 active:scale-95 transition-all duration-200 flex items-center justify-center p-1 group cursor-pointer"
       >
         {effectiveAiPhoto ? (
           <img
             src={effectiveAiPhoto}
-            alt="RedChat AI"
+            alt="DeepRed AI"
             className="w-full h-full object-cover rounded-[9px] pointer-events-none group-hover:brightness-110 transition-all"
           />
         ) : (

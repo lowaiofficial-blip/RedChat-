@@ -452,7 +452,7 @@ export default function App() {
     };
   }, [currentUserAuth, activeConversationId]);
 
-  // RedChat AI hesabını kullanıcı listesine dahil et (Tüm kullanıcılar görebilsin ve doğrudan sohbet başlatabilsin)
+  // DeepRed AI hesabını kullanıcı listesine dahil et (Tüm kullanıcılar görebilsin ve doğrudan sohbet başlatabilsin)
   const displayedUsers = React.useMemo(() => {
     const aiUser = getRedChatAIProfile(appSettings?.aiProfilePhotoUrl);
     const existingAiIndex = allUsers.findIndex((u) => u.uid === aiUser.uid);
@@ -461,6 +461,8 @@ export default function App() {
       const list = [...allUsers];
       list[existingAiIndex] = {
         ...list[existingAiIndex],
+        displayName: aiUser.displayName,
+        username: aiUser.username,
         photoURL: appSettings?.aiProfilePhotoUrl || list[existingAiIndex].photoURL || null,
         isSystemAI: true,
         isVerified: true,

@@ -175,13 +175,13 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   }, [isDirectAIChat, conversation?.securityStatus]);
 
   const displayName = isDirectAIChat
-    ? 'RedChat AI'
+    ? 'DeepRed AI'
     : (otherUserObj?.displayName ||
        otherParticipantInfo?.displayName ||
        otherParticipantInfo?.username ||
        'Kullanıcı');
   const username = isDirectAIChat
-    ? 'redchat_ai'
+    ? 'deepred_ai'
     : (otherUserObj?.username || otherParticipantInfo?.username || '');
   const photoURL = otherUserObj?.photoURL || otherParticipantInfo?.photoURL || null;
   const isOnline = isDirectAIChat ? true : (otherUserObj?.isOnline ?? false);
@@ -365,12 +365,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       isVerified?: boolean;
     }> = [];
 
-    // 1. RedChat AI her zaman önerilerde yer alır (Admin AI fotoğrafıyla, online dot olmadan)
+    // 1. DeepRed AI her zaman önerilerde yer alır (Admin AI fotoğrafıyla, online dot olmadan)
     const aiPhoto = aiProfilePhotoUrl || null;
     candidates.push({
       uid: REDCHAT_AI_UID,
-      displayName: 'RedChat AI',
-      username: 'redchat_ai',
+      displayName: 'DeepRed AI',
+      username: 'deepred_ai',
       photoURL: aiPhoto,
       isAi: true,
       isVerified: true,
@@ -460,7 +460,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
     const match = textBeforeCursor.match(/@([a-zA-Z0-9_ğüşıöçĞÜŞİÖÇ\s]*)$/);
     if (match && match.index !== undefined) {
-      const mentionTag = candidate.isAi ? '@RedChat AI ' : `@${candidate.username} `;
+      const mentionTag = candidate.isAi ? '@DeepRed AI ' : `@${candidate.username} `;
       const newText = textBeforeCursor.slice(0, match.index) + mentionTag + textAfterCursor;
       setInputText(newText);
       setShowMentionSuggestions(false);
@@ -592,9 +592,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       setReplyingToMessage(null);
       handleRemoveSelectedImage();
 
-      // 🤖 Eğer birebir RedChat AI sohbeti ise VEYA grup sohbetinde @RedChat AI etiketlenmişse yapay zeka yanıtını tetikle
+      // 🤖 Eğer birebir DeepRed AI sohbeti ise VEYA grup sohbetinde @DeepRed AI etiketlenmişse yapay zeka yanıtını tetikle
       const isGroupChat = Boolean(conversation?.isGroup);
-      const isAiMentioned = /@RedChat\s+AI|@redchat_ai|@RedChatAI/i.test(textToSend);
+      const isAiMentioned = /@DeepRed\s+AI|@DeepRedAI|@DeepRed|@deepred_ai|@deepred|@RedChat\s+AI|@redchat_ai|@RedChatAI/i.test(textToSend);
 
       if ((isDirectAIChat || (isGroupChat && isAiMentioned)) && textToSend) {
         (async () => {
@@ -716,7 +716,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             }
 
             const cleanPrompt = isGroupChat
-              ? textToSend.replace(/@RedChat\s+AI|@redchat_ai|@RedChatAI/gi, '').trim() || textToSend
+              ? textToSend.replace(/@DeepRed\s+AI|@DeepRedAI|@DeepRed|@deepred_ai|@deepred|@RedChat\s+AI|@redchat_ai|@RedChatAI/gi, '').trim() || textToSend
               : textToSend;
 
             const targetMsgId = aiMsgId;
@@ -758,7 +758,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               setActiveAiStream(null);
             }
           } catch (aiErr: any) {
-            console.error('RedChat AI yanıt hatası:', aiErr);
+            console.error('DeepRed AI yanıt hatası:', aiErr);
             if (firestoreSyncTimeout) {
               clearTimeout(firestoreSyncTimeout);
               firestoreSyncTimeout = null;
@@ -1716,7 +1716,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             id="terminated-input-banner"
             className="flex items-center justify-center gap-2.5 p-3.5 bg-[#2e1216] dark:bg-[#240c10] border border-red-900/60 dark:border-red-900/80 rounded-2xl text-zinc-100 dark:text-zinc-100 text-xs font-normal text-center select-none shadow-xs"
           >
-            <AlertCircle className="w-4 h-4 shrink-0 text-zinc-200" />
+            <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
             <span>Bu sohbet oturumu güvenlik ihlali (hakaret/küfür) nedeniyle sonlandırılmıştır.</span>
           </div>
         ) : editingMessage ? (

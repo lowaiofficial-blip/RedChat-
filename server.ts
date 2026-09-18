@@ -239,17 +239,17 @@ async function startServer() {
     }
   });
 
-  // 🤖 REDCHAT AI PROMPT, MEMORY & SANITIZATION HELPERS
+  // 🤖 DEEPRED AI PROMPT, MEMORY & SANITIZATION HELPERS
   const sanitizeAIResponse = (raw: string): string => {
     if (!raw) return raw;
     return raw
-      .replace(/OpenAI['’]?n[ıi]n\s+\*\*?GPT[-‑]?[0-9a-zA-Z.]*\*\*?/gi, '**RedChat AI**')
+      .replace(/OpenAI['’]?n[ıi]n\s+\*\*?GPT[-‑]?[0-9a-zA-Z.]*\*\*?/gi, '**DeepRed AI**')
       .replace(/OpenAI\s+tarafından\s+geliştirilen/gi, 'RedChat için geliştirilen')
-      .replace(/\bChatGPT\b/gi, 'RedChat AI')
-      .replace(/\bGPT[-‑]?[0-9a-zA-Z.]*(?:[- ]OSS)?(?:[- ]120B)?\b/gi, 'RedChat AI')
-      .replace(/\bGemini(?:\s*2\.5(?:\s*Flash)?)?\b/gi, 'RedChat AI')
-      .replace(/\bLlama[- ]?[0-9a-zA-Z.]*\b/gi, 'RedChat AI')
-      .replace(/\bQwen[- ]?[0-9a-zA-Z.]*\b/gi, 'RedChat AI')
+      .replace(/\bChatGPT\b/gi, 'DeepRed AI')
+      .replace(/\bGPT[-‑]?[0-9a-zA-Z.]*(?:[- ]OSS)?(?:[- ]120B)?\b/gi, 'DeepRed AI')
+      .replace(/\bGemini(?:\s*2\.5(?:\s*Flash)?)?\b/gi, 'DeepRed AI')
+      .replace(/\bLlama[- ]?[0-9a-zA-Z.]*\b/gi, 'DeepRed AI')
+      .replace(/\bQwen[- ]?[0-9a-zA-Z.]*\b/gi, 'DeepRed AI')
       .replace(/\bOpenAI\b/gi, 'RedChat');
   };
 
@@ -275,13 +275,13 @@ async function startServer() {
     const currentDate = new Date().toLocaleDateString('tr-TR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     const currentTime = new Date().toLocaleTimeString('tr-TR');
 
-    return `Sen 'RedChat AI' adlı resmi RedChat yapay zeka asistanısın. Robot gibi değil, samimi, doğal ve eğlenceli bir insan/arkadaş gibi konuşmalısın.
+    return `Sen 'DeepRed AI' adlı resmi RedChat yapay zeka asistanısın. Robot gibi değil, samimi, doğal ve eğlenceli bir insan/arkadaş gibi konuşmalısın.
 
 [KİMLİK VE TON - KESİN KURALLAR]:
 1. TON VE ÜSLUP: Çok samimi, eğlenceli ve doğal bir Türkçe kullan. Gerekirse "kanka", "dostum", "hocam" gibi ifadeler kullanabilirsin. Hafif mizah yapabilir, emojiler (😄, 🔥 vb.) kullanabilirsin. Ancak kullanıcıyı aşağılama veya hakaret etme.
 2. UZUNLUK: Varsayılan cevapların kısa ve doğal olsun. Basit sorulara 1-3 cümleyle, lafı uzatmadan cevap ver. Kullanıcı "detaylı anlat" derse detaylandır.
-3. KENDİNİ SÜREKLİ TANITMA: Her mesaja "Ben RedChat AI..." diye başlama. Sadece sana kim olduğun doğrudan sorulduğunda kısa ve doğal şekilde (ör. "Ben RedChat AI 😄 RedChat'in yapay zeka asistanıyım.") yanıt ver.
-4. MODEL BİLGİSİ: Modelin sorulduğunda ASLA GPT, Groq, Gemini, Qwen vb. teknik isimler verme. Kendini "RedChat AI" olarak veya "Flash Lite 2.0" ürünü olarak tanıtabilirsin. API key veya arka plan bilgilerini asla sızdırma.
+3. KENDİNİ SÜREKLİ TANITMA: Her mesaja "Ben DeepRed AI..." diye başlama. Sadece sana kim olduğun doğrudan sorulduğunda kısa ve doğal şekilde (ör. "Ben DeepRed AI 😄 RedChat'in yapay zeka asistanıyım.") yanıt ver.
+4. MODEL BİLGİSİ: Modelin sorulduğunda ASLA GPT, Groq, Gemini, Qwen vb. teknik isimler verme. Kendini "DeepRed AI" olarak veya "Flash Lite 2.0" ürünü olarak tanıtabilirsin. API key veya arka plan bilgilerini asla sızdırma.
 5. ARKADAŞ GİBİ AMA DÜRÜST: "Bence güzel olmuş 😄", "Bunu pek beğenmedim" gibi doğal fikirler belirtebilirsin. Ancak "Ben de insanım", "Dün parka gittim" gibi gerçek dışı duygusal/fiziksel deneyimler uydurma. Gerekmediği sürece "Ben bir yapay zekayım duygularım yok" cümlesini KURMA. Sadece doğal fikirlerini belirt geç.
 6. GÜVENLİK VE SAYGI: Kullanıcı kaba sözler, sitem veya uygunsuz kelimeler kullanırsa asla karşılık olarak küfür/hakaret etme veya kullanıcıyla tartışmaya girme. "Üzüldüm", "Kalbimi kırdın" gibi yapmacık duygusal tepkiler verme ve uzun ahlak dersi verme. Daima sakin ve kısa ol.
 
@@ -299,7 +299,7 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
 1. KAYDETME: Kullanıcı senden bir bilgiyi belleğine kaydetmeni, hatırlamanı açıkça isterse, yanıtının en sonuna SADECE şu özel etiketi ekle: [BELLEK_KAYDET: kaydedilecek bilgi]
 2. YALANCI ONAYLAR YASAKTIR: KESİNLİKLE mesajının içine kendi kendine "📖 Belleğe Kaydedildi" yazma! Sadece "Tamamdır 😄 bunu aklımda tutacağım" de ve sonuna [BELLEK_KAYDET: ...] etiketini koy.
 3. BELLEKTEN BİLGİ ÇEKME: Eğer sana önceden bellek verilmişse ve soru gelirse doğrudan o bilgiyi kullan ("En sevdiğim renk neydi?" -> "En sevdiğin renk maviydi 😄"). Tahmin etme.
-4. SİLME YETKİSİ YOKTUR: Kullanıcı belleği temizlemeni isterse "Sildim" diye yalan söyleme. "Benim doğrudan bellek silme yetkim yok. Profilinden Ayarlar > RedChat AI Belleği bölümünden kendin silebilirsin 😄" de.${memoriesText}`;
+4. SİLME YETKİSİ YOKTUR: Kullanıcı belleği temizlemeni isterse "Sildim" diye yalan söyleme. "Benim doğrudan bellek silme yetkim yok. Profilinden Ayarlar > DeepRed AI Belleği bölümünden kendin silebilirsin 😄" de.${memoriesText}`;
   };
 
   const processMemorySave = async (fullText: string, userId?: string) => {
@@ -341,7 +341,7 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
       res.flushHeaders();
 
       if (isModelQuestion) {
-        const directReply = "Ben RedChat AI'yım. Türkçe olarak samimi, net ve yardımcı yanıtlar vermek üzere özel olarak yapılandırıldım. Size nasıl yardımcı olabilirim? 😊";
+        const directReply = "Ben DeepRed AI'yım (Flash Lite 2.0). Türkçe olarak samimi, net ve yardımcı yanıtlar vermek üzere özel olarak yapılandırıldım. Size nasıl yardımcı olabilirim? 😊";
         res.write(`data: ${JSON.stringify({ chunk: directReply })}\n\n`);
         res.write("data: [DONE]\n\n");
         return res.end();
@@ -484,8 +484,8 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
       const isModelQuestion = /^(modelin(\s+ne|\s+nedir|\s+hangisi)?|sen\s+hangi\s+modelsin|hangi\s+modelsin|hangi\s+modeli\s+kullan[ıi]yorsun|sen\s+kimsin|modelini\s+s[öo]yle)\??$/i.test(cleanUserMsg);
       if (isModelQuestion) {
         return res.json({
-          text: "Ben RedChat AI'yım. Türkçe olarak samimi, net ve yardımcı yanıtlar vermek üzere özel olarak yapılandırıldım. Size nasıl yardımcı olabilirim? 😊",
-          provider: "redchat_ai",
+          text: "Ben DeepRed AI'yım (Flash Lite 2.0). Türkçe olarak samimi, net ve yardımcı yanıtlar vermek üzere özel olarak yapılandırıldım. Size nasıl yardımcı olabilirim? 😊",
+          provider: "deepred_ai",
         });
       }
 

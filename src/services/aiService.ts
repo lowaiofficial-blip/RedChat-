@@ -1,11 +1,18 @@
 import type { UserProfile, ChatMessage } from '../types';
 
 export const REDCHAT_AI_UID = 'system_redchat_ai';
-export const REDCHAT_AI_USERNAME = 'redchat_ai';
-export const REDCHAT_AI_DISPLAY_NAME = 'RedChat AI';
+export const REDCHAT_AI_USERNAME = 'deepred_ai';
+export const REDCHAT_AI_DISPLAY_NAME = 'DeepRed AI';
+
+// Geliştirici kolaylığı için DeepRed AI takma adları
+export const DEEPRED_AI_UID = REDCHAT_AI_UID;
+export const DEEPRED_AI_USERNAME = REDCHAT_AI_USERNAME;
+export const DEEPRED_AI_DISPLAY_NAME = REDCHAT_AI_DISPLAY_NAME;
+export const getDeepRedAIProfile = getRedChatAIProfile;
+export const isDeepRedAI = isRedChatAI;
 
 /**
- * RedChat AI için varsayılan profil nesnesi üretir.
+ * DeepRed AI için varsayılan profil nesnesi üretir.
  */
 export function getRedChatAIProfile(customPhotoUrl?: string | null): UserProfile {
   return {
@@ -15,7 +22,7 @@ export function getRedChatAIProfile(customPhotoUrl?: string | null): UserProfile
     displayName: REDCHAT_AI_DISPLAY_NAME,
     email: 'ai@redchat.internal',
     photoURL: customPhotoUrl || null,
-    bio: 'RedChat Resmi Yapay Zeka Asistanı',
+    bio: 'DeepRed AI — RedChat Resmi Yapay Zeka Asistanı',
     createdAt: null,
     updatedAt: null,
     isOnline: false,
@@ -29,17 +36,31 @@ export function getRedChatAIProfile(customPhotoUrl?: string | null): UserProfile
 }
 
 /**
- * Belirtilen kullanıcının veya ID'nin RedChat AI olup olmadığını kontrol eder.
+ * Belirtilen kullanıcının veya ID'nin DeepRed AI olup olmadığını kontrol eder.
  */
 export function isRedChatAI(userOrUid?: UserProfile | string | null): boolean {
   if (!userOrUid) return false;
   if (typeof userOrUid === 'string') {
-    return userOrUid === REDCHAT_AI_UID || userOrUid.toLowerCase() === REDCHAT_AI_USERNAME;
+    const s = userOrUid.toLowerCase();
+    return (
+      userOrUid === REDCHAT_AI_UID ||
+      s === 'deepred_ai' ||
+      s === 'deepred ai' ||
+      s === 'deepred' ||
+      s === 'redchat_ai' ||
+      s === 'redchat ai'
+    );
   }
+  const uLower = userOrUid.username?.toLowerCase();
   return (
     userOrUid.uid === REDCHAT_AI_UID ||
     userOrUid.isSystemAI === true ||
-    userOrUid.username?.toLowerCase() === REDCHAT_AI_USERNAME
+    uLower === 'deepred_ai' ||
+    uLower === 'deepred' ||
+    uLower === 'redchat_ai' ||
+    userOrUid.displayName === 'DeepRed AI' ||
+    userOrUid.displayName === 'DeepRed' ||
+    userOrUid.displayName === 'RedChat AI'
   );
 }
 
@@ -78,7 +99,7 @@ export async function requestAIChatResponse(
     });
 
     if (!response.ok) {
-      let errDetail = 'RedChat AI şu anda yanıt veremiyor. Lütfen tekrar deneyin.';
+      let errDetail = 'DeepRed AI şu anda yanıt veremiyor. Lütfen tekrar deneyin.';
       try {
         const errorJson = await response.json();
         if (errorJson?.error) {
@@ -92,13 +113,13 @@ export async function requestAIChatResponse(
 
     const data = await response.json();
     if (!data.text || typeof data.text !== 'string') {
-      throw new Error('RedChat AI şu anda yanıt veremiyor. Lütfen tekrar deneyin.');
+      throw new Error('DeepRed AI şu anda yanıt veremiyor. Lütfen tekrar deneyin.');
     }
 
     return data.text.trim();
   } catch (error: any) {
     console.error('requestAIChatResponse error:', error);
-    throw new Error(error?.message || 'RedChat AI şu anda yanıt veremiyor. Lütfen tekrar deneyin.');
+    throw new Error(error?.message || 'DeepRed AI şu anda yanıt veremiyor. Lütfen tekrar deneyin.');
   }
 }
 
@@ -180,7 +201,7 @@ export async function requestAIChatStream(
       if (onChunk) onChunk(fallback);
       return fallback;
     } catch (fbErr: any) {
-      throw new Error(fbErr?.message || 'RedChat AI şu anda yanıt veremiyor.');
+      throw new Error(fbErr?.message || 'DeepRed AI şu anda yanıt veremiyor.');
     }
   }
 }

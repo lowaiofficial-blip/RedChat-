@@ -497,7 +497,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
       await updateAIProfilePhotoUrl(currentUser, uploadedUrl);
 
-      setAiPhotoActionSuccess('RedChat AI profil görseli başarıyla ImgBB ve Firestore veritabanına kalıcı olarak kaydedildi!');
+      setAiPhotoActionSuccess('DeepRed AI profil görseli başarıyla ImgBB ve Firestore veritabanına kalıcı olarak kaydedildi!');
       setSelectedAiPhotoFile(null);
       setAiPhotoPreviewUrl(null);
       if (aiFileInputRef.current) {
@@ -511,7 +511,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // RedChat AI Profil Görselini Sistemden Kaldır (Varsayılana Sıfırla)
+  // DeepRed AI Profil Görselini Sistemden Kaldır (Varsayılana Sıfırla)
   const handleRemoveAiPhoto = async () => {
     if (uploadingAiPhoto) return;
 
@@ -521,7 +521,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     try {
       await updateAIProfilePhotoUrl(currentUser, null);
-      setAiPhotoActionSuccess('RedChat AI profil görseli başarıyla sıfırlandı.');
+      setAiPhotoActionSuccess('DeepRed AI profil görseli başarıyla sıfırlandı.');
     } catch (err: any) {
       console.error('AI profil görseli kaldırma hatası:', err);
       setAiPhotoActionError(err?.message || 'Görsel sıfırlanamadı.');
@@ -578,7 +578,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return;
     }
     if (targetUser.isSystemAI) {
-      setUserActionError('RedChat AI sistem asistanı banlanamaz.');
+      setUserActionError('DeepRed AI sistem asistanı banlanamaz.');
       return;
     }
 
@@ -1073,7 +1073,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               }`}
             >
               <Bot className="w-3.5 h-3.5" />
-              <span>RedChat AI Profil</span>
+              <span>DeepRed AI Profil</span>
             </button>
 
             <button
@@ -2302,10 +2302,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <div>
                 <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
                   <Bot className="w-5 h-5 text-fuchsia-600" />
-                  <span>RedChat AI Resmi Profil Fotoğrafı Yönetimi</span>
+                  <span>DeepRed AI Resmi Profil Fotoğrafı Yönetimi</span>
                 </h3>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                  RedChat AI yapay zeka asistanının profil görselini buradan kalıcı olarak ayarlayabilirsiniz. Yüklenen görsel ImgBB CDN'e yüklenir ve Firestore <code className="font-mono text-zinc-700 dark:text-zinc-300">settings/app</code> ve <code className="font-mono text-zinc-700 dark:text-zinc-300">users/system_redchat_ai</code> hesaplarına kaydedilir. Tüm tarayıcı ve cihazlarda anında güncellenir.
+                  DeepRed AI yapay zeka asistanının profil görselini buradan kalıcı olarak ayarlayabilirsiniz. Yüklenen görsel ImgBB CDN'e yüklenir ve Firestore <code className="font-mono text-zinc-700 dark:text-zinc-300">settings/app</code> ve <code className="font-mono text-zinc-700 dark:text-zinc-300">users/system_redchat_ai</code> hesaplarına kaydedilir. Tüm tarayıcı ve cihazlarda anında güncellenir.
                 </p>
               </div>
 
@@ -2361,7 +2361,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     >
                       <Upload className="w-7 h-7" />
                       <div className="text-xs font-semibold text-center">
-                        <span>RedChat AI İçin Görsel Seç</span>
+                        <span>DeepRed AI İçin Görsel Seç</span>
                         <span className="block text-[10px] text-zinc-400 mt-0.5">
                           Kare (1:1) PNG veya JPG görseli önerilir (Max 5MB)
                         </span>
@@ -2414,12 +2414,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <div className="flex items-center gap-2 border-b border-zinc-100 dark:border-zinc-800 pb-3">
                     <Eye className="w-5 h-5 text-fuchsia-600" />
                     <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
-                      Canlı RedChat AI Görünümü
+                      Canlı DeepRed AI Görünümü
                     </h3>
                   </div>
 
                   <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                    RedChat AI hesabının kullanıcılar sohbet listesinde ve mesaj ekranında nasıl görüneceğinin canlı simülasyonu:
+                    DeepRed AI hesabının kullanıcılar sohbet listesinde ve mesaj ekranında nasıl görüneceğinin canlı simülasyonu:
                   </p>
 
                   {/* Örnek 1: Açık Tema Görünümü */}
@@ -2430,13 +2430,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <div className="flex items-center gap-3">
                       <UserAvatar
                         photoURL={aiPhotoPreviewUrl || appSettings?.aiProfilePhotoUrl}
-                        name="RedChat AI"
-                        username="redchat_ai"
+                        name="DeepRed AI"
+                        username="deepred_ai"
                         size="md"
                       />
                       <div>
                         <div className="text-xs font-bold text-zinc-900 flex items-center gap-1">
-                          <span>RedChat AI</span>
+                          <span>DeepRed AI</span>
                           <VerifiedBadge
                             isVerified={true}
                             badgeUrl={currentBadgeUrl}
@@ -2444,7 +2444,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           />
                         </div>
                         <div className="text-[11px] text-fuchsia-600 font-mono font-medium">
-                          @redchat_ai • Flash Lite 2.0
+                          @deepred_ai • Flash Lite 2.0
                         </div>
                       </div>
                     </div>
@@ -2458,13 +2458,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <div className="flex items-center gap-3">
                       <UserAvatar
                         photoURL={aiPhotoPreviewUrl || appSettings?.aiProfilePhotoUrl}
-                        name="RedChat AI"
-                        username="redchat_ai"
+                        name="DeepRed AI"
+                        username="deepred_ai"
                         size="md"
                       />
                       <div>
                         <div className="text-xs font-bold text-white flex items-center gap-1">
-                          <span>RedChat AI</span>
+                          <span>DeepRed AI</span>
                           <VerifiedBadge
                             isVerified={true}
                             badgeUrl={currentBadgeUrl}
@@ -2472,7 +2472,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           />
                         </div>
                         <div className="text-[11px] text-fuchsia-400 font-mono font-medium">
-                          @redchat_ai • Flash Lite 2.0
+                          @deepred_ai • Flash Lite 2.0
                         </div>
                       </div>
                     </div>
