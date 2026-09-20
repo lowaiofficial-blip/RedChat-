@@ -39,6 +39,7 @@ export const AdminIpBanTab: React.FC<AdminIpBanTabProps> = ({ currentUser, allUs
   const [unbanningId, setUnbanningId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
+  const [selectedUserToBanUid, setSelectedUserToBanUid] = useState<string>('');
 
   // Gerçek zamanlı Firestore dinleyicisi
   useEffect(() => {
@@ -106,16 +107,54 @@ export const AdminIpBanTab: React.FC<AdminIpBanTabProps> = ({ currentUser, allUs
           </p>
         </div>
 
-        <button
-          onClick={() => {
-            setTargetUserForModal(null);
-            setModalOpen(true);
-          }}
-          className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-semibold text-xs transition-all shadow-lg shadow-red-950/40 flex items-center gap-2 cursor-pointer self-start sm:self-auto shrink-0 active:scale-95"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Manuel IP / Cihaz Banla</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-auto shrink-0">
+          {/* Otomatik Kullanıcı Seç & Banla */}
+          <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-800 rounded-xl p-1">
+            <select
+              value={selectedUserToBanUid}
+              onChange={(e) => setSelectedUserToBanUid(e.target.value)}
+              className="bg-transparent text-white text-xs px-2.5 py-1.5 outline-none max-w-[180px] sm:max-w-[220px] truncate"
+            >
+              <option value="" className="bg-zinc-900 text-zinc-400">
+                👤 Kullanıcı Seç (Otomatik Ban)
+              </option>
+              {allUsers
+                .filter((u) => u.uid !== currentUser.uid)
+                .map((u) => (
+                  <option key={u.uid} value={u.uid} className="bg-zinc-900 text-white">
+                    @{u.username || u.displayName} {u.lastIp ? `[${u.lastIp}]` : ''}
+                  </option>
+                ))}
+            </select>
+            <button
+              onClick={() => {
+                const target = allUsers.find((u) => u.uid === selectedUserToBanUid);
+                if (!target) {
+                  alert('Lütfen önce listeden bir kullanıcı seçin.');
+                  return;
+                }
+                setTargetUserForModal(target);
+                setModalOpen(true);
+              }}
+              disabled={!selectedUserToBanUid}
+              className="px-3 py-1.5 rounded-lg bg-red-600/90 hover:bg-red-600 disabled:opacity-40 text-white font-semibold text-xs flex items-center gap-1.5 cursor-pointer transition-colors"
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>Otomatik Banla</span>
+            </button>
+          </div>
+
+          <button
+            onClick={() => {
+              setTargetUserForModal(null);
+              setModalOpen(true);
+            }}
+            className="px-3.5 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold text-xs transition-all border border-zinc-700 flex items-center gap-1.5 cursor-pointer active:scale-95"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Manuel IP/HWID</span>
+          </button>
+        </div>
       </div>
 
       {actionSuccessMessage && (
