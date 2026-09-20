@@ -43,6 +43,7 @@ import { ChannelView } from './components/ChannelView';
 import { AdminPanel } from './components/AdminPanel';
 import { BannedScreen } from './components/BannedScreen';
 import { WhatsAppNotificationBanner } from './components/WhatsAppNotificationBanner';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Loader2, Bell, X, Radio } from 'lucide-react';
 
 export default function App() {
@@ -72,6 +73,7 @@ export default function App() {
   const [currentHash, setCurrentHash] = useState<string>(window.location.hash || '#/');
   const [bannerNotification, setBannerNotification] = useState<GroupedNotificationData | null>(null);
   const lastSeenMsgTimestampsRef = React.useRef<Record<string, number>>({});
+  const notifiedMessageIdsRef = React.useRef<Set<string>>(new Set());
 
   // 0. Hash Router Listener (/#/admin desteği)
   useEffect(() => {
@@ -80,6 +82,38 @@ export default function App() {
     };
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  // 📱 Tablet ve mobil cihazlarda orientation / resize / visualViewport / background return senkronizasyonu
+  const [, setViewportTick] = useState(0);
+
+  useEffect(() => {
+    const handleLayoutRecalc = () => {
+      setViewportTick((prev) => prev + 1);
+    };
+
+    window.addEventListener('resize', handleLayoutRecalc, { passive: true });
+    window.addEventListener('orientationchange', handleLayoutRecalc, { passive: true });
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        handleLayoutRecalc();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', handleLayoutRecalc, { passive: true });
+    }
+
+    return () => {
+      window.removeEventListener('resize', handleLayoutRecalc);
+      window.removeEventListener('orientationchange', handleLayoutRecalc);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', handleLayoutRecalc);
+      }
+    };
   }, []);
 
   // 1. Firebase Auth State Listener
@@ -258,17 +292,36 @@ export default function App() {
 
         // Yeni mesaj gelen konuşmaları tespit et ve WhatsApp bildirimini güncelle
         for (const c of convs) {
-          if (c.id === activeConversationId) continue;
-          const unreadCount = c.unreadCounts?.[currentUserAuth.uid] || 0;
-          if (unreadCount <= 0) continue;
-          if (!c.lastMessageSenderId || c.lastMessageSenderId === currentUserAuth.uid) continue;
-
           let msgTime = 0;
           if (c.lastMessageTimestamp?.toMillis) {
             msgTime = c.lastMessageTimestamp.toMillis();
           } else if (c.lastMessageTimestamp?.seconds) {
             msgTime = c.lastMessageTimestamp.seconds * 1000;
           }
+
+          // Eğer kullanıcı şu an bu sohbetteyse:
+          if (c.id === activeConversationId) {
+            // Canlı olarak gördüğü için zaman damgasını son mesaja eşitle
+            if (msgTime > (lastSeenMsgTimestampsRef.current[c.id] || 0)) {
+              lastSeenMsgTimestampsRef.current[c.id] = msgTime;
+            }
+            // Aktif sohbetteyken unreadCount varsa Firestore'da sıfırla
+            const unreadCount = c.unreadCounts?.[currentUserAuth.uid] || 0;
+            if (unreadCount > 0) {
+              updateDoc(doc(db, 'conversations', c.id), {
+                [`unreadCounts.${currentUserAuth.uid}`]: 0,
+              }).catch(() => {});
+            }
+            continue;
+          }
+
+          const unreadCount = c.unreadCounts?.[currentUserAuth.uid] || 0;
+          if (unreadCount <= 0) {
+            // Başka bir cihazda (telefon, tablet vb.) mesaj okunduysa banner'ı anında kapat!
+            setBannerNotification((prev) => (prev?.conversationId === c.id ? null : prev));
+            continue;
+          }
+          if (!c.lastMessageSenderId || c.lastMessageSenderId === currentUserAuth.uid) continue;
 
           const lastSeen = lastSeenMsgTimestampsRef.current[c.id] || 0;
           if (msgTime > lastSeen) {
@@ -277,9 +330,29 @@ export default function App() {
             try {
               const unreadList = await getGroupedUnreadMessages(
                 c.id,
+                currentUserAuth.uid,
                 c.lastMessageSenderId,
                 c.lastMessageText || 'Yeni mesaj'
               );
+
+              // Gerçekte okunmamış mesaj kalmamışsa bildirim üretme ve Firestore'daki tutarsız sayıyı düzelt
+              if (unreadList.length === 0) {
+                if (unreadCount > 0) {
+                  updateDoc(doc(db, 'conversations', c.id), {
+                    [`unreadCounts.${currentUserAuth.uid}`]: 0,
+                  }).catch(() => {});
+                }
+                continue;
+              }
+
+              // Çift bildirim koruması: En son mesaj ID'si bu oturumda zaten bildirildiyse tekrar etme
+              const latestMsgId = unreadList[unreadList.length - 1]?.id;
+              if (latestMsgId && notifiedMessageIdsRef.current.has(latestMsgId)) {
+                continue;
+              }
+              if (latestMsgId) {
+                notifiedMessageIdsRef.current.add(latestMsgId);
+              }
 
               const senderInfo = c.participants?.[c.lastMessageSenderId];
               const senderName = senderInfo?.displayName || senderInfo?.username || 'Kullanıcı';
@@ -308,7 +381,7 @@ export default function App() {
               });
 
               // Sistem sekmesi odakta değilse native tarayıcı bildirimi göster
-              if (Notification.permission === 'granted' && document.visibilityState !== 'visible') {
+              if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted' && document.visibilityState !== 'visible') {
                 const notifTitle = unreadList.length > 1
                   ? (c.isGroup && c.name ? `${c.name} (${unreadList.length} yeni mesaj)` : `${senderName} (${unreadList.length} yeni mesaj)`)
                   : (c.isGroup && c.name ? c.name : senderName);
@@ -423,7 +496,7 @@ export default function App() {
       });
 
       // Sekme arka plandaysa native tarayıcı bildirimi göster
-      if (Notification.permission === 'granted' && document.visibilityState !== 'visible') {
+      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted' && document.visibilityState !== 'visible') {
         const title = payload.notification?.title || data.senderName || 'RedChat';
         const notifBody = parsedMessages.length > 1
           ? parsedMessages.map((m) => `${m.text}  ${m.time}`).join('\n')
@@ -499,7 +572,7 @@ export default function App() {
     : null;
 
   const [showNotifBanner, setShowNotifBanner] = useState(() => {
-    return 'Notification' in window && Notification.permission === 'default' && localStorage.getItem('redchat_notif_banner_dismissed') !== 'true';
+    return typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default' && localStorage.getItem('redchat_notif_banner_dismissed') !== 'true';
   });
 
   const handleEnableNotifications = async () => {
@@ -520,7 +593,7 @@ export default function App() {
 
   // Arka planda otomatik FCM token senkronizasyonu
   useEffect(() => {
-    if (currentUserProfile && 'Notification' in window && Notification.permission === 'granted') {
+    if (currentUserProfile && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
       // Zaten izin verilmişse, sessizce token alıp Firestore'a kaydet
       requestNotificationPermissionAndToken(currentUserProfile.uid).catch(console.error);
     }
@@ -577,7 +650,7 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen w-screen overflow-hidden flex bg-zinc-100 dark:bg-zinc-950 antialiased">
+    <div className="h-full h-[100dvh] w-full max-w-full overflow-hidden flex bg-zinc-100 dark:bg-zinc-950 antialiased">
       {/* 🟢 WhatsApp Tarzı Açılır Gruplanmış Bildirim Kartı */}
       <WhatsAppNotificationBanner
         notification={bannerNotification}
@@ -613,7 +686,7 @@ export default function App() {
         return (
           <>
             <div
-              className={`w-full md:w-auto h-full ${
+              className={`w-full md:w-80 lg:w-96 md:shrink-0 md:flex-shrink-0 h-full ${
                 isDetailOpen ? 'hidden md:flex' : 'flex'
               }`}
             >
@@ -653,7 +726,7 @@ export default function App() {
 
             {/* SAĞ PANEL (Chat Window veya Channel View) */}
             <div
-              className={`w-full md:flex-1 h-full min-w-0 max-w-full overflow-hidden ${
+              className={`w-full md:flex-1 h-full min-w-0 max-w-full overflow-hidden flex flex-col ${
                 !isDetailOpen ? 'hidden md:flex' : 'flex'
               }`}
             >
@@ -788,17 +861,19 @@ export default function App() {
 
       {/* Profil Görüntüleme / Düzenleme / Ayarlar Modalı */}
       {effectiveInspectingUser && (
-        <ProfileModal
-          user={effectiveInspectingUser}
-          isCurrentUser={effectiveInspectingUser.uid === currentUserProfile.uid}
-          initialTab={modalTab}
-          badgeUrl={appSettings?.verifiedBadgeUrl}
-          onClose={() => setInspectingUser(null)}
-          onStartChat={(target) => {
-            handleSelectUser(target);
-            setInspectingUser(null);
-          }}
-        />
+        <ErrorBoundary>
+          <ProfileModal
+            user={effectiveInspectingUser}
+            isCurrentUser={Boolean(currentUserProfile?.uid && effectiveInspectingUser.uid === currentUserProfile.uid)}
+            initialTab={modalTab}
+            badgeUrl={appSettings?.verifiedBadgeUrl}
+            onClose={() => setInspectingUser(null)}
+            onStartChat={(target) => {
+              handleSelectUser(target);
+              setInspectingUser(null);
+            }}
+          />
+        </ErrorBoundary>
       )}
     </div>
   );

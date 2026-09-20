@@ -1,5 +1,6 @@
 import { UserVerificationForm } from './UserVerificationForm';
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import type { UserProfile } from '../types';
 import { updateUserProfileDetails, logoutUser } from '../services/authService';
 import { formatLastSeen } from '../services/chatService';
@@ -54,17 +55,27 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [activeTab, setActiveTab] = useState<'profile' | 'settings'>(initialTab);
   const [showMemory, setShowMemory] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [displayName, setDisplayName] = useState(user.displayName || user.username);
-  const [bio, setBio] = useState(user.bio || '');
+  const [displayName, setDisplayName] = useState(user?.displayName || user?.username || 'Kullanıcı');
+  const [bio, setBio] = useState(user?.bio || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Push notification state
-  const [pushEnabled, setPushEnabled] = useState(Notification.permission === 'granted');
+  // Push notification state with safe environment detection
+  const [pushEnabled, setPushEnabled] = useState(() => {
+    try {
+      return typeof window !== 'undefined' && 'Notification' in window && window.Notification.permission === 'granted';
+    } catch {
+      return false;
+    }
+  });
   const [pushLoading, setPushLoading] = useState(false);
 
   const handleTogglePush = async () => {
-    if (!isCurrentUser) return;
+    if (!isCurrentUser || !user?.uid) return;
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      setError("Bu cihaz veya tarayıcı anlık bildirimleri desteklemiyor.");
+      return;
+    }
     setPushLoading(true);
     setError(null);
     try {
@@ -73,7 +84,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         setPushEnabled(false);
       } else {
         await requestNotificationPermissionAndToken(user.uid);
-        setPushEnabled(true);
+        setPushEnabled(typeof window !== 'undefined' && 'Notification' in window && window.Notification.permission === 'granted');
       }
     } catch (err: any) {
       console.error(err);
@@ -102,14 +113,25 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     applyTheme(mode);
   };
 
+  // ESC tuşu ile modalı kapatma desteği
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
   // Gelen prop değiştiğinde (Firestore snapshot güncellendiğinde) senkronize et
   useEffect(() => {
-    setCurrentPhotoURL(user.photoURL || null);
+    setCurrentPhotoURL(user?.photoURL || null);
     if (!editing) {
-      setDisplayName(user.displayName || user.username);
-      setBio(user.bio || '');
+      setDisplayName(user?.displayName || user?.username || 'Kullanıcı');
+      setBio(user?.bio || '');
     }
-  }, [user.photoURL, user.displayName, user.username, user.bio, editing]);
+  }, [user?.photoURL, user?.displayName, user?.username, user?.bio, editing]);
 
   // ObjectURL memory leak önleme
   useEffect(() => {
@@ -247,14 +269,26 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     }
   };
 
-  return (
+  if (!user) return null;
+
+  const modalContent = (
     <>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
-        <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl relative">
+      <div
+        onClick={(e) => {
+          if (e.target === e.currentTarget) {
+            onClose();
+          }
+        }}
+        className="fixed inset-0 z-[9999] flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs overflow-y-auto animate-in fade-in duration-150"
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-5 sm:p-6 shadow-2xl relative my-auto max-h-[calc(100dvh-2rem)] flex flex-col overflow-y-auto"
+        >
           {/* Close Button */}
           <button
             onClick={onClose}
-            className="absolute top-4 right-4 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 p-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+            className="absolute top-4 right-4 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 p-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer z-10"
           >
             <X className="w-4 h-4" />
           </button>
@@ -740,4 +774,9 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       )}
     </>
   );
+
+  if (typeof document !== 'undefined') {
+    return createPortal(modalContent, document.body);
+  }
+  return modalContent;
 };

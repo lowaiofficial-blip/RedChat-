@@ -170,7 +170,10 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
 
   const hasImage = Boolean(msg.imageUrl);
   const hasText = Boolean((liveText !== undefined ? liveText.trim() : (msg.text && msg.text.trim())) || isThinking);
-  const isRead = msg.isRead || msg.status === 'read';
+  const isRead =
+    msg.isRead ||
+    msg.status === 'read' ||
+    Boolean(msg.readBy && Object.keys(msg.readBy).some((uid) => uid !== msg.senderId && msg.readBy[uid] === true));
 
   return (
     <div

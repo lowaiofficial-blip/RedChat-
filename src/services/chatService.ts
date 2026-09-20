@@ -829,47 +829,63 @@ export function subscribeToMessages(
  */
 /**
  * WhatsApp benzeri gruplanmış bildirim için son okunmamış mesajları kronolojik sırayla ve saatleriyle çeker.
+ * Mesaj gerçekten okunmamışsa listeye eklenir; okunmuşsa (readBy[userId] === true) listeye eklenmez.
+ * Eğer okunmamış mesaj yoksa boş dizi [] döner (asla sahte unread uydurmaz).
  */
 export async function getGroupedUnreadMessages(
   conversationId: string,
-  senderUid: string,
+  currentUserId?: string,
+  senderUid?: string,
   fallbackText: string = 'Yeni mesaj'
-): Promise<Array<{ id?: string; text: string; time: string }>> {
+): Promise<Array<{ id: string; text: string; time: string }>> {
   const now = new Date();
   const defaultTime = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
-  const fallbackList = [{ text: fallbackText, time: defaultTime }];
 
-  if (!db || !conversationId) return fallbackList;
+  if (!db || !conversationId) return [];
 
   try {
     const msgsCol = collection(db, 'conversations', conversationId, 'messages');
-    // En son 15 mesajı çekip hafızada filtreliyoruz
-    const q = query(msgsCol, orderBy('createdAt', 'desc'), limit(15));
+    // En son 20 mesajı çekip hafızada filtreliyoruz
+    const q = query(msgsCol, orderBy('createdAt', 'desc'), limit(20));
     const snap = await getDocs(q);
 
     const unread: Array<{ id: string; text: string; time: string }> = [];
     snap.forEach((docSnap) => {
       const data = docSnap.data();
-      // Gönderen bu kullanıcı ve okunmamış mesajlar
-      if (data.senderId === senderUid && data.isRead !== true) {
-        let msgText = data.text?.trim() || '';
-        if (data.imageUrl && !msgText) {
-          msgText = '📷 Fotoğraf';
-        } else if (data.imageUrl && msgText) {
-          msgText = `📷 ${msgText}`;
-        }
-        if (!msgText && data.isThinking) {
-          msgText = 'Düşünüyor...';
-        }
+      // Kendi gönderdiğimiz mesajlar bizim için okunmamış sayılamaz
+      if (currentUserId && data.senderId === currentUserId) return;
+      // Belirli bir gönderici hedeflenmişse ve eşleşmiyorsa atla
+      if (senderUid && data.senderId !== senderUid) return;
 
-        let timeStr = defaultTime;
-        if (data.createdAt?.toDate) {
-          timeStr = data.createdAt.toDate().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+      // Okunma kontrolü:
+      // Eğer alıcı (currentUserId) mesajı okumuşsa:
+      if (currentUserId && data.readBy && data.readBy[currentUserId] === true) {
+        return; // Zaten okundu!
+      }
+      // Genel okunma kontrolü (birebir sohbetler veya eski veriler için)
+      if (data.isRead === true || data.status === 'read') {
+        if (!currentUserId || !data.readBy || data.readBy[currentUserId] === true) {
+          return;
         }
+      }
 
-        if (msgText) {
-          unread.push({ id: docSnap.id, text: msgText, time: timeStr });
-        }
+      let msgText = data.text?.trim() || '';
+      if (data.imageUrl && !msgText) {
+        msgText = '📷 Fotoğraf';
+      } else if (data.imageUrl && msgText) {
+        msgText = `📷 ${msgText}`;
+      }
+      if (!msgText && data.isThinking) {
+        msgText = 'Düşünüyor...';
+      }
+
+      let timeStr = defaultTime;
+      if (data.createdAt?.toDate) {
+        timeStr = data.createdAt.toDate().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+      }
+
+      if (msgText) {
+        unread.push({ id: docSnap.id, text: msgText, time: timeStr });
       }
     });
 
@@ -882,7 +898,7 @@ export async function getGroupedUnreadMessages(
     console.warn('getGroupedUnreadMessages hatası:', err);
   }
 
-  return fallbackList;
+  return [];
 }
 
 export async function sendMessage(
@@ -925,6 +941,9 @@ export async function sendMessage(
     createdAt: serverTimestamp(),
     status: 'sent',
     isRead: false,
+    readBy: {
+      [sender.uid]: true, // Gönderen kendi mesajını doğal olarak okumuştur
+    },
     isEdited: false,
     ...(options?.isThinking && { isThinking: true }),
     ...(options?.isStreaming && { isStreaming: true }),
@@ -996,116 +1015,157 @@ export async function sendMessage(
   await updateDoc(convDocRef, updateData);
 
   // 4. WhatsApp tarzı Gruplanmış Push Notification gönder
-  try {
-    const currentMsgText = hasImage && cleanText 
-      ? `📷 Fotoğraf: ${cleanText.substring(0, 40)}` 
-      : hasImage 
-      ? '📷 Fotoğraf' 
-      : cleanText || 'Yeni mesaj';
+  // Alıcının sohbette olup mesajı anında okumuş olma ihtimaline karşı 500ms sonra kontrol edilir.
+  // Eğer alıcı mesajı zaten okumuşsa (readBy[userId] === true) push notification GÖNDERİLMEZ.
+  setTimeout(async () => {
+    try {
+      if (!db) return;
 
-    const unreadMessages = await getGroupedUnreadMessages(conversationId, sender.uid, currentMsgText);
-    const unreadCount = unreadMessages.length;
-    const senderName = sender.displayName || sender.username || "Bir kullanıcı";
+      // Mesajın Firestore'daki güncel durumunu kontrol et
+      const msgCheckSnap = await getDoc(newDocRef);
+      if (!msgCheckSnap.exists()) return;
+      const msgCheckData = msgCheckSnap.data();
 
-    let otherParticipantIds: string[] = [];
-    let notifTitle = senderName;
-    let notifBody = "";
+      let targetRecipients: string[] = [];
+      if (conversationData) {
+        targetRecipients = (conversationData.participantIds || []).filter((uid) => uid !== sender.uid);
+      } else {
+        const [uid1, uid2] = conversationId.split('_');
+        const recipientUid = uid1 === sender.uid ? uid2 : uid1;
+        if (recipientUid) targetRecipients = [recipientUid];
+      }
 
-    if (conversationData) {
-      otherParticipantIds = (conversationData.participantIds || []).filter((uid) => uid !== sender.uid);
-      if (conversationData.isGroup) {
+      // SADECE VE SADECE henüz okumamış olan alıcıları filtrele
+      const unreadRecipients = targetRecipients.filter((uid) => {
+        // Alıcı mesajı zaten okuduysa (readBy[uid] === true) bildirim gönderme!
+        if (msgCheckData.readBy && msgCheckData.readBy[uid] === true) return false;
+        // Birebir sohbette genel isRead true ise gönderme
+        if (!conversationData?.isGroup && (msgCheckData.isRead === true || msgCheckData.status === 'read')) return false;
+        return true;
+      });
+
+      if (unreadRecipients.length === 0) {
+        return;
+      }
+
+      const currentMsgText = hasImage && cleanText 
+        ? `📷 Fotoğraf: ${cleanText.substring(0, 40)}` 
+        : hasImage 
+        ? '📷 Fotoğraf' 
+        : cleanText || 'Yeni mesaj';
+
+      const unreadMessages = await getGroupedUnreadMessages(
+        conversationId,
+        unreadRecipients[0],
+        sender.uid,
+        currentMsgText
+      );
+
+      const unreadCount = unreadMessages.length || 1;
+      const senderName = sender.displayName || sender.username || "Bir kullanıcı";
+
+      let notifTitle = senderName;
+      let notifBody = "";
+
+      if (conversationData?.isGroup) {
         const groupName = conversationData.name || "Grup";
         notifTitle = unreadCount > 1 ? `${groupName} (${unreadCount} yeni mesaj)` : groupName;
         if (unreadCount > 1) {
           notifBody = unreadMessages.map((m) => `${senderName}: ${m.text} (${m.time})`).join('\n');
         } else {
-          notifBody = `${senderName}: ${unreadMessages[0].text}`;
+          notifBody = `${senderName}: ${unreadMessages[0]?.text || currentMsgText}`;
         }
       } else {
         notifTitle = unreadCount > 1 ? `${senderName} (${unreadCount} yeni mesaj)` : senderName;
         if (unreadCount > 1) {
           notifBody = unreadMessages.map((m) => `${m.text}  ${m.time}`).join('\n');
         } else {
-          notifBody = unreadMessages[0].text;
+          notifBody = unreadMessages[0]?.text || currentMsgText;
         }
       }
-    } else {
-      const [uid1, uid2] = conversationId.split('_');
-      const recipientUid = uid1 === sender.uid ? uid2 : uid1;
-      if (recipientUid) {
-        otherParticipantIds = [recipientUid];
-        notifTitle = unreadCount > 1 ? `${senderName} (${unreadCount} yeni mesaj)` : senderName;
-        if (unreadCount > 1) {
-          notifBody = unreadMessages.map((m) => `${m.text}  ${m.time}`).join('\n');
-        } else {
-          notifBody = unreadMessages[0].text;
-        }
-      }
-    }
 
-    if (otherParticipantIds.length > 0) {
       sendPushNotification({
-        receiverIds: otherParticipantIds,
+        receiverIds: unreadRecipients,
         title: notifTitle,
         body: notifBody,
         data: {
           conversationId,
+          messageId: newDocRef.id,
           senderId: sender.uid,
           senderName,
           senderPhoto: sender.photoURL || '',
           unreadCount: String(unreadCount),
-          messagesJson: JSON.stringify(unreadMessages),
+          messagesJson: JSON.stringify(unreadMessages.length > 0 ? unreadMessages : [{ text: currentMsgText, time: '' }]),
           type: "chat_message"
         }
       }).catch((err) => console.error("Push notification gönderme hatası:", err));
+    } catch (err) {
+      console.error("Push hazırlık aşamasında hata:", err);
     }
-  } catch (err) {
-    console.error("Push hazırlık aşamasında hata:", err);
-  }
+  }, 500);
 
   return newDocRef.id;
 }
 
 /**
  * Karşı tarafın gönderdiği okunmamış mesajları 'okundu' olarak işaretler ve kullanıcının unread count'unu sıfırlar.
+ * Hem Firestore conversation dokümanındaki unreadCounts[uid]'yi 0 yapar hem de mesajların readBy[uid] = true kaydını tutar.
  */
 export async function markMessagesAsRead(
   conversationId: string,
-  currentUserId: string
+  currentUserId: string,
+  knownUnreadMessageIds?: string[]
 ): Promise<void> {
   if (!db || !conversationId || !currentUserId) return;
 
   try {
-    const messagesCol = collection(db, 'conversations', conversationId, 'messages');
-    const q = query(
-      messagesCol,
-      where('senderId', '!=', currentUserId)
-    );
-
-    const snapshot = await getDocs(q);
-    const unreadDocs = snapshot.docs.filter((d) => {
-      const data = d.data();
-      return !data.isRead || data.status !== 'read';
+    // 1. ÖNCELİKLE: Conversation dokümanındaki bu kullanıcıya ait unreadCount'u sıfırla.
+    // Realtime snapshot sayesinde tüm bağlı cihazlar (telefon, tablet, PC) hemen anında 0 görür!
+    const convDocRef = doc(db, 'conversations', conversationId);
+    await updateDoc(convDocRef, {
+      [`unreadCounts.${currentUserId}`]: 0,
     });
 
-    // 1. Mesajları okundu olarak güncelle
-    if (unreadDocs.length > 0) {
+    // 2. Mesajları okundu olarak güncelle (readBy[currentUserId] = true, isRead = true, status = 'read')
+    const messagesCol = collection(db, 'conversations', conversationId, 'messages');
+
+    if (knownUnreadMessageIds && knownUnreadMessageIds.length > 0) {
       const batch = writeBatch(db);
-      unreadDocs.forEach((d) => {
-        batch.update(d.ref, {
+      const targetIds = knownUnreadMessageIds.slice(0, 450);
+      targetIds.forEach((msgId) => {
+        const msgRef = doc(messagesCol, msgId);
+        batch.update(msgRef, {
+          [`readBy.${currentUserId}`]: true,
           isRead: true,
           status: 'read',
           readAt: serverTimestamp(),
         });
       });
       await batch.commit();
-    }
+    } else {
+      // Bilinen ID yoksa, son 50 mesajı çek ve bu kullanıcının okumadıklarını güncelle
+      const q = query(messagesCol, orderBy('createdAt', 'desc'), limit(50));
+      const snapshot = await getDocs(q);
+      const unreadDocs = snapshot.docs.filter((d) => {
+        const data = d.data();
+        if (data.senderId === currentUserId) return false;
+        if (data.readBy && data.readBy[currentUserId] === true) return false;
+        return !data.isRead || data.status !== 'read';
+      });
 
-    // 2. Conversation dokümanındaki bu kullanıcıya ait unreadCount'u sıfırla
-    const convDocRef = doc(db, 'conversations', conversationId);
-    await updateDoc(convDocRef, {
-      [`unreadCounts.${currentUserId}`]: 0,
-    });
+      if (unreadDocs.length > 0) {
+        const batch = writeBatch(db);
+        unreadDocs.forEach((d) => {
+          batch.update(d.ref, {
+            [`readBy.${currentUserId}`]: true,
+            isRead: true,
+            status: 'read',
+            readAt: serverTimestamp(),
+          });
+        });
+        await batch.commit();
+      }
+    }
   } catch (err) {
     console.error('Mesajlar okundu olarak işaretlenemedi:', err);
   }

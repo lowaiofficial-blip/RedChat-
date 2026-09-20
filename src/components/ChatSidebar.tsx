@@ -113,15 +113,19 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
     }
   };
 
-  // Menü dışına tıklanınca kapatma
+  // Menü dışına tıklanınca kapatma (tablet/mobil touch desteği ile)
   useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
+    function handleClickOutside(event: MouseEvent | TouchEvent) {
       if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
         setUserMenuOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside, { passive: true });
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+    };
   }, []);
 
   // Mevcut kullanıcı hariç diğer gerçek kullanıcılar (Banlı olanlar kullanıcılar sekmesinde çıkmamalı)

@@ -271,18 +271,66 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     return () => unsubscribe();
   }, [conversation?.id]);
 
-  // Sohbet açıkken gelen/var olan okunmamış mesajları okundu olarak işaretle
+  // Sohbet açıldığında unreadCount varsa anında sıfırla
   useEffect(() => {
-    if (!conversation?.id || messages.length === 0) return;
-
-    const hasUnread = messages.some(
-      (m) => m.senderId !== currentUser.uid && (!m.isRead || m.status !== 'read')
-    );
-
-    if (hasUnread) {
+    if (!conversation?.id) return;
+    if ((conversation.unreadCounts?.[currentUser.uid] || 0) > 0) {
       markMessagesAsRead(conversation.id, currentUser.uid);
     }
-  }, [conversation?.id, messages, currentUser.uid]);
+  }, [conversation?.id, currentUser.uid]);
+
+  // Sohbet açıkken gelen/var olan okunmamış mesajları ekranda görünüyorsa okundu olarak işaretle
+  useEffect(() => {
+    if (!conversation?.id) return;
+
+    const unreadIds = messages
+      .filter((m) => {
+        if (m.senderId === currentUser.uid) return false;
+        if (m.readBy && m.readBy[currentUser.uid] === true) return false;
+        if (!conversation.isGroup && (m.isRead === true || m.status === 'read')) return false;
+        return true;
+      })
+      .map((m) => m.id);
+
+    const hasUnreadCount = (conversation.unreadCounts?.[currentUser.uid] || 0) > 0;
+
+    // Kullanıcı bu sohbette ve ekran görünür durumdaysa Firestore'da okundu yap
+    if ((unreadIds.length > 0 || hasUnreadCount) && typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      markMessagesAsRead(conversation.id, currentUser.uid, unreadIds);
+    }
+  }, [conversation?.id, conversation?.isGroup, conversation?.unreadCounts, messages, currentUser.uid]);
+
+  // Sekme arka plandan ön plana geldiğinde veya pencereye odaklanıldığında okunmamış mesajları kontrol et
+  useEffect(() => {
+    if (!conversation?.id) return;
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        const unreadIds = messages
+          .filter((m) => {
+            if (m.senderId === currentUser.uid) return false;
+            if (m.readBy && m.readBy[currentUser.uid] === true) return false;
+            if (!conversation.isGroup && (m.isRead === true || m.status === 'read')) return false;
+            return true;
+          })
+          .map((m) => m.id);
+
+        const hasUnreadCount = (conversation.unreadCounts?.[currentUser.uid] || 0) > 0;
+
+        if (unreadIds.length > 0 || hasUnreadCount) {
+          markMessagesAsRead(conversation.id, currentUser.uid, unreadIds);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+    };
+  }, [conversation?.id, conversation?.isGroup, conversation?.unreadCounts, messages, currentUser.uid]);
 
   // Otomatik aşağı kaydırma
   useEffect(() => {

@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import type { Channel } from '../types';
 import { VerifiedBadge } from './VerifiedBadge';
 import { X, Radio, Users, MessageSquare } from 'lucide-react';
@@ -14,14 +15,29 @@ export const ChannelProfileModal: React.FC<ChannelProfileModalProps> = ({
   badgeUrl,
   onClose,
 }) => {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const modal = (
+    <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          onClose();
+        }
+      }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/60 backdrop-blur-sm overflow-y-auto animate-in fade-in duration-200"
+    >
       <div 
-        className="absolute inset-0"
-        onClick={onClose}
-      />
-      
-      <div className="relative w-full max-w-sm bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full max-w-sm bg-white dark:bg-zinc-900 rounded-3xl shadow-2xl overflow-hidden my-auto max-h-[calc(100dvh-2rem)] overflow-y-auto animate-in zoom-in-95 duration-200"
+      >
         {/* Kapat Butonu */}
         <button
           onClick={onClose}
@@ -100,4 +116,9 @@ export const ChannelProfileModal: React.FC<ChannelProfileModalProps> = ({
       </div>
     </div>
   );
+
+  if (typeof document !== 'undefined') {
+    return createPortal(modal, document.body);
+  }
+  return modal;
 };

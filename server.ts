@@ -65,10 +65,35 @@ async function startServer() {
       const safeBody = typeof body === "string" && body.trim().length > 0 ? body.trim() : "Yeni bir mesaj aldınız.";
 
       const db = getFirestore();
+
+      // 🔔 Okunmuş mesaj kontrolü: Eğer mesaj alıcı tarafından zaten okunmuşsa push notification gönderme!
+      let targetReceivers = [...validReceiverIds];
+      if (data?.conversationId && data?.messageId) {
+        try {
+          const msgDoc = await db.doc(`conversations/${data.conversationId}/messages/${data.messageId}`).get();
+          if (msgDoc.exists) {
+            const msgData = msgDoc.data();
+            targetReceivers = targetReceivers.filter((uid) => {
+              // Eğer bu alıcı mesajı okuduysa bildirim gönderme
+              if (msgData?.readBy && msgData.readBy[uid] === true) return false;
+              if (msgData?.isRead === true || msgData?.status === 'read') return false;
+              return true;
+            });
+
+            if (targetReceivers.length === 0) {
+              console.log("Sunucu doğrulaması: Mesaj alıcı(lar) tarafından zaten okundu, push bildirim iptal edildi.");
+              return res.status(200).json({ success: true, message: "Message was already read by recipients." });
+            }
+          }
+        } catch (checkErr) {
+          console.warn("Sunucu mesaj okundu kontrolü hatası:", checkErr);
+        }
+      }
+
       let allTokens: string[] = [];
       const tokenToDocRefMap = new Map<string, any>();
       
-      for (const uid of validReceiverIds) {
+      for (const uid of targetReceivers) {
         try {
           const snapshot = await db.collection(`users/${uid}/fcmTokens`).get();
           snapshot.forEach(docSnap => {

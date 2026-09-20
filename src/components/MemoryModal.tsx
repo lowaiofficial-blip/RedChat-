@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { X, Book, Trash2, Loader2, Edit2, Check } from 'lucide-react';
 import { db } from '../services/firebase';
 import { collection, query, orderBy, onSnapshot, doc, deleteDoc, updateDoc } from 'firebase/firestore';
@@ -56,9 +57,29 @@ export const MemoryModal: React.FC<MemoryModalProps> = ({ userId, onClose }) => 
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-zinc-900 rounded-3xl w-full max-w-md overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95 duration-200">
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const modal = (
+    <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          onClose();
+        }
+      }}
+      className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-white dark:bg-zinc-900 rounded-3xl w-full max-w-md overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95 duration-200 my-auto max-h-[calc(100dvh-2rem)]"
+      >
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-100 dark:border-zinc-800">
           <div className="flex items-center gap-3 text-zinc-900 dark:text-zinc-100">
             <Book className="w-5 h-5 text-red-500" />
@@ -123,4 +144,9 @@ export const MemoryModal: React.FC<MemoryModalProps> = ({ userId, onClose }) => 
       </div>
     </div>
   );
+
+  if (typeof document !== 'undefined') {
+    return createPortal(modal, document.body);
+  }
+  return modal;
 };

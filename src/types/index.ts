@@ -96,6 +96,9 @@ export interface ChatMessage {
   status?: 'sent' | 'delivered' | 'read';
   isRead?: boolean;
   readAt?: any;
+  readBy?: {
+    [uid: string]: any;
+  };
   isEdited?: boolean;
   editedAt?: any;
   replyTo?: ChatReplyReference | null;

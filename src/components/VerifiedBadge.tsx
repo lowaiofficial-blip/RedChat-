@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { UserAvatar } from './UserAvatar';
 import { X, BadgeCheck, ShieldCheck } from 'lucide-react';
 
@@ -262,14 +263,14 @@ export const RedChatVerifiedCardModal: React.FC<RedChatVerifiedCardModalProps> =
 
   const isChannel = type === 'channel' || Boolean(channel);
 
-  return (
+  const modal = (
     <div
       onClick={handleBackdropClick}
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200"
+      className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs overflow-y-auto animate-in fade-in duration-200"
     >
       <div
         onClick={handleCardClick}
-        className="w-full max-w-xs bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl p-5 shadow-2xl relative animate-in zoom-in-95 duration-200 text-zinc-900 dark:text-zinc-100"
+        className="w-full max-w-xs bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl p-5 shadow-2xl relative my-auto max-h-[calc(100dvh-2rem)] overflow-y-auto animate-in zoom-in-95 duration-200 text-zinc-900 dark:text-zinc-100"
       >
         {/* Kapat Butonu */}
         <button
@@ -396,4 +397,9 @@ export const RedChatVerifiedCardModal: React.FC<RedChatVerifiedCardModalProps> =
       </div>
     </div>
   );
+
+  if (typeof document !== 'undefined') {
+    return createPortal(modal, document.body);
+  }
+  return modal;
 };
