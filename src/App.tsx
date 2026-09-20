@@ -42,6 +42,9 @@ import { ChannelNotificationsModal } from './components/ChannelNotificationsModa
 import { ChannelView } from './components/ChannelView';
 import { AdminPanel } from './components/AdminPanel';
 import { BannedScreen } from './components/BannedScreen';
+import { HardwareBannedScreen } from './components/HardwareBannedScreen';
+import { subscribeToDeviceBanStatus, syncCurrentDeviceInfo, checkDeviceBanNow } from './services/deviceService';
+import type { BannedDevice } from './types';
 import { WhatsAppNotificationBanner } from './components/WhatsAppNotificationBanner';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Loader2, Bell, X, Radio } from 'lucide-react';
@@ -74,6 +77,31 @@ export default function App() {
   const [bannerNotification, setBannerNotification] = useState<GroupedNotificationData | null>(null);
   const lastSeenMsgTimestampsRef = React.useRef<Record<string, number>>({});
   const notifiedMessageIdsRef = React.useRef<Set<string>>(new Set());
+
+  // 🚫 IP & Donanım Banı State'i (Kati Cihaz Kilidi)
+  const [deviceBanInfo, setDeviceBanInfo] = useState<BannedDevice | null>(null);
+  const [clientIp, setClientIp] = useState<string | null>(null);
+  const [clientHwid, setClientHwid] = useState<string | null>(null);
+  const [clientDeviceType, setClientDeviceType] = useState<'desktop' | 'tablet' | 'mobile' | 'unknown'>('desktop');
+
+  // 🚫 Gerçek Zamanlı Cihaz & IP Banı Dinleyicisi
+  useEffect(() => {
+    const unsubscribeDeviceBan = subscribeToDeviceBanStatus((ban, ip, devId, devType) => {
+      setDeviceBanInfo(ban);
+      setClientIp(ip);
+      setClientHwid(devId);
+      setClientDeviceType(devType);
+    });
+
+    return () => unsubscribeDeviceBan();
+  }, []);
+
+  // Cihaz parmak izi ve IP bilgisini kullanıcı profiliyle eşleştir
+  useEffect(() => {
+    if (currentUserAuth?.uid) {
+      syncCurrentDeviceInfo(currentUserAuth.uid);
+    }
+  }, [currentUserAuth?.uid]);
 
   // 0. Hash Router Listener (/#/admin desteği)
   useEffect(() => {
@@ -612,6 +640,22 @@ export default function App() {
           </div>
         </div>
       </div>
+    );
+  }
+
+  // 🚫 KATI IP & DONANIM BANI EKRANI (Tüm erişimi ve yeni hesap açmayı kilitler)
+  if (deviceBanInfo) {
+    return (
+      <HardwareBannedScreen
+        banInfo={deviceBanInfo}
+        currentIp={clientIp}
+        currentDeviceId={clientHwid}
+        currentDeviceType={clientDeviceType}
+        onCheckStatus={async () => {
+          const ban = await checkDeviceBanNow();
+          setDeviceBanInfo(ban);
+        }}
+      />
     );
   }
 

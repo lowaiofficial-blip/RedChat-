@@ -46,6 +46,15 @@ service cloud.firestore {
     }
 
     // =========================================================================
+    // 🚫 DONANIM VE IP BANLARI (/banned_devices/{banId})
+    // =========================================================================
+    // Oturum açmamış cihazlar dahi ban durumunu sorgulayabilmelidir (allow read: if true)
+    match /banned_devices/{banId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // =========================================================================
     // ⚙️ UYGULAMA GENEL AYARLARI (/settings/{settingId})
     // =========================================================================
     // Mavi tik rozet görseli, yapay zeka profil resmi ve sistem ayarları

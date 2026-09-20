@@ -21,6 +21,28 @@ export interface UserProfile {
   muteReason?: string;
   mutedAt?: any;
   isSystemAI?: boolean;
+  // Cihaz ve Donanım Bilgileri
+  lastIp?: string;
+  lastDeviceId?: string;
+  deviceType?: 'desktop' | 'tablet' | 'mobile' | 'unknown';
+  lastUserAgent?: string;
+}
+
+export interface BannedDevice {
+  id: string; // Firestore document ID
+  ip?: string | null;
+  deviceId: string; // Hardware ID / Cihaz Parmak İzi
+  hardwareFingerprint?: string;
+  deviceType: 'desktop' | 'tablet' | 'mobile' | 'unknown';
+  targetUid?: string | null;
+  targetUsername?: string | null;
+  targetDisplayName?: string | null;
+  targetEmail?: string | null;
+  bannedBy: string; // Admin adı / email
+  bannedByUid?: string;
+  reason: string;
+  bannedAt: any;
+  isActive: boolean;
 }
 
 export interface AppSettings {

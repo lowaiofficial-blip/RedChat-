@@ -42,6 +42,36 @@ async function startServer() {
   // JSON gövdeleri için middleware (görseller için 20mb limit)
   app.use(express.json({ limit: "20mb" }));
 
+  // 🌐 İstemci IP ve Cihaz Bilgisi Endpoint'i (IP & Hardware Ban Tespiti için)
+  app.get("/api/client-info", (req, res) => {
+    try {
+      const forwarded = req.headers["x-forwarded-for"];
+      let clientIp = "";
+      if (typeof forwarded === "string") {
+        clientIp = forwarded.split(",")[0].trim();
+      } else if (Array.isArray(forwarded) && forwarded.length > 0) {
+        clientIp = forwarded[0].trim();
+      } else {
+        clientIp = req.socket.remoteAddress || req.ip || "127.0.0.1";
+      }
+
+      if (clientIp.startsWith("::ffff:")) {
+        clientIp = clientIp.replace("::ffff:", "");
+      }
+      if (clientIp === "::1") {
+        clientIp = "127.0.0.1";
+      }
+
+      res.json({
+        ip: clientIp,
+        userAgent: req.headers["user-agent"] || "",
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      res.json({ ip: "127.0.0.1", userAgent: "", timestamp: Date.now() });
+    }
+  });
+
   // 🔔 PUSH NOTIFICATION GÖNDERİM ENDPOINT'İ
   app.post("/api/notifications/send", async (req, res) => {
     try {

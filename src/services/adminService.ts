@@ -3,6 +3,8 @@ import {
   getDoc,
   setDoc,
   updateDoc,
+  deleteDoc,
+  addDoc,
   collection,
   onSnapshot,
   query,
@@ -14,7 +16,7 @@ import {
   orderBy,
 } from 'firebase/firestore';
 import { auth, db } from './firebase';
-import type { AppSettings, UserProfile, Conversation, ChatMessage } from '../types';
+import type { AppSettings, UserProfile, Conversation, ChatMessage, BannedDevice } from '../types';
 
 export const ADMIN_EMAILS = [
   'robloxenes930@gmail.com',
@@ -267,6 +269,162 @@ export async function unmuteUser(
     mutedAt: null,
     updatedAt: serverTimestamp(),
   });
+}
+
+/**
+ * 🚫 IP ve Donanım (Hardware) Banı Uygular
+ * Hem IP adresini hem de cihaz parmak izini (HWID) banned_devices tablosuna işler.
+ * Kullanıcı kimliği varsa hesabını da kalıcı olarak kilitler.
+ */
+export async function banDeviceAndIp(
+  adminUser: UserProfile,
+  params: {
+    deviceId: string;
+    ip?: string | null;
+    deviceType: 'desktop' | 'tablet' | 'mobile' | 'unknown';
+    hardwareFingerprint?: string;
+    targetUid?: string | null;
+    targetUsername?: string | null;
+    targetDisplayName?: string | null;
+    targetEmail?: string | null;
+    reason: string;
+  }
+): Promise<string> {
+  if (!db) throw new Error('Firestore bağlantısı hazır değil');
+  if (!isUserAdmin(adminUser)) {
+    throw new Error('Bu işlemi gerçekleştirme yetkiniz yok (Yalnızca Admin)');
+  }
+  if (!params.deviceId && !params.ip) {
+    throw new Error('Banlamak için en az bir Cihaz Kimliği (HWID) veya IP Adresi gereklidir.');
+  }
+
+  const bannedCol = collection(db, 'banned_devices');
+  const banRecord: any = {
+    deviceId: (params.deviceId || '').trim(),
+    ip: (params.ip || '').trim() || null,
+    deviceType: params.deviceType || 'unknown',
+    hardwareFingerprint: (params.hardwareFingerprint || '').trim(),
+    targetUid: params.targetUid || null,
+    targetUsername: params.targetUsername || null,
+    targetDisplayName: params.targetDisplayName || null,
+    targetEmail: params.targetEmail || null,
+    bannedBy: adminUser.displayName || adminUser.username || adminUser.email || 'Admin',
+    bannedByUid: adminUser.uid,
+    reason: (params.reason || 'Kalıcı Ağ ve Cihaz Güvenlik Engeli').trim(),
+    bannedAt: serverTimestamp(),
+    isActive: true,
+  };
+
+  const docRef = await addDoc(bannedCol, banRecord);
+
+  // Kullanıcı profili varsa kullanıcı hesabını da banla
+  if (params.targetUid) {
+    try {
+      const targetUserRef = doc(db, 'users', params.targetUid);
+      await setDoc(
+        targetUserRef,
+        {
+          isBanned: true,
+          banReason: `[IP & Donanım Banı] ${banRecord.reason}`,
+          bannedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.warn('Hedef kullanıcının hesabı güncellenemedi:', err);
+    }
+  }
+
+  return docRef.id;
+}
+
+/**
+ * 🟢 IP ve Donanım (Hardware) Banını Kaldırır (Unban)
+ * Dokümanı siler veya deaktife eder. Cihaz anında kilit ekranından kurtulur.
+ */
+export async function unbanDeviceAndIp(
+  adminUser: UserProfile,
+  banId: string,
+  targetUid?: string | null
+): Promise<void> {
+  if (!db) throw new Error('Firestore bağlantısı hazır değil');
+  if (!isUserAdmin(adminUser)) {
+    throw new Error('Bu işlemi gerçekleştirme yetkiniz yok (Yalnızca Admin)');
+  }
+  if (!banId) throw new Error('Geçersiz Ban ID');
+
+  const banDocRef = doc(db, 'banned_devices', banId);
+  await deleteDoc(banDocRef);
+
+  // Eğer hedef kullanıcının hesabı da banlıysa hesabı da açmayı dene
+  if (targetUid) {
+    try {
+      const targetUserRef = doc(db, 'users', targetUid);
+      await setDoc(
+        targetUserRef,
+        {
+          isBanned: false,
+          banReason: null,
+          bannedAt: null,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.warn('Hedef kullanıcının hesabı güncellenemedi:', err);
+    }
+  }
+}
+
+/**
+ * Aktif tüm IP & Donanım banlarını gerçek zamanlı (onSnapshot) dinler
+ */
+export function listenToBannedDevices(
+  callback: (bans: BannedDevice[]) => void
+): () => void {
+  if (!db) {
+    callback([]);
+    return () => {};
+  }
+
+  const bannedCol = collection(db, 'banned_devices');
+  const q = query(bannedCol, orderBy('bannedAt', 'desc'));
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const bans = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        ...docSnap.data(),
+      })) as BannedDevice[];
+      callback(bans);
+    },
+    (err) => {
+      console.warn('listenToBannedDevices hatası:', err);
+      // Fallback: orderBy index yoksa düz collection çek
+      const fallbackUnsub = onSnapshot(bannedCol, (snap) => {
+        const bans = snap.docs.map((d) => ({ id: d.id, ...d.data() })) as BannedDevice[];
+        callback(bans);
+      });
+      return fallbackUnsub;
+    }
+  );
+}
+
+/**
+ * Tüm IP ve Donanım banlarını tek seferlik çeker
+ */
+export async function fetchAllBannedDevices(): Promise<BannedDevice[]> {
+  if (!db) return [];
+  try {
+    const bannedCol = collection(db, 'banned_devices');
+    const snap = await getDocs(bannedCol);
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() })) as BannedDevice[];
+  } catch (err) {
+    console.error('fetchAllBannedDevices hatası:', err);
+    return [];
+  }
 }
 
 export interface AdminStats {

@@ -5,6 +5,7 @@ import {
   validateUsername,
   isUsernameTaken,
 } from '../services/authService';
+import { checkDeviceBanNow } from '../services/deviceService';
 import {
   User,
   AtSign,
@@ -67,6 +68,14 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess }) => {
     setLoading(true);
 
     try {
+      // 🚫 Donanım ve IP engeli kontrolü
+      const activeBan = await checkDeviceBanNow();
+      if (activeBan) {
+        throw new Error(
+          `BU CİHAZ VE IP ENGELLENMİŞTİR: ${activeBan.reason || 'Kalıcı ağ ve donanım engeli'}. Yeni hesap açılamaz ve giriş yapılamaz.`
+        );
+      }
+
       if (isLogin) {
         if (!email.trim() || !password) {
           throw new Error('Lütfen e-posta ve şifrenizi girin.');

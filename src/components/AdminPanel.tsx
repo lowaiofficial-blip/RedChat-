@@ -1,4 +1,6 @@
 import { AdminVerificationTab } from './AdminVerificationTab';
+import { AdminIpBanTab } from './AdminIpBanTab';
+import { BanHardwareModal } from './BanHardwareModal';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { UserProfile, AppSettings, Conversation, ChatMessage, Channel, ChannelPost } from '../types';
 import {
@@ -98,7 +100,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     return map;
   }, [localUsers]);
 
-  const [activeTab, setActiveTab] = useState<'users' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'ipbans' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
+  const [hardwareBanModalOpen, setHardwareBanModalOpen] = useState(false);
+  const [hardwareBanTargetUser, setHardwareBanTargetUser] = useState<UserProfile | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [userFilter, setUserFilter] = useState<'all' | 'online' | 'banned' | 'muted' | 'verified'>('all');
 
@@ -1010,6 +1014,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <span>Kullanıcılar ({localUsers.length})</span>
             </button>
             <button
+              onClick={() => setActiveTab('ipbans')}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                activeTab === 'ipbans'
+                  ? 'bg-red-600 text-white shadow-xs'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+              }`}
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>IP & Donanım Banları</span>
+            </button>
+            <button
               onClick={() => setActiveTab('verifications')}
               className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                 activeTab === 'verifications'
@@ -1094,6 +1109,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       {/* 📱💻 ANA İÇERİK ALANI (TÜM BOYUTLARDA EKRANI DOLDURUR, BOŞLUK BIRAKMAZ) */}
       <main className="flex-1 w-full overflow-y-auto overflow-x-hidden p-3 sm:p-5 md:p-8">
         <div className="max-w-7xl mx-auto space-y-6">
+          {/* TAB: IP & DONANIM (HARDWARE) BANLARI */}
+          {activeTab === 'ipbans' && (
+            <AdminIpBanTab
+              currentUser={currentUser}
+              allUsers={localUsers}
+            />
+          )}
+
           {/* TAB 1: KULLANICI YÖNETİMİ & MODERASYON */}
           {activeTab === 'verifications' && <AdminVerificationTab />}
 
@@ -1341,6 +1364,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               <span>Banla</span>
                             )}
                           </button>
+
+                          <button
+                            onClick={() => {
+                              setHardwareBanTargetUser(user);
+                              setHardwareBanModalOpen(true);
+                            }}
+                            className="py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 cursor-pointer bg-red-950/70 hover:bg-red-900 text-red-400 border border-red-800/60"
+                            title="Cihaz & IP Banı Uygula"
+                          >
+                            <ShieldAlert className="w-3.5 h-3.5" />
+                            <span>Cihaz/IP</span>
+                          </button>
                         </div>
                       </div>
                     );
@@ -1552,6 +1587,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                         <span>Banla</span>
                                       </>
                                     )}
+                                  </button>
+
+                                  <button
+                                    onClick={() => {
+                                      setHardwareBanTargetUser(user);
+                                      setHardwareBanModalOpen(true);
+                                    }}
+                                    className="px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer bg-red-950/50 hover:bg-red-900/70 text-red-400 border border-red-800/60"
+                                    title="IP & Donanım Banı Uygula"
+                                  >
+                                    <ShieldAlert className="w-3.5 h-3.5 text-red-500" />
+                                    <span>Cihaz/IP Ban</span>
                                   </button>
                                 </div>
                               </td>
@@ -3029,6 +3076,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </button>
 
               <button
+                onClick={() => {
+                  setHardwareBanTargetUser(inspectingUser);
+                  setHardwareBanModalOpen(true);
+                }}
+                className="w-full py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800/80 shadow-xs"
+              >
+                <ShieldAlert className="w-4 h-4 text-red-400" />
+                <span>Cihaz & IP Banı Uygula (Donanım Kilidi)</span>
+              </button>
+
+              <button
                 onClick={() => handleToggleUserMute(inspectingUser)}
                 disabled={processingUid === inspectingUser.uid}
                 className={`w-full py-2 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 ${
@@ -3176,6 +3234,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </div>
         </div>
       )}
+
+      {/* 🚫 Cihaz & IP Banı Modalı */}
+      <BanHardwareModal
+        isOpen={hardwareBanModalOpen}
+        onClose={() => setHardwareBanModalOpen(false)}
+        targetUser={hardwareBanTargetUser}
+        adminUser={currentUser}
+        onSuccess={() => {
+          setUserActionSuccess('Cihaz ve IP banı başarıyla uygulandı.');
+          setTimeout(() => setUserActionSuccess(null), 4000);
+        }}
+      />
     </div>
   );
 };
