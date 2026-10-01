@@ -72,6 +72,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   // 🚫 Kullanıcı Engelleme State'leri
   const [showBlockConfirmModal, setShowBlockConfirmModal] = useState(false);
   const [blockLoading, setBlockLoading] = useState(false);
+  const [blockError, setBlockError] = useState<string | null>(null);
 
   const isBlocked = useMemo(() => {
     if (!blockedUserIds || !user?.uid) return false;
@@ -82,13 +83,16 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     if (!currentUserId || !user?.uid) return;
     try {
       setBlockLoading(true);
+      setBlockError(null);
       setError(null);
       await blockUser(currentUserId, user.uid);
       setShowBlockConfirmModal(false);
       onBlockStatusChange?.(true);
     } catch (err: any) {
       console.error('Kullanıcı engellenirken hata:', err);
-      setError(err?.message || 'Kullanıcı engellenemedi.');
+      const msg = err?.message || 'Kullanıcı engellenemedi.';
+      setBlockError(msg);
+      setError(msg);
     } finally {
       setBlockLoading(false);
     }
@@ -162,16 +166,26 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     applyTheme(mode);
   };
 
-  // ESC tuşu ile modalı kapatma desteği
+  // ESC tuşu ile modalı kapatma desteği (Önce onay modalları kapanır, işlem sürerken engellenir)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        if (showBlockConfirmModal) {
+          if (!blockLoading) {
+            setShowBlockConfirmModal(false);
+          }
+        } else if (showConfirmModal) {
+          if (!isUploadingPhoto) {
+            setShowConfirmModal(false);
+          }
+        } else {
+          onClose();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  }, [onClose, showBlockConfirmModal, blockLoading, showConfirmModal, isUploadingPhoto]);
 
   // Gelen prop değiştiğinde (Firestore snapshot güncellendiğinde) senkronize et
   useEffect(() => {
@@ -653,7 +667,10 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                             {!isRedChatAI(user) && currentUserId && (
                               <button
                                 type="button"
-                                onClick={() => setShowBlockConfirmModal(true)}
+                                onClick={() => {
+                                  setBlockError(null);
+                                  setShowBlockConfirmModal(true);
+                                }}
                                 disabled={blockLoading}
                                 className="w-full py-2.5 px-3 text-xs font-semibold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/30 hover:bg-rose-100 dark:hover:bg-rose-900/40 rounded-xl border border-rose-200/80 dark:border-rose-900/60 transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                               >
@@ -798,8 +815,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
       {/* 🔴 REDCHAT ÖZEL PROFİL FOTOĞRAFI ONAY & YÜKLEME MODALI */}
       {showConfirmModal && previewUrl && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl relative text-center animate-in zoom-in-95">
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl relative text-center">
             {/* Fotoğraf Önizleme */}
             <div className="relative mx-auto w-28 h-28 mb-4">
               <div className="w-full h-full rounded-full overflow-hidden border-3 border-red-600 shadow-xl bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center">
@@ -865,14 +882,39 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       )}
 
       {/* 🚫 REDCHAT KULLANICI ENGELLEME ONAY MODALI */}
-      {showBlockConfirmModal && (
-        <div className="fixed inset-0 z-70 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl relative text-center animate-in zoom-in-95">
-            <div className="w-12 h-12 rounded-full bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto mb-3">
+      {showBlockConfirmModal && typeof document !== 'undefined' && createPortal(
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !blockLoading) {
+              setShowBlockConfirmModal(false);
+            }
+          }}
+          className="fixed inset-0 z-[10000] flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-xs overflow-y-auto select-none"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="block-confirm-modal-title"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-5 sm:p-6 shadow-2xl relative my-auto text-center"
+          >
+            {/* Kapat butonu (X) */}
+            <button
+              type="button"
+              onClick={() => !blockLoading && setShowBlockConfirmModal(false)}
+              disabled={blockLoading}
+              className="absolute top-3.5 right-3.5 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 p-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer disabled:opacity-40"
+              title="Kapat"
+              aria-label="Kapat"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="w-12 h-12 rounded-full bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto mb-3 shadow-xs">
               <UserX className="w-6 h-6" />
             </div>
 
-            <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100 mb-1.5">
+            <h3 id="block-confirm-modal-title" className="text-base font-bold text-zinc-900 dark:text-zinc-100 mb-1.5">
               Kullanıcıyı Engelle
             </h3>
 
@@ -880,16 +922,23 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               Bu kullanıcıyı engellemek istediğine emin misin?
             </p>
 
-            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-6">
+            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-5 leading-relaxed">
               Engellediğinizde bu kullanıcı size özel mesaj gönderemez, kullanıcı aramasında ve listenizde görünmez.
             </p>
+
+            {blockError && (
+              <div className="mb-4 p-2.5 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 text-xs rounded-xl border border-rose-200 dark:border-rose-900/50 flex items-center gap-2 text-left">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{blockError}</span>
+              </div>
+            )}
 
             <div className="flex gap-3">
               <button
                 type="button"
                 onClick={() => setShowBlockConfirmModal(false)}
                 disabled={blockLoading}
-                className="flex-1 py-2.5 px-4 text-xs font-semibold text-zinc-700 dark:text-zinc-300 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 rounded-xl transition-colors cursor-pointer"
+                className="flex-1 py-2.5 px-4 text-xs font-semibold text-zinc-700 dark:text-zinc-300 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 rounded-xl transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Vazgeç
               </button>
@@ -898,7 +947,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 type="button"
                 onClick={handleConfirmBlock}
                 disabled={blockLoading}
-                className="flex-1 py-2.5 px-4 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-all shadow-md shadow-rose-600/20 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                className="flex-1 py-2.5 px-4 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-all shadow-md shadow-rose-600/20 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {blockLoading ? (
                   <>
@@ -914,7 +963,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );
