@@ -1,5 +1,6 @@
 import { AdminVerificationTab } from './AdminVerificationTab';
 import { AdminIpBanTab } from './AdminIpBanTab';
+import { AdminAiUsersTab } from './AdminAiUsersTab';
 import { BanHardwareModal } from './BanHardwareModal';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { UserProfile, AppSettings, Conversation, ChatMessage, Channel, ChannelPost } from '../types';
@@ -100,7 +101,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     return map;
   }, [localUsers]);
 
-  const [activeTab, setActiveTab] = useState<'users' | 'ipbans' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'ai_users' | 'ipbans' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
   const [hardwareBanModalOpen, setHardwareBanModalOpen] = useState(false);
   const [hardwareBanTargetUser, setHardwareBanTargetUser] = useState<UserProfile | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -230,6 +231,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     onlineUsers: 0,
     totalMessages: 0,
     totalConversations: 0,
+    terminatedAiCount: 0,
   });
   const [loadingStats, setLoadingStats] = useState(false);
 
@@ -1014,6 +1016,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <span>Kullanıcılar ({localUsers.length})</span>
             </button>
             <button
+              id="admin-tab-ai-users"
+              onClick={() => setActiveTab('ai_users')}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                activeTab === 'ai_users'
+                  ? 'bg-white dark:bg-zinc-900 text-rose-600 dark:text-rose-400 shadow-xs'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+              }`}
+            >
+              <Bot className="w-3.5 h-3.5" />
+              <span>AI Kullanıcı Durumları</span>
+            </button>
+            <button
               onClick={() => setActiveTab('ipbans')}
               className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                 activeTab === 'ipbans'
@@ -1114,6 +1128,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <AdminIpBanTab
               currentUser={currentUser}
               allUsers={localUsers}
+            />
+          )}
+
+          {/* TAB: AI KULLANICI DURUMLARI */}
+          {activeTab === 'ai_users' && (
+            <AdminAiUsersTab
+              currentUser={currentUser}
+              allUsers={localUsers}
+              onUpdateUser={(updated) => {
+                setLocalUsers((prev) =>
+                  prev.map((u) => (u.uid === updated.uid ? updated : u))
+                );
+              }}
             />
           )}
 
@@ -2491,7 +2518,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           />
                         </div>
                         <div className="text-[11px] text-fuchsia-600 font-mono font-medium">
-                          @deepred_ai • Flash Lite 2.0
+                          @deepred_ai • ⚡ Hızlı
                         </div>
                       </div>
                     </div>
@@ -2519,7 +2546,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           />
                         </div>
                         <div className="text-[11px] text-fuchsia-400 font-mono font-medium">
-                          @deepred_ai • Flash Lite 2.0
+                          @deepred_ai • ⚡ Hızlı
                         </div>
                       </div>
                     </div>
@@ -2547,7 +2574,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
 
               {/* İstatistik Kartları */}
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                 <div className="p-5 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl shadow-xs space-y-1">
                   <div className="flex items-center justify-between text-zinc-400">
                     <span className="text-xs font-semibold">Toplam Kullanıcı</span>
@@ -2585,6 +2612,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
                   <div className="text-2xl font-black text-zinc-900 dark:text-white">
                     {stats.totalMessages}
+                  </div>
+                </div>
+
+                <div className="p-5 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl shadow-xs space-y-1">
+                  <div className="flex items-center justify-between text-zinc-400">
+                    <span className="text-xs font-semibold">Kapatılan AI</span>
+                    <Bot className="w-4 h-4 text-rose-500" />
+                  </div>
+                  <div className="text-2xl font-black text-rose-600 dark:text-rose-400">
+                    {stats.terminatedAiCount}
                   </div>
                 </div>
               </div>

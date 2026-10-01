@@ -34,6 +34,7 @@ import {
   Book,
   UserX,
   UserCheck,
+  Zap,
 } from 'lucide-react';
 
 import { MemoryModal } from './MemoryModal';
@@ -574,9 +575,10 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
                       <div className="p-3 bg-zinc-50 dark:bg-zinc-800/80 rounded-xl border border-zinc-200 dark:border-zinc-750 dark:border-zinc-700">
                         <div className="flex items-center justify-between text-xs text-zinc-600 dark:text-zinc-300">
-                          <span className="text-zinc-400">Model:</span>
-                          <span className="font-semibold text-zinc-800 dark:text-zinc-100">
-                            Flash Lite 2.0
+                          <span className="text-zinc-400">Mod:</span>
+                          <span className="font-semibold text-zinc-800 dark:text-zinc-100 flex items-center gap-1">
+                            <Zap className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />
+                            <span>Hızlı</span>
                           </span>
                         </div>
                       </div>

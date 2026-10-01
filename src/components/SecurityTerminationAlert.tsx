@@ -25,14 +25,14 @@ export const SecurityTerminationAlert: React.FC<SecurityTerminationAlertProps> =
 }) => {
   return (
     <div className={`w-full max-w-xl mx-auto my-2.5 transition-all text-left ${className}`}>
-      {/* 🤖 Üstteki AI Başlığı (DeepRed AI • Flash Lite 2.0) */}
+      {/* 🤖 Üstteki AI Başlığı (DeepRed AI • ⚡ Hızlı) */}
       {showAiHeader && (
         <div className="flex items-center gap-2 mb-2 px-1 select-none">
           <div className="w-5 h-5 rounded-lg bg-red-600/20 dark:bg-red-500/20 text-red-600 dark:text-red-400 flex items-center justify-center">
             <Sparkles className="w-3.5 h-3.5" />
           </div>
           <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
-            DeepRed AI <span className="font-normal text-zinc-500 dark:text-zinc-400">• Flash Lite 2.0</span>
+            DeepRed AI <span className="font-normal text-zinc-500 dark:text-zinc-400">• ⚡ Hızlı</span>
           </span>
         </div>
       )}

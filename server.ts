@@ -401,23 +401,45 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
   // 🤖 REDCHAT AI SERVER-SIDE STREAMING ENDPOINT (Server-Sent Events)
   app.post("/api/ai/chat/stream", async (req, res) => {
     try {
-      const { messages, userMessage, userId } = req.body;
+      const { messages, userMessage, userId, mode = "fast" } = req.body;
 
       if (!userMessage && (!messages || messages.length === 0)) {
         return res.status(400).json({ error: "Mesaj içeriği eksik." });
       }
-
-      // Model sorusu doğrudan yanıtı (Hızlı ve kesin)
-      const cleanUserMsg = (userMessage || "").trim();
-      const isModelQuestion = /^(modelin(\s+ne|\s+nedir|\s+hangisi)?|sen\s+hangi\s+modelsin|hangi\s+modelsin|hangi\s+modeli\s+kullan[ıi]yorsun|sen\s+kimsin|modelini\s+s[öo]yle)\??$/i.test(cleanUserMsg);
 
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
       res.flushHeaders();
 
+      // 💡 Uzman Mod kilit kontrolü: Seçilemez, API isteği veya model çalıştırmaz
+      if (mode === "expert") {
+        res.write(`data: ${JSON.stringify({ error: "Uzman Mod şu anda kullanılamıyor." })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        return res.end();
+      }
+
+      // 🛡️ AI Erişim Kontrolü: Eğer kullanıcının AI erişimi engellendiyse istek reddedilir
+      if (userId && getApps().length) {
+        try {
+          const db = getFirestore();
+          const userDoc = await db.doc(`users/${userId}`).get();
+          if (userDoc.exists && userDoc.data()?.aiAccess === "blocked") {
+            res.write(`data: ${JSON.stringify({ error: "AI erişiminiz yönetici tarafından kısıtlanmıştır." })}\n\n`);
+            res.write("data: [DONE]\n\n");
+            return res.end();
+          }
+        } catch (checkErr) {
+          console.warn("AI access check error:", checkErr);
+        }
+      }
+
+      // Model sorusu doğrudan yanıtı (Hızlı ve kesin)
+      const cleanUserMsg = (userMessage || "").trim();
+      const isModelQuestion = /^(modelin(\s+ne|\s+nedir|\s+hangisi)?|sen\s+hangi\s+modelsin|hangi\s+modelsin|hangi\s+modeli\s+kullan[ıi]yorsun|sen\s+kimsin|modelini\s+s[öo]yle)\??$/i.test(cleanUserMsg);
+
       if (isModelQuestion) {
-        const directReply = "Ben DeepRed AI'yım (Flash Lite 2.0). Türkçe olarak samimi, net ve yardımcı yanıtlar vermek üzere özel olarak yapılandırıldım. Size nasıl yardımcı olabilirim? 😊";
+        const directReply = "Ben DeepRed AI'yım. RedChat için özel olarak yapılandırılmış yapay zeka asistanıyım. Size nasıl yardımcı olabilirim? 😊";
         res.write(`data: ${JSON.stringify({ chunk: directReply })}\n\n`);
         res.write("data: [DONE]\n\n");
         return res.end();
@@ -439,10 +461,9 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
         groqMessages.push({ role: "user", content: cleanUserMsg });
       }
 
+      // ⚡ Hızlı Mod Backend Modeli: "qwen/qwen3.8-27b"
       const candidateModels = [
         "qwen/qwen3.8-27b",
-        "groq/compound",
-        "openai/gpt-oss-120b",
       ];
       let streamedSuccess = false;
       let fullAccumulatedResponse = "";
@@ -451,7 +472,7 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
         for (const modelName of candidateModels) {
           try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 12000);
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
 
             const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
               method: "POST",
@@ -524,21 +545,20 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
         return res.end();
       }
 
-      // Son çare bilgilendirme
-      const fallbackMsg = "Şu an bağlantımda ufak bir sorun var kanka 😄 Birazdan tekrar dener misin?";
-      res.write(`data: ${JSON.stringify({ chunk: fallbackMsg })}\n\n`);
+      // Gerçek hata durumu (sahte cevap üretilmez)
+      res.write(`data: ${JSON.stringify({ error: "DeepRed AI şu anda yanıt veremiyor. Lütfen tekrar deneyin." })}\n\n`);
       res.write("data: [DONE]\n\n");
       return res.end();
     } catch (streamErr: any) {
       console.error("AI chat stream server error:", streamErr);
-      const safeMsg = "Şu an bağlantımda ufak bir sorun var kanka 😄 Birazdan tekrar dener misin?";
+      const safeMsg = "DeepRed AI bağlantısında bir sorun oluştu. Lütfen tekrar deneyin.";
       try {
         if (!res.headersSent) {
           res.setHeader("Content-Type", "text/event-stream");
           res.setHeader("Cache-Control", "no-cache");
           res.setHeader("Connection", "keep-alive");
         }
-        res.write(`data: ${JSON.stringify({ chunk: safeMsg })}\n\n`);
+        res.write(`data: ${JSON.stringify({ error: safeMsg })}\n\n`);
         res.write("data: [DONE]\n\n");
         return res.end();
       } catch {
@@ -550,17 +570,35 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
   // 🤖 REDCHAT AI SERVER-SIDE NON-STREAMING ENDPOINT (Standart JSON)
   app.post("/api/ai/chat", async (req, res) => {
     try {
-      const { messages, userMessage, userId } = req.body;
+      const { messages, userMessage, userId, mode = "fast" } = req.body;
 
       if (!userMessage && (!messages || messages.length === 0)) {
         return res.status(400).json({ error: "Mesaj içeriği eksik." });
+      }
+
+      // 💡 Uzman Mod kilit kontrolü: Seçilemez, API isteği göndermez
+      if (mode === "expert") {
+        return res.status(403).json({ error: "Uzman Mod şu anda kullanılamıyor." });
+      }
+
+      // 🛡️ AI Erişim Kontrolü: Eğer kullanıcının AI erişimi engellendiyse istek reddedilir
+      if (userId && getApps().length) {
+        try {
+          const db = getFirestore();
+          const userDoc = await db.doc(`users/${userId}`).get();
+          if (userDoc.exists && userDoc.data()?.aiAccess === "blocked") {
+            return res.status(403).json({ error: "AI erişiminiz yönetici tarafından kısıtlanmıştır." });
+          }
+        } catch (checkErr) {
+          console.warn("AI access check error:", checkErr);
+        }
       }
 
       const cleanUserMsg = (userMessage || "").trim();
       const isModelQuestion = /^(modelin(\s+ne|\s+nedir|\s+hangisi)?|sen\s+hangi\s+modelsin|hangi\s+modelsin|hangi\s+modeli\s+kullan[ıi]yorsun|sen\s+kimsin|modelini\s+s[öo]yle)\??$/i.test(cleanUserMsg);
       if (isModelQuestion) {
         return res.json({
-          text: "Ben DeepRed AI'yım (Flash Lite 2.0). Türkçe olarak samimi, net ve yardımcı yanıtlar vermek üzere özel olarak yapılandırıldım. Size nasıl yardımcı olabilirim? 😊",
+          text: "Ben DeepRed AI'yım. RedChat için özel olarak yapılandırılmış yapay zeka asistanıyım. Size nasıl yardımcı olabilirim? 😊",
           provider: "deepred_ai",
         });
       }
@@ -594,17 +632,16 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
             groqMessages.push({ role: "user", content: cleanUserMsg });
           }
 
+          // ⚡ Hızlı Mod Backend Modeli: "qwen/qwen3.8-27b"
           const candidateModels = [
             "qwen/qwen3.8-27b",
-            "groq/compound",
-            "openai/gpt-oss-120b",
           ];
           let aiTextResponse: string | null = null;
 
           for (const modelName of candidateModels) {
             try {
               const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 12000);
+              const timeoutId = setTimeout(() => controller.abort(), 15000);
 
               const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
                 method: "POST",
@@ -645,14 +682,14 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
         }
       }
 
-      return res.json({
-        text: "Şu an bağlantımda ufak bir sorun var dostum 😄 Birazdan tekrar deneyebilir misin?",
-        provider: "fallback",
+      // Gerçek API hatası varsa sahte cevap üretme; uygun hata mesajı göster.
+      return res.status(502).json({
+        error: "DeepRed AI şu anda yanıt veremiyor. Lütfen tekrar deneyin.",
       });
     } catch (error: any) {
       console.error("AI chat server error:", error);
       return res.status(500).json({
-        error: "Şu an bağlantımda ufak bir sorun var dostum 😄 Birazdan tekrar deneyebilir misin?",
+        error: "DeepRed AI sunucu hatası oluştu.",
       });
     }
   });

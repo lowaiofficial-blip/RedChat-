@@ -21,6 +21,11 @@ export interface UserProfile {
   muteReason?: string;
   mutedAt?: any;
   isSystemAI?: boolean;
+  // 🤖 DeepRed AI Erişim Durumu (Yalnızca AI sohbetini kısıtlar, hesap banı değildir)
+  aiAccess?: 'allowed' | 'blocked';
+  aiAccessUpdatedAt?: any;
+  aiAccessUpdatedBy?: string;
+  securityStatus?: 'active' | 'terminated';
   // Cihaz ve Donanım Bilgileri
   lastIp?: string;
   lastDeviceId?: string;

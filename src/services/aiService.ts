@@ -64,6 +64,8 @@ export function isRedChatAI(userOrUid?: UserProfile | string | null): boolean {
   );
 }
 
+export type AiChatMode = 'fast' | 'expert';
+
 /**
  * Server-side AI endpoint'ine güvenli istek atarak yanıt alır.
  * API key browser'a asla sızdırılmaz.
@@ -71,11 +73,17 @@ export function isRedChatAI(userOrUid?: UserProfile | string | null): boolean {
 export async function requestAIChatResponse(
   userMessage: string,
   chatHistory: ChatMessage[] = [],
-  userId?: string
+  userId?: string,
+  mode: AiChatMode = 'fast'
 ): Promise<string> {
   const cleanMessage = userMessage.trim();
   if (!cleanMessage) {
     throw new Error('Mesaj metni boş olamaz.');
+  }
+
+  // 💡 Uzman Mod kilitli kontrolü
+  if (mode === 'expert') {
+    throw new Error('Uzman Mod şu anda kullanılamıyor.');
   }
 
   // Son 10 mesajı formatla (Prompt context)
@@ -94,7 +102,8 @@ export async function requestAIChatResponse(
       body: JSON.stringify({
         userMessage: cleanMessage,
         messages: formattedHistory,
-        userId
+        userId,
+        mode,
       }),
     });
 
@@ -127,9 +136,15 @@ export async function requestAIChatStream(
   userMessage: string,
   chatHistory: ChatMessage[] = [],
   userId?: string,
-  onChunk?: (text: string) => void
+  onChunk?: (text: string) => void,
+  mode: AiChatMode = 'fast'
 ): Promise<string> {
   const cleanMessage = userMessage.trim();
+
+  // 💡 Uzman Mod kilitli kontrolü
+  if (mode === 'expert') {
+    throw new Error('Uzman Mod şu anda kullanılamıyor.');
+  }
   
   const formattedHistory = chatHistory.slice(-10).map((m) => ({
     role: m.senderId === REDCHAT_AI_UID ? 'assistant' : 'user',
@@ -146,13 +161,14 @@ export async function requestAIChatStream(
       body: JSON.stringify({
         userMessage: cleanMessage,
         messages: formattedHistory,
-        userId
+        userId,
+        mode,
       }),
     });
 
     if (!response.ok || !response.body) {
       console.warn('Stream yanıt vermedi, standart istek deneniyor...');
-      const fallbackText = await requestAIChatResponse(cleanMessage, chatHistory, userId);
+      const fallbackText = await requestAIChatResponse(cleanMessage, chatHistory, userId, mode);
       if (onChunk) onChunk(fallbackText);
       return fallbackText;
     }
@@ -197,7 +213,7 @@ export async function requestAIChatStream(
   } catch (error: any) {
     console.error('requestAIChatStream error:', error);
     try {
-      const fallback = await requestAIChatResponse(cleanMessage, chatHistory, userId);
+      const fallback = await requestAIChatResponse(cleanMessage, chatHistory, userId, mode);
       if (onChunk) onChunk(fallback);
       return fallback;
     } catch (fbErr: any) {

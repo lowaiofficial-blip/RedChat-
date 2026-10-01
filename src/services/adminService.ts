@@ -17,6 +17,7 @@ import {
 } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import type { AppSettings, UserProfile, Conversation, ChatMessage, BannedDevice } from '../types';
+import { getDeterministicConversationId } from './chatService';
 
 export const ADMIN_EMAILS = [
   'robloxenes930@gmail.com',
@@ -432,6 +433,7 @@ export interface AdminStats {
   onlineUsers: number;
   totalMessages: number;
   totalConversations: number;
+  terminatedAiCount: number;
 }
 
 /**
@@ -440,13 +442,14 @@ export interface AdminStats {
  */
 export async function fetchRealAdminStats(): Promise<AdminStats> {
   if (!db) {
-    return { totalUsers: 0, onlineUsers: 0, totalMessages: 0, totalConversations: 0 };
+    return { totalUsers: 0, onlineUsers: 0, totalMessages: 0, totalConversations: 0, terminatedAiCount: 0 };
   }
 
   let totalUsers = 0;
   let onlineUsers = 0;
   let totalMessages = 0;
   let totalConversations = 0;
+  let terminatedAiCount = 0;
 
   // 1. Toplam Kullanıcı Sayısı
   try {
@@ -486,7 +489,22 @@ export async function fetchRealAdminStats(): Promise<AdminStats> {
     console.warn('Conversations count fetch warning:', e);
   }
 
-  // 4. Mesajlar Sayısı
+  // 4. Kapatılan AI Sohbetleri Sayısı (securityStatus: 'terminated')
+  try {
+    const convCol = collection(db, 'conversations');
+    const termQuery = query(convCol, where('securityStatus', '==', 'terminated'));
+    try {
+      const termSnap = await getCountFromServer(termQuery);
+      terminatedAiCount = termSnap.data().count;
+    } catch {
+      const termDocs = await getDocs(termQuery);
+      terminatedAiCount = termDocs.size;
+    }
+  } catch (e) {
+    console.warn('Terminated AI conversations count fetch warning:', e);
+  }
+
+  // 5. Mesajlar Sayısı
   try {
     const msgGroup = collectionGroup(db, 'messages');
     const msgCountSnap = await getCountFromServer(msgGroup);
@@ -512,6 +530,7 @@ export async function fetchRealAdminStats(): Promise<AdminStats> {
     onlineUsers,
     totalMessages,
     totalConversations,
+    terminatedAiCount,
   };
 }
 
@@ -714,3 +733,157 @@ Toplam Mesaj: ${messages.length}
 
   return `${headerBlock}${messageLines.join('\n')}${footerBlock}`;
 }
+
+/**
+ * Kullanıcının DeepRed AI erişim durumunu ayarlar ('allowed' veya 'blocked').
+ * Normal hesap banından tamamen ayrıdır: Kullanıcı özel mesaj, grup ve kanallara erişmeye devam eder.
+ */
+export async function setUserAiAccess(
+  adminUser: UserProfile,
+  targetUid: string,
+  aiAccess: 'allowed' | 'blocked'
+): Promise<void> {
+  if (!db) throw new Error('Firestore bağlantısı hazır değil');
+  if (!targetUid) throw new Error('Geçersiz kullanıcı kimliği');
+  if (targetUid === 'system_redchat_ai') {
+    throw new Error('Sistem AI asistanının erişim durumu değiştirilemez');
+  }
+  if (!isUserAdmin(adminUser)) {
+    throw new Error('Bu işlemi gerçekleştirme yetkiniz yok (Yalnızca Admin)');
+  }
+
+  const userDocRef = doc(db, 'users', targetUid);
+  await setDoc(
+    userDocRef,
+    {
+      aiAccess,
+      aiAccessUpdatedAt: serverTimestamp(),
+      aiAccessUpdatedBy: adminUser.email || adminUser.uid,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+/**
+ * Tüm konuşmaları gerçek zamanlı dinler (Admin yetkisiyle).
+ */
+export function subscribeToAllConversations(
+  callback: (conversations: Conversation[]) => void
+): () => void {
+  if (!db) {
+    callback([]);
+    return () => {};
+  }
+
+  const convCol = collection(db, 'conversations');
+  return onSnapshot(
+    convCol,
+    (snapshot) => {
+      const list: Conversation[] = [];
+      snapshot.forEach((docSnap) => {
+        list.push({
+          id: docSnap.id,
+          ...(docSnap.data() as Omit<Conversation, 'id'>),
+        });
+      });
+      callback(list);
+    },
+    (error) => {
+      console.error('subscribeToAllConversations onSnapshot error:', error);
+      callback([]);
+    }
+  );
+}
+
+/**
+ * Kullanıcının AI sohbetini yeniden açar:
+ * 1. AI konuşma dokümanındaki 'securityStatus: terminated' durumunu 'active' yapar, abusiveCount'u sıfırlar.
+ * 2. Kullanıcı dokümanındaki 'aiAccess' alanını 'allowed', 'securityStatus' alanını 'active' yapar.
+ */
+export async function reopenUserAiChat(
+  adminUser: UserProfile,
+  targetUid: string
+): Promise<void> {
+  if (!db) throw new Error('Firestore bağlantısı hazır değil');
+  if (!targetUid) throw new Error('Geçersiz kullanıcı kimliği');
+  if (!isUserAdmin(adminUser)) {
+    throw new Error('Bu işlemi gerçekleştirme yetkiniz yok (Yalnızca Admin)');
+  }
+
+  // 1. Kullanıcı dokümanını güncelle (aiAccess: allowed, securityStatus: active)
+  const userDocRef = doc(db, 'users', targetUid);
+  await setDoc(
+    userDocRef,
+    {
+      aiAccess: 'allowed',
+      securityStatus: 'active',
+      aiAccessUpdatedAt: serverTimestamp(),
+      aiAccessUpdatedBy: adminUser.email || adminUser.uid,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  // 2. AI konuşma dokümanını bul ve sıfırla
+  const convId = getDeterministicConversationId(targetUid, 'system_redchat_ai');
+  const convRef = doc(db, 'conversations', convId);
+  const convSnap = await getDoc(convRef);
+  if (convSnap.exists()) {
+    await updateDoc(convRef, {
+      securityStatus: 'active',
+      abusiveCount: 0,
+      terminatedAt: null,
+      terminatedReason: null,
+      updatedAt: serverTimestamp(),
+    });
+  }
+}
+
+/**
+ * Kullanıcının AI sohbetini kapatır / kısıtlar:
+ * 1. AI konuşma dokümanındaki 'securityStatus' alanını 'terminated' yapar.
+ * 2. Kullanıcı dokümanındaki 'aiAccess' alanını 'blocked', 'securityStatus' alanını 'terminated' yapar.
+ */
+export async function closeUserAiChat(
+  adminUser: UserProfile,
+  targetUid: string,
+  reason: string = 'admin_action'
+): Promise<void> {
+  if (!db) throw new Error('Firestore bağlantısı hazır değil');
+  if (!targetUid) throw new Error('Geçersiz kullanıcı kimliği');
+  if (targetUid === 'system_redchat_ai') {
+    throw new Error('Sistem AI asistanının erişim durumu değiştirilemez');
+  }
+  if (!isUserAdmin(adminUser)) {
+    throw new Error('Bu işlemi gerçekleştirme yetkiniz yok (Yalnızca Admin)');
+  }
+
+  // 1. Kullanıcı dokümanını güncelle (aiAccess: blocked, securityStatus: terminated)
+  const userDocRef = doc(db, 'users', targetUid);
+  await setDoc(
+    userDocRef,
+    {
+      aiAccess: 'blocked',
+      securityStatus: 'terminated',
+      aiAccessUpdatedAt: serverTimestamp(),
+      aiAccessUpdatedBy: adminUser.email || adminUser.uid,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  // 2. AI konuşma dokümanını bul ve sonlandır
+  const convId = getDeterministicConversationId(targetUid, 'system_redchat_ai');
+  const convRef = doc(db, 'conversations', convId);
+  const convSnap = await getDoc(convRef);
+  if (convSnap.exists()) {
+    await updateDoc(convRef, {
+      securityStatus: 'terminated',
+      terminatedAt: serverTimestamp(),
+      terminatedReason: reason,
+      updatedAt: serverTimestamp(),
+    });
+  }
+}
+

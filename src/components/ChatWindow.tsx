@@ -20,7 +20,7 @@ import { VerifiedBadge } from './VerifiedBadge';
 import { SequentialTypingDots } from './SequentialTypingDots';
 import { getTypingInfo } from '../utils/typingHelper';
 import { MarkdownMessage } from './MarkdownMessage';
-import { isRedChatAI, requestAIChatResponse, requestAIChatStream, getRedChatAIProfile, REDCHAT_AI_UID } from '../services/aiService';
+import { isRedChatAI, requestAIChatResponse, requestAIChatStream, getRedChatAIProfile, REDCHAT_AI_UID, type AiChatMode } from '../services/aiService';
 import { isAbusiveMessage } from '../services/moderationService';
 import { SecurityTerminationAlert, SECURITY_TERMINATION_MESSAGE_TEXT } from './SecurityTerminationAlert';
 import { updateAbusiveCount, terminateAIConversation } from '../services/chatService';
@@ -53,6 +53,10 @@ import {
   Ban,
   VolumeX,
   UserX,
+  Zap,
+  Lightbulb,
+  ChevronDown,
+  Lock,
 } from 'lucide-react';
 
 interface ChatWindowProps {
@@ -141,6 +145,46 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   });
   
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+
+  // ⚡ DeepRed AI Model Modu (Hızlı / Uzman Mod)
+  const [aiMode, setAiMode] = useState<AiChatMode>('fast');
+  const [showAiModeDropdown, setShowAiModeDropdown] = useState(false);
+  const [expertLockedToast, setExpertLockedToast] = useState(false);
+  const aiModeMenuRef = useRef<HTMLDivElement>(null);
+  const expertToastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleSelectExpertMode = () => {
+    // 💡 Uzman Mod şu an KİLİTLİ: Seçilemez, API isteği göndermez, model çağırmaz
+    setShowAiModeDropdown(false);
+    setExpertLockedToast(true);
+    if (expertToastTimeoutRef.current) {
+      clearTimeout(expertToastTimeoutRef.current);
+    }
+    expertToastTimeoutRef.current = setTimeout(() => {
+      setExpertLockedToast(false);
+    }, 2800);
+  };
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (aiModeMenuRef.current && !aiModeMenuRef.current.contains(e.target as Node)) {
+        setShowAiModeDropdown(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowAiModeDropdown(false);
+      }
+    };
+    if (showAiModeDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleKeyDown);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showAiModeDropdown]);
 
   // 👥 Grup Bilgisi Modal State'i
   const [showGroupInfoModal, setShowGroupInfoModal] = useState(false);
@@ -639,6 +683,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       return;
     }
 
+    if (isDirectAIChat && currentUser?.aiAccess === 'blocked') {
+      setImageUploadError('DeepRed AI erişiminiz yönetici tarafından kısıtlanmıştır.');
+      return;
+    }
+
     const textToSend = inputText.trim();
     if (!textToSend && !selectedImageFile) return;
 
@@ -682,6 +731,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       const isAiMentioned = /@DeepRed\s+AI|@DeepRedAI|@DeepRed|@deepred_ai|@deepred|@RedChat\s+AI|@redchat_ai|@RedChatAI/i.test(textToSend);
 
       if ((isDirectAIChat || (isGroupChat && isAiMentioned)) && textToSend) {
+        if (currentUser?.aiAccess === 'blocked') {
+          // 🛡️ Kullanıcının AI erişimi engellendiği için DeepRed AI yanıt vermez
+          return;
+        }
+
         (async () => {
           const aiPhoto = aiProfilePhotoUrl || photoURL || null;
           const aiProfile = getRedChatAIProfile(aiPhoto);
@@ -820,7 +874,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                   });
                   queueFirestoreSync(chunkText);
                 }
-              }
+              },
+              aiMode
             );
 
             if (firestoreSyncTimeout) {
@@ -853,7 +908,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               await editMessage(
                 conversation.id,
                 aiMsgId,
-                "Merhaba! Size yardımcı olmaktan memnuniyet duyarım. Nasıl yardımcı olabilirim? 😊",
+                aiErr?.message || "DeepRed AI şu anda yanıt veremiyor. Lütfen tekrar deneyin.",
                 true,
                 false,
                 { isThinking: false, isStreaming: false, isAiUpdate: true }
@@ -1133,8 +1188,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                   ) : isDirectAIChat ? (
                     <>
                       <span>•</span>
-                      <span className="text-zinc-500 dark:text-zinc-400 font-medium">
-                        Yapay Zeka Asistanı
+                      <span className="text-zinc-600 dark:text-zinc-400 font-medium inline-flex items-center gap-1">
+                        <Zap className="w-3 h-3 text-amber-500 fill-amber-500" />
+                        <span>Hızlı</span>
                       </span>
                     </>
                   ) : (
@@ -1762,8 +1818,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                     </span>
                   </div>
                   {candidate.isAi ? (
-                    <span className="px-2 py-0.5 text-[10px] font-bold bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-900/50 rounded-md shrink-0">
-                      Flash Lite 2.0
+                    <span className="px-2 py-0.5 text-[10px] font-bold bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-900/50 rounded-md shrink-0 flex items-center gap-1">
+                      <Zap className="w-2.5 h-2.5 fill-current" />
+                      <span>Hızlı</span>
                     </span>
                   ) : null}
                 </button>
@@ -1860,84 +1917,255 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               )}
             </button>
           </form>
+        ) : isDirectAIChat && currentUser?.aiAccess === 'blocked' ? (
+          <div className="w-full p-4 bg-zinc-900 border border-red-900/50 rounded-2xl flex items-center gap-3.5 shadow-lg select-none">
+            <div className="w-10 h-10 rounded-xl bg-red-950/70 border border-red-800/60 text-red-400 flex items-center justify-center shrink-0">
+              <Lock className="w-5 h-5" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <h4 className="text-xs font-bold text-red-400">
+                  AI Sohbet Erişimi Kısıtlandı
+                </h4>
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-950/80 text-red-400 border border-red-900/60">
+                  Kilitli
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-400 mt-1 leading-relaxed">
+                DeepRed AI erişiminiz bir yönetici tarafından kısıtlanmıştır. Özel mesajlaşma, gruplar ve kanalları normal şekilde kullanmaya devam edebilirsiniz.
+              </p>
+            </div>
+          </div>
         ) : (
-          <form onSubmit={handleSend} className="flex items-center gap-2 max-w-full min-w-0 w-full overflow-hidden">
-            {/* 😀 Emoji Butonu */}
-            <button
-              id="emoji-toggle-btn"
-              type="button"
-              onClick={() => setShowEmojiPicker((prev) => !prev)}
-              disabled={sending || isUploadingImage}
-              className={`p-2.5 rounded-xl border transition-colors cursor-pointer flex-shrink-0 disabled:opacity-50 ${
-                showEmojiPicker
-                  ? 'border-red-500 bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400'
-                  : 'border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'
-              }`}
-              title="Emoji seç"
-            >
-              <Smile className="w-4 h-4" />
-            </button>
+          <div className="flex flex-col w-full max-w-full min-w-0">
+            {/* ⚡ DeepRed AI Model Seçici (Birebir DeepRed AI Sohbetinde Görünür) */}
+            {isDirectAIChat && (
+              <div className="relative mb-2 flex items-center justify-between">
+                <div className="relative" ref={aiModeMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setShowAiModeDropdown((prev) => !prev)}
+                    className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#1e1e1e] hover:bg-[#282828] active:scale-95 text-white border border-zinc-700/60 shadow-md transition-all cursor-pointer select-none text-sm font-semibold tracking-wide"
+                    title="Model: Hızlı"
+                  >
+                    <svg
+                      className="w-4 h-4 text-white shrink-0"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                    </svg>
+                    <span className="font-bold">Hızlı</span>
+                    <svg
+                      className={`w-3.5 h-3.5 text-zinc-400 transition-transform duration-200 ${
+                        showAiModeDropdown ? 'rotate-180' : ''
+                      }`}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M6 9l6 6 6-6" />
+                    </svg>
+                  </button>
 
-            {/* 🖼️ Fotoğraf Ekleme Butonu */}
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={sending || isUploadingImage}
-              className={`p-2.5 rounded-xl border transition-colors cursor-pointer flex-shrink-0 disabled:opacity-50 ${
-                selectedImageFile
-                  ? 'border-red-500 bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400'
-                  : 'border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'
-              }`}
-              title="Fotoğraf ekle (Galeri / Kamera)"
-            >
-              <ImageIcon className="w-4 h-4" />
-            </button>
+                  {/* 💡 Uzman Mod Kilitli Bildirim Toast'ı */}
+                  {expertLockedToast && (
+                    <div className="absolute bottom-full left-0 mb-2 z-50 bg-[#1c1c1e] text-zinc-100 text-xs font-semibold px-4 py-2.5 rounded-2xl shadow-2xl border border-zinc-700/80 flex items-center gap-2 select-none whitespace-nowrap animate-in fade-in slide-in-from-bottom-2">
+                      <svg
+                        className="w-3.5 h-3.5 text-amber-400 shrink-0"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                      </svg>
+                      <span>Uzman Mod şu anda kullanılamıyor.</span>
+                    </div>
+                  )}
 
-            {/* Metin / Açıklama Inputu */}
-            <input
-              ref={inputRef}
-              type="text"
-              value={inputText}
-              onChange={handleInputChange}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setShowMentionSuggestions(false);
+                  {/* 💡 / ⚡ Model Seçici Popover (Açılır Menü) */}
+                  {showAiModeDropdown && (
+                    <div className="absolute bottom-full left-0 mb-2 w-72 sm:w-80 bg-[#18181b] border border-zinc-800 rounded-3xl p-2 shadow-2xl z-40 select-none animate-in fade-in zoom-in-95">
+                      {/* 💡 Uzman Mod (KİLİTLİ) */}
+                      <button
+                        type="button"
+                        onClick={handleSelectExpertMode}
+                        className="w-full px-3.5 py-3 rounded-2xl text-left flex items-start gap-3.5 hover:bg-zinc-800/40 transition-colors cursor-pointer group"
+                      >
+                        <svg
+                          className="w-5 h-5 text-zinc-400 shrink-0 mt-0.5"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M9 18h6" />
+                          <path d="M10 22h4" />
+                          <path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z" />
+                        </svg>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-sm font-semibold text-zinc-300">
+                              Uzman
+                            </span>
+                            <svg
+                              className="w-3.5 h-3.5 text-zinc-400 shrink-0"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
+                              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                            </svg>
+                          </div>
+                          <p className="text-xs text-zinc-500 mt-0.5">
+                            Derinlemesine Düşünür
+                          </p>
+                        </div>
+                      </button>
+
+                      {/* ⚡ Hızlı Mod (AKTİF VE SEÇİLİ) */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAiMode('fast');
+                          setShowAiModeDropdown(false);
+                        }}
+                        className="w-full px-3.5 py-3 rounded-2xl text-left flex items-center justify-between bg-[#2a2a2c] text-white transition-colors cursor-pointer shadow-xs"
+                      >
+                        <div className="flex items-center gap-3.5 min-w-0">
+                          <svg
+                            className="w-5 h-5 text-white shrink-0"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                          </svg>
+                          <div className="min-w-0">
+                            <span className="text-sm sm:text-base font-bold text-white block">
+                              Hızlı
+                            </span>
+                            <p className="text-xs text-zinc-300 mt-0.5">
+                              Hızlı yanıtlar
+                            </p>
+                          </div>
+                        </div>
+                        <svg
+                          className="w-5 h-5 text-white shrink-0 ml-2"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <form onSubmit={handleSend} className="flex items-center gap-2 max-w-full min-w-0 w-full overflow-hidden">
+              {/* 😀 Emoji Butonu */}
+              <button
+                id="emoji-toggle-btn"
+                type="button"
+                onClick={() => setShowEmojiPicker((prev) => !prev)}
+                disabled={sending || isUploadingImage}
+                className={`p-2.5 rounded-xl border transition-colors cursor-pointer flex-shrink-0 disabled:opacity-50 ${
+                  showEmojiPicker
+                    ? 'border-red-500 bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400'
+                    : 'border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'
+                }`}
+                title="Emoji seç"
+              >
+                <Smile className="w-4 h-4" />
+              </button>
+
+              {/* 🖼️ Fotoğraf Ekleme Butonu */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={sending || isUploadingImage}
+                className={`p-2.5 rounded-xl border transition-colors cursor-pointer flex-shrink-0 disabled:opacity-50 ${
+                  selectedImageFile
+                    ? 'border-red-500 bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400'
+                    : 'border-zinc-200 dark:border-zinc-700 text-zinc-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'
+                }`}
+                title="Fotoğraf ekle (Galeri / Kamera)"
+              >
+                <ImageIcon className="w-4 h-4" />
+              </button>
+
+              {/* Metin / Açıklama Inputu */}
+              <input
+                ref={inputRef}
+                type="text"
+                value={inputText}
+                onChange={handleInputChange}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setShowMentionSuggestions(false);
+                  }
+                }}
+                disabled={sending || isUploadingImage}
+                placeholder={
+                  selectedImageFile
+                    ? 'Bir açıklama yaz... (isteğe bağlı)'
+                    : replyingToMessage
+                    ? 'Yanıtınızı yazın...'
+                    : conversation?.isGroup
+                    ? `${conversation.name || 'Grup'} grubuna mesaj yaz...`
+                    : `${displayName} ile mesajlaş...`
                 }
-              }}
-              disabled={sending || isUploadingImage}
-              placeholder={
-                selectedImageFile
-                  ? 'Bir açıklama yaz... (isteğe bağlı)'
-                  : replyingToMessage
-                  ? 'Yanıtınızı yazın...'
-                  : conversation?.isGroup
-                  ? `${conversation.name || 'Grup'} grubuna mesaj yaz...`
-                  : `${displayName} ile mesajlaş...`
-              }
-              className="flex-1 min-w-0 px-4 py-2.5 text-xs bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 disabled:opacity-60"
-            />
+                className="flex-1 min-w-0 px-4 py-2.5 text-xs bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 disabled:opacity-60"
+              />
 
-            {/* Gönder Butonu */}
-            <button
-              type="submit"
-              disabled={(!inputText.trim() && !selectedImageFile) || sending || isUploadingImage}
-              className="px-4 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-semibold rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
-            >
-              {isUploadingImage || sending ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span className="hidden sm:inline">
-                    {isUploadingImage ? 'Fotoğraf yükleniyor…' : 'Gönderiliyor…'}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <Send className="w-4 h-4" />
-                  <span className="hidden sm:inline">Gönder</span>
-                </>
-              )}
-            </button>
-          </form>
+              {/* Gönder Butonu */}
+              <button
+                type="submit"
+                disabled={(!inputText.trim() && !selectedImageFile) || sending || isUploadingImage}
+                className="px-4 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-semibold rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+              >
+                {isUploadingImage || sending ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span className="hidden sm:inline">
+                      {isUploadingImage ? 'Fotoğraf yükleniyor…' : 'Gönderiliyor…'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    <span className="hidden sm:inline">Gönder</span>
+                  </>
+                )}
+              </button>
+            </form>
+          </div>
         )}
       </div>
 
