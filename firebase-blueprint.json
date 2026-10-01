@@ -133,6 +133,13 @@
         "role": { "type": "string", "description": "Role, e.g. owner" },
         "createdAt": { "type": "timestamp", "description": "Creation timestamp" }
       }
+    },
+    "BlockedUser": {
+      "path": "users/{uid}/blockedUsers/{blockedUid}",
+      "fields": {
+        "blockedUserId": { "type": "string", "description": "Target blocked user UID" },
+        "createdAt": { "type": "timestamp", "description": "Block timestamp" }
+      }
     }
   }
 }

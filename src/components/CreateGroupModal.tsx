@@ -18,6 +18,7 @@ interface CreateGroupModalProps {
   currentUser: UserProfile;
   allUsers?: UserProfile[];
   users?: UserProfile[];
+  blockedUserIds?: string[];
   onClose: () => void;
   onGroupCreated: (groupId: string) => void;
 }
@@ -26,6 +27,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
   currentUser,
   allUsers,
   users,
+  blockedUserIds = [],
   onClose,
   onGroupCreated,
 }) => {
@@ -45,10 +47,17 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Giriş yapan kullanıcı hariç diğer gerçek kullanıcılar (Banlılar eklenemez)
+  // Giriş yapan kullanıcı hariç diğer gerçek kullanıcılar (Banlılar ve Engellenenler eklenemez)
   const availableUsers = useMemo(() => {
-    return (rawUsers || []).filter((u) => u && u.uid && u.uid !== currentUser.uid && !u.isBanned);
-  }, [rawUsers, currentUser?.uid]);
+    return (rawUsers || []).filter(
+      (u) =>
+        u &&
+        u.uid &&
+        u.uid !== currentUser.uid &&
+        !u.isBanned &&
+        !blockedUserIds.includes(u.uid)
+    );
+  }, [rawUsers, currentUser?.uid, blockedUserIds]);
 
   // Arama filtresi
   const filteredUsers = useMemo(() => {

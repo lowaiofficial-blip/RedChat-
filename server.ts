@@ -120,6 +120,27 @@ async function startServer() {
         }
       }
 
+      // 🚫 Engelleme Kontrolü: Alıcı göndereni engellediyse push bildirimi gönderme!
+      if (data?.senderId && targetReceivers.length > 0) {
+        const nonBlockedReceivers: string[] = [];
+        for (const uid of targetReceivers) {
+          try {
+            const blockDoc = await db.doc(`users/${uid}/blockedUsers/${data.senderId}`).get();
+            if (!blockDoc.exists) {
+              nonBlockedReceivers.push(uid);
+            } else {
+              console.log(`Sunucu: Kullanıcı ${uid}, gönderen ${data.senderId} kişisini engellediği için push iptal.`);
+            }
+          } catch {
+            nonBlockedReceivers.push(uid);
+          }
+        }
+        targetReceivers = nonBlockedReceivers;
+        if (targetReceivers.length === 0) {
+          return res.status(200).json({ success: true, message: "Receivers have blocked sender, push notification cancelled." });
+        }
+      }
+
       let allTokens: string[] = [];
       const tokenToDocRefMap = new Map<string, any>();
       

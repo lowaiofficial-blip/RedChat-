@@ -1,5 +1,5 @@
 import { UserVerificationForm } from './UserVerificationForm';
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import type { UserProfile } from '../types';
 import { updateUserProfileDetails, logoutUser } from '../services/authService';
@@ -10,6 +10,7 @@ import { VerifiedBadge } from './VerifiedBadge';
 import { isRedChatAI } from '../services/aiService';
 import { getStoredTheme, applyTheme, type ThemeMode } from '../utils/theme';
 import { requestNotificationPermissionAndToken, removeTokenFromFirestore } from '../services/messagingService';
+import { blockUser, unblockUser } from '../services/blockService';
 import {
   X,
   Mail,
@@ -30,7 +31,9 @@ import {
   Bot,
   Bell,
   BellOff,
-  Book
+  Book,
+  UserX,
+  UserCheck,
 } from 'lucide-react';
 
 import { MemoryModal } from './MemoryModal';
@@ -42,6 +45,9 @@ interface ProfileModalProps {
   onStartChat?: (user: UserProfile) => void;
   initialTab?: 'profile' | 'settings';
   badgeUrl?: string | null;
+  currentUserId?: string;
+  blockedUserIds?: string[];
+  onBlockStatusChange?: (blocked: boolean) => void;
 }
 
 export const ProfileModal: React.FC<ProfileModalProps> = ({
@@ -51,6 +57,9 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   onStartChat,
   initialTab = 'profile',
   badgeUrl,
+  currentUserId,
+  blockedUserIds = [],
+  onBlockStatusChange,
 }) => {
   const [activeTab, setActiveTab] = useState<'profile' | 'settings'>(initialTab);
   const [showMemory, setShowMemory] = useState(false);
@@ -59,6 +68,46 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [bio, setBio] = useState(user?.bio || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // 🚫 Kullanıcı Engelleme State'leri
+  const [showBlockConfirmModal, setShowBlockConfirmModal] = useState(false);
+  const [blockLoading, setBlockLoading] = useState(false);
+
+  const isBlocked = useMemo(() => {
+    if (!blockedUserIds || !user?.uid) return false;
+    return blockedUserIds.includes(user.uid);
+  }, [blockedUserIds, user?.uid]);
+
+  const handleConfirmBlock = async () => {
+    if (!currentUserId || !user?.uid) return;
+    try {
+      setBlockLoading(true);
+      setError(null);
+      await blockUser(currentUserId, user.uid);
+      setShowBlockConfirmModal(false);
+      onBlockStatusChange?.(true);
+    } catch (err: any) {
+      console.error('Kullanıcı engellenirken hata:', err);
+      setError(err?.message || 'Kullanıcı engellenemedi.');
+    } finally {
+      setBlockLoading(false);
+    }
+  };
+
+  const handleUnblock = async () => {
+    if (!currentUserId || !user?.uid) return;
+    try {
+      setBlockLoading(true);
+      setError(null);
+      await unblockUser(currentUserId, user.uid);
+      onBlockStatusChange?.(false);
+    } catch (err: any) {
+      console.error('Engel kaldırılırken hata:', err);
+      setError(err?.message || 'Engel kaldırılamadı.');
+    } finally {
+      setBlockLoading(false);
+    }
+  };
 
   // Push notification state with safe environment detection
   const [pushEnabled, setPushEnabled] = useState(() => {
@@ -548,31 +597,73 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                         Profili Düzenle
                       </button>
                     ) : (
-                      onStartChat && (
-                        <button
-                          onClick={() => {
-                            onStartChat(user);
-                            onClose();
-                          }}
-                          className={`w-full py-2.5 px-3 text-xs font-semibold text-white rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer ${
-                            isRedChatAI(user)
-                              ? 'bg-fuchsia-600 hover:bg-fuchsia-700 shadow-fuchsia-600/20'
-                              : 'bg-red-600 hover:bg-red-700'
-                          }`}
-                        >
-                          {isRedChatAI(user) ? (
-                            <>
-                              <Bot className="w-4 h-4" />
-                              DeepRed ile Sohbet Et
-                            </>
-                          ) : (
-                            <>
-                              <MessageSquare className="w-4 h-4" />
-                              Sohbet Başlat
-                            </>
-                          )}
-                        </button>
-                      )
+                      <>
+                        {isBlocked ? (
+                          <div className="flex flex-col gap-2">
+                            <div className="p-2.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 rounded-xl text-center">
+                              <span className="text-xs font-semibold text-rose-600 dark:text-rose-400 flex items-center justify-center gap-1.5">
+                                <UserX className="w-3.5 h-3.5" />
+                                Bu kullanıcıyı engellediniz
+                              </span>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={handleUnblock}
+                              disabled={blockLoading}
+                              className="w-full py-2.5 px-3 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 rounded-xl border border-emerald-200 dark:border-emerald-800 transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                            >
+                              {blockLoading ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <UserCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                              )}
+                              <span>Engeli Kaldır</span>
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            {onStartChat && (
+                              <button
+                                onClick={() => {
+                                  onStartChat(user);
+                                  onClose();
+                                }}
+                                className={`w-full py-2.5 px-3 text-xs font-semibold text-white rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer ${
+                                  isRedChatAI(user)
+                                    ? 'bg-fuchsia-600 hover:bg-fuchsia-700 shadow-fuchsia-600/20'
+                                    : 'bg-red-600 hover:bg-red-700'
+                                }`}
+                              >
+                                {isRedChatAI(user) ? (
+                                  <>
+                                    <Bot className="w-4 h-4" />
+                                    DeepRed ile Sohbet Et
+                                  </>
+                                ) : (
+                                  <>
+                                    <MessageSquare className="w-4 h-4" />
+                                    Sohbet Başlat
+                                  </>
+                                )}
+                              </button>
+                            )}
+
+                            {/* 🚫 Kullanıcıyı Engelle Butonu (RedChat AI için gösterilmez) */}
+                            {!isRedChatAI(user) && currentUserId && (
+                              <button
+                                type="button"
+                                onClick={() => setShowBlockConfirmModal(true)}
+                                disabled={blockLoading}
+                                className="w-full py-2.5 px-3 text-xs font-semibold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/30 hover:bg-rose-100 dark:hover:bg-rose-900/40 rounded-xl border border-rose-200/80 dark:border-rose-900/60 transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                              >
+                                <UserX className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                                <span>Engelle</span>
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
@@ -765,6 +856,59 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   <>
                     <Check className="w-4 h-4" />
                     <span>Evet, yükle</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🚫 REDCHAT KULLANICI ENGELLEME ONAY MODALI */}
+      {showBlockConfirmModal && (
+        <div className="fixed inset-0 z-70 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl relative text-center animate-in zoom-in-95">
+            <div className="w-12 h-12 rounded-full bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto mb-3">
+              <UserX className="w-6 h-6" />
+            </div>
+
+            <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100 mb-1.5">
+              Kullanıcıyı Engelle
+            </h3>
+
+            <p className="text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-2">
+              Bu kullanıcıyı engellemek istediğine emin misin?
+            </p>
+
+            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-6">
+              Engellediğinizde bu kullanıcı size özel mesaj gönderemez, kullanıcı aramasında ve listenizde görünmez.
+            </p>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setShowBlockConfirmModal(false)}
+                disabled={blockLoading}
+                className="flex-1 py-2.5 px-4 text-xs font-semibold text-zinc-700 dark:text-zinc-300 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 rounded-xl transition-colors cursor-pointer"
+              >
+                Vazgeç
+              </button>
+
+              <button
+                type="button"
+                onClick={handleConfirmBlock}
+                disabled={blockLoading}
+                className="flex-1 py-2.5 px-4 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl transition-all shadow-md shadow-rose-600/20 flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {blockLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Engelleniyor…</span>
+                  </>
+                ) : (
+                  <>
+                    <UserX className="w-4 h-4" />
+                    <span>Engelle</span>
                   </>
                 )}
               </button>

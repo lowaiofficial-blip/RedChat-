@@ -95,8 +95,17 @@ export interface Conversation {
   terminatedAt?: any;
   terminatedReason?: string;
   abusiveCount?: number;
+  blockedBy?: {
+    [uid: string]: boolean;
+  };
+  blockedUserIds?: string[];
   createdAt: any;
   updatedAt: any;
+}
+
+export interface BlockedUserRecord {
+  blockedUserId: string;
+  createdAt: any;
 }
 
 export interface ChatReplyReference {

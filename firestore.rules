@@ -105,6 +105,21 @@ service cloud.firestore {
       match /channelNotifications/{notifId} {
         allow read, write: if isAuthenticated();
       }
+
+      // 🚫 KULLANICI ENGELLEME LİSTESİ (/users/{userId}/blockedUsers/{blockedUserId})
+      match /blockedUsers/{blockedUserId} {
+        // Yalnızca kullanıcı kendi engelleme kayıtlarını okuyabilir
+        allow read: if isAuthenticated() && isOwner(userId);
+
+        // Yalnızca kullanıcı kendi engelleme kaydını oluşturabilir (kendi listesine ekleme)
+        allow create: if isAuthenticated() && isOwner(userId) && request.resource.data.blockedUserId == blockedUserId;
+
+        // Yalnızca kullanıcı kendi engelleme kaydını silebilir (engeli kaldırma)
+        allow delete: if isAuthenticated() && isOwner(userId);
+
+        // Güncelleme yapılamaz (kayıt silinip yeniden eklenir)
+        allow update: if false;
+      }
     }
     
     // =========================================================================
@@ -149,10 +164,19 @@ service cloud.firestore {
         // - Sistem mesajları (gruba katıldı, ayrıldı, grup adı değişti vb.)
         // - RedChat AI tarafından üretilen yanıtlar (senderId: system_redchat_ai)
         // - Sonlandırılmış (terminated) sohbete normal kullanıcı mesaj yazamaz
+        // - Engellenmiş birebir sohbetlere mesaj yazılamaz
         allow create: if isAuthenticated() && (
-          get(/databases/$(database)/documents/conversations/$(conversationId)).data.get('securityStatus', 'active') != 'terminated' ||
-          request.resource.data.get('isSecurityWarning', false) == true ||
-          isAdmin()
+          (
+            // Grup sohbeti veya engeli olmayan birebir sohbet
+            get(/databases/$(database)/documents/conversations/$(conversationId)).data.get('isGroup', false) == true ||
+            get(/databases/$(database)/documents/conversations/$(conversationId)).data.get('blockedUserIds', []).size() == 0 ||
+            isAdmin()
+          ) &&
+          (
+            get(/databases/$(database)/documents/conversations/$(conversationId)).data.get('securityStatus', 'active') != 'terminated' ||
+            request.resource.data.get('isSecurityWarning', false) == true ||
+            isAdmin()
+          )
         );
         
         // Mesaj düzenleme (isEdited: true) ve emoji reaksiyonları ekleme/kaldırma

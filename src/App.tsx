@@ -44,6 +44,7 @@ import { AdminPanel } from './components/AdminPanel';
 import { BannedScreen } from './components/BannedScreen';
 import { HardwareBannedScreen } from './components/HardwareBannedScreen';
 import { subscribeToDeviceBanStatus, syncCurrentDeviceInfo, checkDeviceBanNow } from './services/deviceService';
+import { subscribeToBlockedUsers, unblockUser } from './services/blockService';
 import type { BannedDevice } from './types';
 import { WhatsAppNotificationBanner } from './components/WhatsAppNotificationBanner';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -83,6 +84,35 @@ export default function App() {
   const [clientIp, setClientIp] = useState<string | null>(null);
   const [clientHwid, setClientHwid] = useState<string | null>(null);
   const [clientDeviceType, setClientDeviceType] = useState<'desktop' | 'tablet' | 'mobile' | 'unknown'>('desktop');
+
+  // 🚫 Kullanıcı Engelleme State'i (Gerçek Zamanlı & Cihazlar Arası Senkron)
+  const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
+
+  // 🚫 Gerçek Zamanlı Engellenen Kullanıcılar Dinleyicisi
+  useEffect(() => {
+    if (!currentUserAuth?.uid) {
+      setBlockedUserIds([]);
+      return;
+    }
+
+    const unsubscribeBlocked = subscribeToBlockedUsers(
+      currentUserAuth.uid,
+      (ids) => {
+        setBlockedUserIds(ids);
+      }
+    );
+
+    return () => unsubscribeBlocked();
+  }, [currentUserAuth?.uid]);
+
+  const handleUnblockUser = async (targetUserId: string) => {
+    if (!currentUserAuth?.uid) return;
+    try {
+      await unblockUser(currentUserAuth.uid, targetUserId);
+    } catch (err) {
+      console.error('Engel kaldırılamadı:', err);
+    }
+  };
 
   // 🚫 Gerçek Zamanlı Cihaz & IP Banı Dinleyicisi
   useEffect(() => {
@@ -350,6 +380,8 @@ export default function App() {
             continue;
           }
           if (!c.lastMessageSenderId || c.lastMessageSenderId === currentUserAuth.uid) continue;
+          // 🚫 Engellenen kullanıcıdan gelen mesajlar için banner ve tarayıcı bildirimi üretme!
+          if (blockedUserIds.includes(c.lastMessageSenderId)) continue;
 
           const lastSeen = lastSeenMsgTimestampsRef.current[c.id] || 0;
           if (msgTime > lastSeen) {
@@ -742,6 +774,7 @@ export default function App() {
                 activeConversationId={activeConversationId}
                 activeChannelId={activeChannelId}
                 followingChannelIds={followingChannelIds}
+                blockedUserIds={blockedUserIds}
                 badgeUrl={appSettings?.verifiedBadgeUrl}
                 aiProfilePhotoUrl={appSettings?.aiProfilePhotoUrl}
                 unreadChannelNotificationsCount={channelNotifications.filter((n) => !n.read).length}
@@ -800,6 +833,7 @@ export default function App() {
                   conversation={activeConversation}
                   currentUser={currentUserProfile}
                   allUsers={displayedUsers}
+                  blockedUserIds={blockedUserIds}
                   badgeUrl={appSettings?.verifiedBadgeUrl}
                   aiProfilePhotoUrl={appSettings?.aiProfilePhotoUrl}
                   onBack={() => setActiveConversationId(null)}
@@ -807,6 +841,7 @@ export default function App() {
                     setInspectingUser(u);
                     setModalTab('profile');
                   }}
+                  onUnblockUser={handleUnblockUser}
                 />
               ) : (
                 <div className="hidden md:flex flex-col items-center justify-center w-full h-full bg-zinc-50/50 dark:bg-zinc-900/50 text-zinc-400 p-8 text-center">
@@ -895,6 +930,7 @@ export default function App() {
           currentUser={currentUserProfile}
           allUsers={displayedUsers}
           users={displayedUsers}
+          blockedUserIds={blockedUserIds}
           onClose={() => setShowCreateGroupModal(false)}
           onGroupCreated={(newGroupId) => {
             setActiveConversationId(newGroupId);
@@ -909,6 +945,8 @@ export default function App() {
           <ProfileModal
             user={effectiveInspectingUser}
             isCurrentUser={Boolean(currentUserProfile?.uid && effectiveInspectingUser.uid === currentUserProfile.uid)}
+            currentUserId={currentUserProfile?.uid}
+            blockedUserIds={blockedUserIds}
             initialTab={modalTab}
             badgeUrl={appSettings?.verifiedBadgeUrl}
             onClose={() => setInspectingUser(null)}

@@ -932,6 +932,35 @@ export async function sendMessage(
   const messagesCol = collection(db, 'conversations', conversationId, 'messages');
   const convDocRef = doc(db, 'conversations', conversationId);
 
+  // 0. Engelleme (Block) Kontrolü: Birebir sohbetlerde iki taraftan biri engellediyse mesaj engellenir
+  let conversationData: Conversation | null = null;
+  const convSnap = await getDoc(convDocRef);
+  if (convSnap.exists()) {
+    conversationData = convSnap.data() as Conversation;
+    if (!conversationData.isGroup) {
+      const isBlockedInConv = (conversationData.blockedUserIds && conversationData.blockedUserIds.length > 0) ||
+        (conversationData.blockedBy && Object.values(conversationData.blockedBy).some(Boolean));
+      if (isBlockedInConv) {
+        throw new Error('Engelleme nedeniyle bu kullanıcıyla mesajlaşamazsınız.');
+      }
+
+      // users/{uid}/blockedUsers koleksiyonunu da doğrula
+      const otherParticipantId = (conversationData.participantIds || []).find((id) => id !== sender.uid);
+      if (otherParticipantId) {
+        const [myBlockCheck, otherBlockCheck] = await Promise.all([
+          getDoc(doc(db, 'users', sender.uid, 'blockedUsers', otherParticipantId)).catch(() => null),
+          getDoc(doc(db, 'users', otherParticipantId, 'blockedUsers', sender.uid)).catch(() => null),
+        ]);
+        if (myBlockCheck && myBlockCheck.exists()) {
+          throw new Error('Bu kullanıcıyı engellediniz. Mesaj gönderemezsiniz.');
+        }
+        if (otherBlockCheck && otherBlockCheck.exists()) {
+          throw new Error('Bu kullanıcıyla mesajlaşamazsınız.');
+        }
+      }
+    }
+  }
+
   // 1. Mesaj alt koleksiyonuna ekle
   const messageData: any = {
     senderId: sender.uid,
@@ -987,11 +1016,8 @@ export async function sendMessage(
     updatedAt: serverTimestamp(),
   };
 
-  let conversationData: Conversation | null = null;
   try {
-    const convSnap = await getDoc(convDocRef);
-    if (convSnap.exists()) {
-      conversationData = convSnap.data() as Conversation;
+    if (conversationData) {
       const otherParticipantIds = (conversationData.participantIds || []).filter((uid) => uid !== sender.uid);
       otherParticipantIds.forEach((uid) => {
         updateData[`unreadCounts.${uid}`] = increment(1);
@@ -1048,6 +1074,23 @@ export async function sendMessage(
         return;
       }
 
+      // 🚫 Engelleme Kontrolü: Alıcı göndereni engellediyse PUSH GÖNDERME!
+      const nonBlockedRecipients: string[] = [];
+      for (const recUid of unreadRecipients) {
+        try {
+          const blockSnap = await getDoc(doc(db, 'users', recUid, 'blockedUsers', sender.uid));
+          if (!blockSnap.exists()) {
+            nonBlockedRecipients.push(recUid);
+          }
+        } catch {
+          nonBlockedRecipients.push(recUid);
+        }
+      }
+
+      if (nonBlockedRecipients.length === 0) {
+        return;
+      }
+
       const currentMsgText = hasImage && cleanText 
         ? `📷 Fotoğraf: ${cleanText.substring(0, 40)}` 
         : hasImage 
@@ -1056,7 +1099,7 @@ export async function sendMessage(
 
       const unreadMessages = await getGroupedUnreadMessages(
         conversationId,
-        unreadRecipients[0],
+        nonBlockedRecipients[0],
         sender.uid,
         currentMsgText
       );

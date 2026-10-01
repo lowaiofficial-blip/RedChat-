@@ -52,26 +52,31 @@ import {
   UserMinus,
   Ban,
   VolumeX,
+  UserX,
 } from 'lucide-react';
 
 interface ChatWindowProps {
   conversation: Conversation | null;
   currentUser: UserProfile;
   allUsers: UserProfile[];
+  blockedUserIds?: string[];
   badgeUrl?: string | null;
   aiProfilePhotoUrl?: string | null;
   onBack: () => void;
   onOpenProfile: (user: UserProfile) => void;
+  onUnblockUser?: (userId: string) => void;
 }
 
 export const ChatWindow: React.FC<ChatWindowProps> = ({
   conversation,
   currentUser,
   allUsers,
+  blockedUserIds = [],
   badgeUrl,
   aiProfilePhotoUrl,
   onBack,
   onOpenProfile,
+  onUnblockUser,
 }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
@@ -173,6 +178,28 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const isSessionTerminated = useMemo(() => {
     return Boolean(isDirectAIChat && conversation?.securityStatus === 'terminated');
   }, [isDirectAIChat, conversation?.securityStatus]);
+
+  // 🚫 Engelleme (Block) Durumları (Yalnızca Birebir Özel Sohbetler İçin)
+  const isBlockedByMe = useMemo(() => {
+    if (conversation?.isGroup || !otherParticipantId) return false;
+    return Boolean(
+      blockedUserIds?.includes(otherParticipantId) ||
+      conversation?.blockedBy?.[currentUser.uid] === true ||
+      (conversation?.blockedUserIds && conversation.blockedUserIds.includes(currentUser.uid))
+    );
+  }, [conversation?.isGroup, conversation?.blockedBy, conversation?.blockedUserIds, otherParticipantId, blockedUserIds, currentUser.uid]);
+
+  const isBlockedByOther = useMemo(() => {
+    if (conversation?.isGroup || !otherParticipantId) return false;
+    return Boolean(
+      conversation?.blockedBy?.[otherParticipantId] === true ||
+      (conversation?.blockedUserIds && conversation.blockedUserIds.includes(otherParticipantId))
+    );
+  }, [conversation?.isGroup, conversation?.blockedBy, conversation?.blockedUserIds, otherParticipantId]);
+
+  const isDirectChatBlocked = useMemo(() => {
+    return isBlockedByMe || isBlockedByOther;
+  }, [isBlockedByMe, isBlockedByOther]);
 
   const displayName = isDirectAIChat
     ? 'DeepRed AI'
@@ -584,6 +611,16 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
     if (currentUser.isBanned) {
       setImageUploadError('Hesabınız askıya alınmıştır (Banlandınız). Mesaj gönderemezsiniz.');
+      return;
+    }
+
+    if (isBlockedByMe) {
+      setImageUploadError('Bu kullanıcıyı engellediniz. Mesaj gönderemezsiniz.');
+      return;
+    }
+
+    if (isBlockedByOther) {
+      setImageUploadError('Bu kullanıcıyla mesajlaşamazsınız.');
       return;
     }
 
@@ -1744,7 +1781,28 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           className="hidden"
         />
 
-        {isOtherUserBanned ? (
+        {isBlockedByMe ? (
+          <div className="flex items-center justify-between p-3.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/80 rounded-2xl text-rose-600 dark:text-rose-400 text-xs font-semibold shadow-xs">
+            <div className="flex items-center gap-2.5">
+              <UserX className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+              <span>Bu kullanıcıyı engellediniz.</span>
+            </div>
+            {otherParticipantId && onUnblockUser && (
+              <button
+                type="button"
+                onClick={() => onUnblockUser(otherParticipantId)}
+                className="px-3 py-1.5 text-[11px] font-bold bg-white dark:bg-zinc-800 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 rounded-xl hover:bg-rose-50 dark:hover:bg-zinc-700/80 cursor-pointer transition-colors shadow-xs"
+              >
+                Engeli Kaldır
+              </button>
+            )}
+          </div>
+        ) : isBlockedByOther ? (
+          <div className="flex items-center justify-center gap-2.5 p-3.5 bg-zinc-100 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-2xl text-zinc-600 dark:text-zinc-300 text-xs font-semibold text-center select-none shadow-xs">
+            <Ban className="w-4 h-4 shrink-0 text-zinc-400" />
+            <span>Bu kullanıcıyla mesajlaşamazsınız.</span>
+          </div>
+        ) : isOtherUserBanned ? (
           <div className="flex items-center justify-center gap-2.5 p-3.5 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 rounded-2xl text-red-600 dark:text-red-400 text-xs font-semibold text-center">
             <Ban className="w-4 h-4 shrink-0 text-red-600" />
             <span>Bu hesap askıya alındı</span>

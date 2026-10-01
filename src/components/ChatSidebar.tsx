@@ -37,6 +37,7 @@ interface ChatSidebarProps {
   activeConversationId: string | null;
   activeChannelId?: string | null;
   followingChannelIds?: string[];
+  blockedUserIds?: string[];
   badgeUrl?: string | null;
   aiProfilePhotoUrl?: string | null;
   unreadChannelNotificationsCount?: number;
@@ -71,6 +72,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
   activeConversationId,
   activeChannelId,
   followingChannelIds = [],
+  blockedUserIds = [],
   badgeUrl,
   aiProfilePhotoUrl,
   unreadChannelNotificationsCount = 0,
@@ -128,10 +130,15 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
     };
   }, []);
 
-  // Mevcut kullanıcı hariç diğer gerçek kullanıcılar (Banlı olanlar kullanıcılar sekmesinde çıkmamalı)
+  // Mevcut kullanıcı hariç diğer gerçek kullanıcılar (Banlı olanlar ve Engellenen kullanıcılar listede/aramada çıkmamalı)
   const otherUsers = useMemo(() => {
-    return users.filter((u) => u.uid !== currentUser.uid && !u.isBanned);
-  }, [users, currentUser.uid]);
+    return users.filter(
+      (u) =>
+        u.uid !== currentUser.uid &&
+        !u.isBanned &&
+        !blockedUserIds.includes(u.uid)
+    );
+  }, [users, currentUser.uid, blockedUserIds]);
 
   // Toplam okunmamış mesaj sayısı
   const totalUnreadCount = useMemo(() => {
