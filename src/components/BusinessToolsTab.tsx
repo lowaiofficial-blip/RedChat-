@@ -299,7 +299,7 @@ export const BusinessToolsTab: React.FC<BusinessToolsTabProps> = ({
               type="text"
               value={website}
               onChange={(e) => setWebsite(e.target.value)}
-              placeholder="Web sitesi (örn: https://lexpan.com)"
+              placeholder="https://websiteniz.com"
               className="w-full pl-8 pr-3 py-1.5 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
             />
           </div>
@@ -311,7 +311,7 @@ export const BusinessToolsTab: React.FC<BusinessToolsTabProps> = ({
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="İşletme E-postası"
+              placeholder="iletisim@isletmeniz.com"
               className="w-full pl-8 pr-3 py-1.5 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
             />
           </div>
@@ -323,7 +323,7 @@ export const BusinessToolsTab: React.FC<BusinessToolsTabProps> = ({
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              placeholder="Telefon Numarası"
+              placeholder="+90 555 000 00 00"
               className="w-full pl-8 pr-3 py-1.5 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
             />
           </div>
@@ -335,7 +335,7 @@ export const BusinessToolsTab: React.FC<BusinessToolsTabProps> = ({
               type="text"
               value={location}
               onChange={(e) => setLocation(e.target.value)}
-              placeholder="Adres / Konum (örn: Levent, İstanbul)"
+              placeholder="Örn: Kadıköy, İstanbul"
               className="w-full pl-8 pr-3 py-1.5 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
             />
           </div>
@@ -347,7 +347,7 @@ export const BusinessToolsTab: React.FC<BusinessToolsTabProps> = ({
               type="text"
               value={hours}
               onChange={(e) => setHours(e.target.value)}
-              placeholder="Çalışma Saatleri (örn: Hafta içi 09:00 - 18:00)"
+              placeholder="Örn: Hafta içi 09:00 - 18:00"
               className="w-full pl-8 pr-3 py-1.5 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
             />
           </div>

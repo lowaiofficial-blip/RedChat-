@@ -632,36 +632,41 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               ) : (
                 /* 📄 PROFİL İÇERİK KARTLARI */
                 <div className="space-y-2.5">
-                  {/* 🏢 İŞLETME PROFİLİ GÖRÜNÜMÜ (Yalnızca dolu alanlar gösterilir) */}
+                  {/* 🏢 İŞLETME PROFİLİ GÖRÜNÜMÜ (Yalnızca kullanıcının gerçekten girdiği dolu alanlar gösterilir) */}
                   {isBusiness ? (
                     <div className="space-y-2">
                       {/* Açıklama */}
-                      {(business?.description || user.bio) && (
+                      {(business?.description?.trim() || user.bio?.trim()) && (
                         <div className="p-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-2xl border border-zinc-100 dark:border-zinc-800">
                           <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 block mb-0.5">
                             Açıklama
                           </span>
                           <p className="text-xs text-zinc-700 dark:text-zinc-300 leading-relaxed whitespace-pre-wrap">
-                            {business?.description || user.bio}
+                            {business?.description?.trim() || user.bio?.trim()}
                           </p>
                         </div>
                       )}
 
                       {/* Kategori */}
-                      {business?.category && (
+                      {Boolean(business?.category?.trim()) && (
                         <div className="p-2.5 px-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
                           <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
                             <Store className="w-3.5 h-3.5 text-red-500" />
                             <span>Kategori</span>
                           </span>
                           <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200">
-                            {business.category}
+                            {business!.category!.trim()}
                           </span>
                         </div>
                       )}
 
-                      {/* Web Sitesi */}
-                      {business?.website && (
+                      {/* Web Sitesi (Yalnızca geçerli değer varsa gösterilir) */}
+                      {Boolean(
+                        business?.website?.trim() &&
+                          !['pexal.com', 'https://pexal.com', 'https://websiteniz.com', 'websiteniz.com'].includes(
+                            business.website.trim().toLowerCase()
+                          )
+                      ) && (
                         <div className="p-2.5 px-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
                           <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
                             <Globe className="w-3.5 h-3.5 text-blue-500" />
@@ -669,76 +674,83 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                           </span>
                           <a
                             href={
-                              business.website.startsWith('http')
-                                ? business.website
-                                : `https://${business.website}`
+                              business!.website!.trim().startsWith('http')
+                                ? business!.website!.trim()
+                                : `https://${business!.website!.trim()}`
                             }
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-xs font-bold text-red-600 hover:text-red-700 dark:text-red-400 truncate max-w-[170px] hover:underline flex items-center gap-1"
                           >
                             <span className="truncate">
-                              {business.website.replace(/^https?:\/\//, '')}
+                              {business!.website!.trim().replace(/^https?:\/\//, '')}
                             </span>
                             <ExternalLink className="w-3 h-3 shrink-0" />
                           </a>
                         </div>
                       )}
 
-                      {/* E-posta */}
-                      {(business?.email || user.email) && (
+                      {/* İletişim E-postası */}
+                      {Boolean((business?.email?.trim() || user.email?.trim()) && (business?.email?.trim() || user.email?.trim()) !== 'example@email.com') && (
                         <div className="p-2.5 px-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
                           <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
                             <Mail className="w-3.5 h-3.5 text-amber-500" />
-                            <span>E-posta</span>
+                            <span>İletişim E-postası</span>
                           </span>
                           <a
-                            href={`mailto:${business?.email || user.email}`}
+                            href={`mailto:${business?.email?.trim() || user.email?.trim()}`}
                             className="text-xs font-bold text-zinc-800 dark:text-zinc-200 hover:text-red-600 dark:hover:text-red-400 truncate max-w-[170px]"
                           >
-                            {business?.email || user.email}
+                            {business?.email?.trim() || user.email?.trim()}
                           </a>
                         </div>
                       )}
 
-                      {/* Telefon */}
-                      {business?.phone && (
+                      {/* Telefon (Yalnızca geçerli değer varsa gösterilir) */}
+                      {Boolean(
+                        business?.phone?.trim() &&
+                          !business.phone.trim().includes('+90 555...') &&
+                          !business.phone.trim().includes('+90 555 123 45 67')
+                      ) && (
                         <div className="p-2.5 px-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
                           <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
                             <Phone className="w-3.5 h-3.5 text-emerald-500" />
                             <span>Telefon</span>
                           </span>
                           <a
-                            href={`tel:${business.phone}`}
+                            href={`tel:${business!.phone!.trim()}`}
                             className="text-xs font-bold text-zinc-800 dark:text-zinc-200 hover:text-red-600 dark:hover:text-red-400"
                           >
-                            {business.phone}
+                            {business!.phone!.trim()}
                           </a>
                         </div>
                       )}
 
-                      {/* Konum */}
-                      {business?.location && (
+                      {/* Konum (Yalnızca geçerli değer varsa gösterilir) */}
+                      {Boolean(
+                        business?.location?.trim() &&
+                          !['örnek adres', 'ornek adres'].includes(business.location.trim().toLowerCase())
+                      ) && (
                         <div className="p-2.5 px-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
                           <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
                             <MapPin className="w-3.5 h-3.5 text-rose-500" />
                             <span>Konum</span>
                           </span>
                           <span className="text-xs font-medium text-zinc-800 dark:text-zinc-200 text-right truncate max-w-[170px]">
-                            {business.location}
+                            {business!.location!.trim()}
                           </span>
                         </div>
                       )}
 
-                      {/* Çalışma Saatleri */}
-                      {business?.hours && (
+                      {/* Çalışma Saatleri (Yalnızca geçerli değer varsa gösterilir) */}
+                      {Boolean(business?.hours?.trim()) && (
                         <div className="p-2.5 px-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
                           <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
                             <Clock className="w-3.5 h-3.5 text-purple-500" />
                             <span>Çalışma Saatleri</span>
                           </span>
                           <span className="text-xs font-medium text-zinc-800 dark:text-zinc-200 text-right">
-                            {business.hours}
+                            {business!.hours!.trim()}
                           </span>
                         </div>
                       )}

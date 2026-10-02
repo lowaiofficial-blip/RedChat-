@@ -591,7 +591,7 @@ export const BusinessSetupModal: React.FC<BusinessSetupModalProps> = ({
                       type="text"
                       value={website}
                       onChange={(e) => setWebsite(e.target.value)}
-                      placeholder="https://lexpan.com"
+                      placeholder="https://websiteniz.com"
                       className="w-full text-xs pl-8 pr-3 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
                     />
                   </div>
@@ -607,7 +607,7 @@ export const BusinessSetupModal: React.FC<BusinessSetupModalProps> = ({
                       type="text"
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
-                      placeholder="+90 555 123 45 67"
+                      placeholder="+90 555 000 00 00"
                       className="w-full text-xs pl-8 pr-3 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
                     />
                   </div>
@@ -623,7 +623,7 @@ export const BusinessSetupModal: React.FC<BusinessSetupModalProps> = ({
                       type="text"
                       value={location}
                       onChange={(e) => setLocation(e.target.value)}
-                      placeholder="İstanbul, Türkiye"
+                      placeholder="Örn: Kadıköy, İstanbul"
                       className="w-full text-xs pl-8 pr-3 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
                     />
                   </div>
@@ -639,7 +639,7 @@ export const BusinessSetupModal: React.FC<BusinessSetupModalProps> = ({
                       type="text"
                       value={hours}
                       onChange={(e) => setHours(e.target.value)}
-                      placeholder="09:00 - 18:00 (Hafta içi)"
+                      placeholder="Örn: Hafta içi 09:00 - 18:00"
                       className="w-full text-xs pl-8 pr-3 py-2 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
                     />
                   </div>
