@@ -245,8 +245,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     return isBlockedByMe || isBlockedByOther;
   }, [isBlockedByMe, isBlockedByOther]);
 
+  const isOtherBusiness = useMemo(() => {
+    if (conversation?.isGroup || isDirectAIChat) return false;
+    return Boolean(otherUserObj?.accountType === 'business');
+  }, [conversation?.isGroup, isDirectAIChat, otherUserObj?.accountType]);
+
+  const businessName = isOtherBusiness
+    ? (otherUserObj?.businessProfile?.businessName || otherUserObj?.displayName || otherUserObj?.username || 'İşletme')
+    : '';
+
   const displayName = isDirectAIChat
     ? 'DeepRed AI'
+    : isOtherBusiness
+    ? businessName
     : (otherUserObj?.displayName ||
        otherParticipantInfo?.displayName ||
        otherParticipantInfo?.username ||
@@ -1171,34 +1182,57 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                     )}
                   </div>
                 <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 truncate">
-                  <span className="font-mono text-red-600">@{username}</span>
-                  {isOtherUserBanned ? (
+                  {isOtherBusiness ? (
                     <>
-                      <span>•</span>
-                      <span className="text-red-500 font-medium">Bu hesap askıya alındı</span>
-                    </>
-                  ) : typingInfo ? (
-                    <>
-                      <span>•</span>
-                      <span className="text-red-600 dark:text-red-400 font-medium flex items-center gap-0.5">
-                        <span>yazıyor</span>
-                        <SequentialTypingDots size="xs" className="text-red-600 dark:text-red-400" />
+                      <span className="font-medium text-zinc-600 dark:text-zinc-300 truncate">
+                        {displayName}
                       </span>
-                    </>
-                  ) : isDirectAIChat ? (
-                    <>
                       <span>•</span>
-                      <span className="text-zinc-600 dark:text-zinc-400 font-medium inline-flex items-center gap-1">
-                        <Zap className="w-3 h-3 text-amber-500 fill-amber-500" />
-                        <span>Hızlı</span>
+                      <span className="text-zinc-500 dark:text-zinc-400 font-medium shrink-0">
+                        İşletme Hesabı
                       </span>
+                      {typingInfo ? (
+                        <>
+                          <span>•</span>
+                          <span className="text-red-600 dark:text-red-400 font-medium flex items-center gap-0.5">
+                            <span>yazıyor</span>
+                            <SequentialTypingDots size="xs" className="text-red-600 dark:text-red-400" />
+                          </span>
+                        </>
+                      ) : null}
                     </>
                   ) : (
                     <>
-                      <span>•</span>
-                      <span className={isOnline ? 'text-emerald-600 font-medium' : 'text-zinc-400'}>
-                        {formatLastSeen(isOnline, otherUserObj?.lastSeen)}
-                      </span>
+                      <span className="font-mono text-red-600">@{username}</span>
+                      {isOtherUserBanned ? (
+                        <>
+                          <span>•</span>
+                          <span className="text-red-500 font-medium">Bu hesap askıya alındı</span>
+                        </>
+                      ) : typingInfo ? (
+                        <>
+                          <span>•</span>
+                          <span className="text-red-600 dark:text-red-400 font-medium flex items-center gap-0.5">
+                            <span>yazıyor</span>
+                            <SequentialTypingDots size="xs" className="text-red-600 dark:text-red-400" />
+                          </span>
+                        </>
+                      ) : isDirectAIChat ? (
+                        <>
+                          <span>•</span>
+                          <span className="text-zinc-600 dark:text-zinc-400 font-medium inline-flex items-center gap-1">
+                            <Zap className="w-3 h-3 text-amber-500 fill-amber-500" />
+                            <span>Hızlı</span>
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span>•</span>
+                          <span className={isOnline ? 'text-emerald-600 font-medium' : 'text-zinc-400'}>
+                            {formatLastSeen(isOnline, otherUserObj?.lastSeen)}
+                          </span>
+                        </>
+                      )}
                     </>
                   )}
                 </div>

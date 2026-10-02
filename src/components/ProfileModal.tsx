@@ -1,10 +1,12 @@
 import { UserVerificationForm } from './UserVerificationForm';
+import { BusinessSetupModal } from './BusinessSetupModal';
+import { BusinessToolsTab } from './BusinessToolsTab';
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import type { UserProfile } from '../types';
 import { updateUserProfileDetails, logoutUser } from '../services/authService';
 import { formatLastSeen } from '../services/chatService';
-import { uploadImageToImgBB, uploadProfilePhoto } from '../services/imageUploadService';
+import { uploadProfilePhoto } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
 import { isRedChatAI } from '../services/aiService';
@@ -30,11 +32,19 @@ import {
   Sparkles,
   Bot,
   Bell,
-  BellOff,
   Book,
   UserX,
   UserCheck,
   Zap,
+  Store,
+  Globe,
+  Phone,
+  MapPin,
+  Clock,
+  Building2,
+  ExternalLink,
+  Briefcase,
+  ChevronRight,
 } from 'lucide-react';
 
 import { MemoryModal } from './MemoryModal';
@@ -44,7 +54,7 @@ interface ProfileModalProps {
   isCurrentUser: boolean;
   onClose: () => void;
   onStartChat?: (user: UserProfile) => void;
-  initialTab?: 'profile' | 'settings';
+  initialTab?: 'profile' | 'settings' | 'business_tools';
   badgeUrl?: string | null;
   currentUserId?: string;
   blockedUserIds?: string[];
@@ -62,11 +72,21 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   blockedUserIds = [],
   onBlockStatusChange,
 }) => {
-  const [activeTab, setActiveTab] = useState<'profile' | 'settings'>(initialTab);
+  const isBusiness = user?.accountType === 'business';
+  const business = user?.businessProfile;
+
+  const [activeTab, setActiveTab] = useState<'profile' | 'settings' | 'business_tools'>(initialTab);
   const [showMemory, setShowMemory] = useState(false);
+  const [showBusinessSetupModal, setShowBusinessSetupModal] = useState(false);
+
+  // Düzenleme state'leri
   const [editing, setEditing] = useState(false);
-  const [displayName, setDisplayName] = useState(user?.displayName || user?.username || 'Kullanıcı');
-  const [bio, setBio] = useState(user?.bio || '');
+  const [displayName, setDisplayName] = useState(
+    isBusiness
+      ? business?.businessName || user?.displayName || user?.username || 'Kullanıcı'
+      : user?.displayName || user?.username || 'Kullanıcı'
+  );
+  const [bio, setBio] = useState(isBusiness ? business?.description || user?.bio || '' : user?.bio || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -114,7 +134,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     }
   };
 
-  // Push notification state with safe environment detection
+  // Push notification state
   const [pushEnabled, setPushEnabled] = useState(() => {
     try {
       return typeof window !== 'undefined' && 'Notification' in window && window.Notification.permission === 'granted';
@@ -127,7 +147,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const handleTogglePush = async () => {
     if (!isCurrentUser || !user?.uid) return;
     if (typeof window === 'undefined' || !('Notification' in window)) {
-      setError("Bu cihaz veya tarayıcı anlık bildirimleri desteklemiyor.");
+      setError('Bu cihaz veya tarayıcı anlık bildirimleri desteklemiyor.');
       return;
     }
     setPushLoading(true);
@@ -142,14 +162,16 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       }
     } catch (err: any) {
       console.error(err);
-      setError("Bildirim ayarı değiştirilemedi. İzin verdiğinizden emin olun.");
+      setError('Bildirim ayarı değiştirilemedi. İzin verdiğinizden emin olun.');
     } finally {
       setPushLoading(false);
     }
   };
 
-  // Anlık profil fotoğrafı state'i (Firestore senkronizasyonu tamamlandığında veya hemen anında güncellenir)
-  const [currentPhotoURL, setCurrentPhotoURL] = useState<string | null>(user.photoURL || null);
+  // Anlık profil fotoğrafı state'i
+  const [currentPhotoURL, setCurrentPhotoURL] = useState<string | null>(
+    (isBusiness ? business?.photoURL : null) || user.photoURL || null
+  );
 
   // Fotoğraf Onay & Yükleme State'leri
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -159,7 +181,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [photoSuccess, setPhotoSuccess] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Tema state'i (localStorage'dan başlatılır)
+  // Tema state'i
   const [themeMode, setThemeMode] = useState<ThemeMode>(getStoredTheme);
 
   const handleSelectTheme = (mode: ThemeMode) => {
@@ -167,7 +189,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     applyTheme(mode);
   };
 
-  // ESC tuşu ile modalı kapatma desteği (Önce onay modalları kapanır, işlem sürerken engellenir)
+  // ESC tuşu ile modalı kapatma desteği
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -179,6 +201,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
           if (!isUploadingPhoto) {
             setShowConfirmModal(false);
           }
+        } else if (showBusinessSetupModal) {
+          setShowBusinessSetupModal(false);
         } else {
           onClose();
         }
@@ -186,18 +210,22 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, showBlockConfirmModal, blockLoading, showConfirmModal, isUploadingPhoto]);
+  }, [onClose, showBlockConfirmModal, blockLoading, showConfirmModal, isUploadingPhoto, showBusinessSetupModal]);
 
-  // Gelen prop değiştiğinde (Firestore snapshot güncellendiğinde) senkronize et
+  // Gelen prop değiştiğinde senkronize et
   useEffect(() => {
-    setCurrentPhotoURL(user?.photoURL || null);
+    setCurrentPhotoURL((isBusiness ? business?.photoURL : null) || user?.photoURL || null);
     if (!editing) {
-      setDisplayName(user?.displayName || user?.username || 'Kullanıcı');
-      setBio(user?.bio || '');
+      setDisplayName(
+        isBusiness
+          ? business?.businessName || user?.displayName || user?.username || 'Kullanıcı'
+          : user?.displayName || user?.username || 'Kullanıcı'
+      );
+      setBio(isBusiness ? business?.description || user?.bio || '' : user?.bio || '');
     }
-  }, [user?.photoURL, user?.displayName, user?.username, user?.bio, editing]);
+  }, [user, isBusiness, business, editing]);
 
-  // ObjectURL memory leak önleme
+  // ObjectURL cleanup
   useEffect(() => {
     return () => {
       if (previewUrl) {
@@ -206,18 +234,15 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     };
   }, [previewUrl]);
 
-  // Fotoğraf seçildiğinde tetiklenir (hemen yüklemez, onay modalını açar)
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Dosya türü kontrolü
     if (!file.type.startsWith('image/')) {
       setError('Lütfen geçerli bir görsel dosyası seçin (PNG, JPG, WEBP).');
       return;
     }
 
-    // Dosya boyutu kontrolü (Max 10 MB)
     if (file.size > 10 * 1024 * 1024) {
       setError('Görsel boyutu en fazla 10MB olabilir.');
       return;
@@ -235,9 +260,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     setPhotoSuccess(null);
   };
 
-  // Onay modalında "İptal" tıklandığında
   const handleCancelUpload = () => {
-    if (isUploadingPhoto) return; // Yükleme devam ederken iptali engelle
+    if (isUploadingPhoto) return;
     if (previewUrl) {
       URL.revokeObjectURL(previewUrl);
     }
@@ -249,25 +273,19 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     }
   };
 
-  // Onay modalında "Evet, yükle" tıklandığında
   const handleConfirmUpload = async () => {
     if (!selectedFile || isUploadingPhoto) return;
 
     setIsUploadingPhoto(true);
     setError(null);
     try {
-      // 1. Profil fotoğrafını kare merkezli optimize et ve yükle
       const downloadUrl = await uploadProfilePhoto(selectedFile);
 
-      // 2. Gerçek Firestore users/{uid}.photoURL alanını güncelle
       await updateUserProfileDetails(user.uid, {
         photoURL: downloadUrl,
       });
 
-      // 3. Mevcut profil modalındaki avatarı da ANINDA güncelle
       setCurrentPhotoURL(downloadUrl);
-
-      // 4. Temizlik ve Başarı Bildirimi
       setShowConfirmModal(false);
       setPhotoSuccess('Profil fotoğrafın güncellendi.');
       setTimeout(() => setPhotoSuccess(null), 4000);
@@ -282,7 +300,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       }
     } catch (err: any) {
       console.error('Fotoğraf yükleme hatası:', err);
-      // Hata durumunda eski fotoğraf korunur, anlaşılır hata gösterilir
       setError(err?.message || 'Fotoğraf yüklenemedi. Lütfen tekrar deneyin.');
       setShowConfirmModal(false);
     } finally {
@@ -290,7 +307,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     }
   };
 
-  // Mevcut fotoğrafı kaldırma işlemi
   const handleRemovePhoto = async () => {
     if (isUploadingPhoto) return;
     setIsUploadingPhoto(true);
@@ -335,6 +351,10 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
   if (!user) return null;
 
+  const headerTitle = isBusiness
+    ? business?.businessName || user.displayName || user.username
+    : user.displayName || user.username;
+
   const modalContent = (
     <>
       <div
@@ -347,22 +367,22 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       >
         <div
           onClick={(e) => e.stopPropagation()}
-          className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-5 sm:p-6 shadow-2xl relative my-auto max-h-[calc(100dvh-2rem)] flex flex-col overflow-y-auto"
+          className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl max-w-sm w-full p-5 sm:p-6 shadow-2xl relative my-auto max-h-[calc(100dvh-2rem)] flex flex-col overflow-y-auto"
         >
           {/* Close Button */}
           <button
             onClick={onClose}
-            className="absolute top-4 right-4 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 p-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer z-10"
+            className="absolute top-4 right-4 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 p-1.5 rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer z-10"
           >
             <X className="w-4 h-4" />
           </button>
 
-          {/* Tab Selector */}
+          {/* Sekme Seçici (Mevcut Kullanıcı İçin) */}
           {isCurrentUser && (
-            <div className="flex border-b border-zinc-200 dark:border-zinc-800 mb-5 pb-2 gap-4 text-xs font-bold">
+            <div className="flex border-b border-zinc-200 dark:border-zinc-800 mb-5 pb-2 gap-4 text-xs font-bold overflow-x-auto no-scrollbar">
               <button
                 onClick={() => setActiveTab('profile')}
-                className={`pb-1 cursor-pointer transition-colors ${
+                className={`pb-1 cursor-pointer transition-colors whitespace-nowrap ${
                   activeTab === 'profile'
                     ? 'text-red-600 border-b-2 border-red-600'
                     : 'text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
@@ -370,9 +390,24 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               >
                 Profil
               </button>
+
+              {isBusiness && (
+                <button
+                  onClick={() => setActiveTab('business_tools')}
+                  className={`pb-1 cursor-pointer transition-colors whitespace-nowrap flex items-center gap-1 ${
+                    activeTab === 'business_tools'
+                      ? 'text-red-600 border-b-2 border-red-600'
+                      : 'text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
+                  }`}
+                >
+                  <Store className="w-3.5 h-3.5" />
+                  <span>İşletme Araçları</span>
+                </button>
+              )}
+
               <button
                 onClick={() => setActiveTab('settings')}
-                className={`pb-1 cursor-pointer transition-colors ${
+                className={`pb-1 cursor-pointer transition-colors whitespace-nowrap ${
                   activeTab === 'settings'
                     ? 'text-red-600 border-b-2 border-red-600'
                     : 'text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
@@ -383,7 +418,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             </div>
           )}
 
-          {activeTab === 'profile' ? (
+          {/* 🏢 SEKME: İŞLETME ARAÇLARI (YALNIZCA İŞLETME SAHİBİ İÇİN) */}
+          {activeTab === 'business_tools' && isCurrentUser ? (
+            <BusinessToolsTab
+              currentUser={user}
+              onSwitchToPersonal={() => setActiveTab('profile')}
+            />
+          ) : activeTab === 'profile' ? (
             <>
               {/* Profile Header & Avatar */}
               <div className="flex flex-col items-center text-center mb-4">
@@ -391,14 +432,14 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   <div className="relative group">
                     <UserAvatar
                       photoURL={currentPhotoURL}
-                      name={user.displayName}
+                      name={headerTitle}
                       username={user.username}
                       size="2xl"
                       shape="circle"
                       className="shadow-lg shadow-red-600/10 ring-2 ring-zinc-100 dark:ring-zinc-800"
                     />
 
-                    {/* Fotoğraf Değiştirme Butonu (Mevcut kullanıcı için hover butonu) */}
+                    {/* Fotoğraf Değiştirme Butonu */}
                     {isCurrentUser && (
                       <button
                         onClick={() => fileInputRef.current?.click()}
@@ -443,7 +484,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       className="text-[11px] font-semibold text-red-600 hover:text-red-700 dark:text-red-400 flex items-center gap-1 hover:underline cursor-pointer disabled:opacity-50"
                     >
                       <Camera className="w-3 h-3" />
-                      Profil fotoğrafını değiştir
+                      Fotoğrafı değiştir
                     </button>
                     {currentPhotoURL && (
                       <>
@@ -451,7 +492,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                         <button
                           onClick={handleRemovePhoto}
                           disabled={isUploadingPhoto}
-                          className="text-[11px] font-semibold text-zinc-400 hover:text-rose-600 transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                          className="text-[11px] font-semibold text-zinc-500 hover:text-rose-600 dark:hover:text-rose-400 flex items-center gap-1 hover:underline cursor-pointer disabled:opacity-50"
                         >
                           <Trash2 className="w-3 h-3" />
                           Kaldır
@@ -461,24 +502,48 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   </div>
                 )}
 
+                {/* Kullanıcı / İşletme İsmi ve Mavi Tik */}
                 <div className="flex items-center justify-center gap-1.5 mt-1">
-                  <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-100">
-                    {user.displayName || user.username}
+                  <h3 className="text-lg font-bold text-zinc-900 dark:text-zinc-100 truncate">
+                    {headerTitle}
                   </h3>
                   <VerifiedBadge
                     isVerified={user.isVerified}
                     badgeUrl={badgeUrl}
                     size="md"
                     user={{
-                      displayName: user.displayName || user.username,
+                      displayName: headerTitle,
                       username: user.username,
                       photoURL: currentPhotoURL || user.photoURL,
                     }}
                   />
                 </div>
-                <p className="text-xs text-red-600 font-mono font-medium mt-0.5">
-                  @{user.username}
-                </p>
+
+                {/* İşletme Alt Başlığı veya Normal Kullanıcı Adı */}
+                {isBusiness ? (
+                  <div className="mt-1 flex flex-col items-center gap-1">
+                    <div className="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+                      <span className="font-mono text-zinc-400">@{user.username}</span>
+                      <span>•</span>
+                      <span className="text-red-600 dark:text-red-400 font-semibold flex items-center gap-1">
+                        <Store className="w-3 h-3" />
+                        <span>İşletme Hesabı</span>
+                      </span>
+                      {business?.category && (
+                        <>
+                          <span>•</span>
+                          <span className="font-medium text-zinc-600 dark:text-zinc-300">
+                            {business.category}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-red-600 font-mono font-medium mt-0.5">
+                    @{user.username}
+                  </p>
+                )}
 
                 {/* Durum Rozeti (RedChat AI için gizlenir) */}
                 {!isRedChatAI(user) && (
@@ -490,7 +555,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                           : 'bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400'
                       }`}
                     >
-                      <Circle className={`w-2 h-2 ${user.isOnline ? 'fill-emerald-500 text-emerald-500' : 'fill-zinc-400 text-zinc-400'}`} />
+                      <Circle
+                        className={`w-2 h-2 ${
+                          user.isOnline ? 'fill-emerald-500 text-emerald-500' : 'fill-zinc-400 text-zinc-400'
+                        }`}
+                      />
                       {formatLastSeen(user.isOnline, user.lastSeen)}
                     </span>
                   </div>
@@ -513,8 +582,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 </div>
               )}
 
-              {/* Profile Content / Edit Form */}
-              {isCurrentUser && editing ? (
+              {/* Normal Profil Düzenleme Formu (Kişisel Hesap İçin) */}
+              {isCurrentUser && !isBusiness && editing ? (
                 <form onSubmit={handleSave} className="space-y-3">
                   <div>
                     <label className="block text-[11px] font-medium text-zinc-600 dark:text-zinc-400 mb-1">
@@ -561,10 +630,122 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   </div>
                 </form>
               ) : (
-                <div className="space-y-3">
-                  {isRedChatAI(user) ? (
+                /* 📄 PROFİL İÇERİK KARTLARI */
+                <div className="space-y-2.5">
+                  {/* 🏢 İŞLETME PROFİLİ GÖRÜNÜMÜ (Yalnızca dolu alanlar gösterilir) */}
+                  {isBusiness ? (
+                    <div className="space-y-2">
+                      {/* Açıklama */}
+                      {(business?.description || user.bio) && (
+                        <div className="p-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-2xl border border-zinc-100 dark:border-zinc-800">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500 block mb-0.5">
+                            Açıklama
+                          </span>
+                          <p className="text-xs text-zinc-700 dark:text-zinc-300 leading-relaxed whitespace-pre-wrap">
+                            {business?.description || user.bio}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Kategori */}
+                      {business?.category && (
+                        <div className="p-2.5 px-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
+                            <Store className="w-3.5 h-3.5 text-red-500" />
+                            <span>Kategori</span>
+                          </span>
+                          <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200">
+                            {business.category}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Web Sitesi */}
+                      {business?.website && (
+                        <div className="p-2.5 px-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
+                            <Globe className="w-3.5 h-3.5 text-blue-500" />
+                            <span>Web Sitesi</span>
+                          </span>
+                          <a
+                            href={
+                              business.website.startsWith('http')
+                                ? business.website
+                                : `https://${business.website}`
+                            }
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs font-bold text-red-600 hover:text-red-700 dark:text-red-400 truncate max-w-[170px] hover:underline flex items-center gap-1"
+                          >
+                            <span className="truncate">
+                              {business.website.replace(/^https?:\/\//, '')}
+                            </span>
+                            <ExternalLink className="w-3 h-3 shrink-0" />
+                          </a>
+                        </div>
+                      )}
+
+                      {/* E-posta */}
+                      {(business?.email || user.email) && (
+                        <div className="p-2.5 px-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
+                            <Mail className="w-3.5 h-3.5 text-amber-500" />
+                            <span>E-posta</span>
+                          </span>
+                          <a
+                            href={`mailto:${business?.email || user.email}`}
+                            className="text-xs font-bold text-zinc-800 dark:text-zinc-200 hover:text-red-600 dark:hover:text-red-400 truncate max-w-[170px]"
+                          >
+                            {business?.email || user.email}
+                          </a>
+                        </div>
+                      )}
+
+                      {/* Telefon */}
+                      {business?.phone && (
+                        <div className="p-2.5 px-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
+                            <Phone className="w-3.5 h-3.5 text-emerald-500" />
+                            <span>Telefon</span>
+                          </span>
+                          <a
+                            href={`tel:${business.phone}`}
+                            className="text-xs font-bold text-zinc-800 dark:text-zinc-200 hover:text-red-600 dark:hover:text-red-400"
+                          >
+                            {business.phone}
+                          </a>
+                        </div>
+                      )}
+
+                      {/* Konum */}
+                      {business?.location && (
+                        <div className="p-2.5 px-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
+                            <MapPin className="w-3.5 h-3.5 text-rose-500" />
+                            <span>Konum</span>
+                          </span>
+                          <span className="text-xs font-medium text-zinc-800 dark:text-zinc-200 text-right truncate max-w-[170px]">
+                            {business.location}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Çalışma Saatleri */}
+                      {business?.hours && (
+                        <div className="p-2.5 px-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 text-purple-500" />
+                            <span>Çalışma Saatleri</span>
+                          </span>
+                          <span className="text-xs font-medium text-zinc-800 dark:text-zinc-200 text-right">
+                            {business.hours}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  ) : isRedChatAI(user) ? (
                     <>
-                      <div className="p-3 bg-zinc-50 dark:bg-zinc-800/80 rounded-xl border border-zinc-200 dark:border-zinc-750 dark:border-zinc-700">
+                      <div className="p-3 bg-zinc-50 dark:bg-zinc-800/80 rounded-xl border border-zinc-200 dark:border-zinc-700">
                         <span className="text-[11px] font-medium text-zinc-400 dark:text-zinc-400 block mb-0.5">
                           Hakkında
                         </span>
@@ -573,7 +754,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                         </p>
                       </div>
 
-                      <div className="p-3 bg-zinc-50 dark:bg-zinc-800/80 rounded-xl border border-zinc-200 dark:border-zinc-750 dark:border-zinc-700">
+                      <div className="p-3 bg-zinc-50 dark:bg-zinc-800/80 rounded-xl border border-zinc-200 dark:border-zinc-700">
                         <div className="flex items-center justify-between text-xs text-zinc-600 dark:text-zinc-300">
                           <span className="text-zinc-400">Mod:</span>
                           <span className="font-semibold text-zinc-800 dark:text-zinc-100 flex items-center gap-1">
@@ -584,6 +765,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       </div>
                     </>
                   ) : (
+                    /* Kişisel Profil Kartı */
                     <>
                       <div className="p-3 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800">
                         <span className="text-[11px] font-medium text-zinc-400 dark:text-zinc-500 block mb-0.5">
@@ -603,15 +785,26 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     </>
                   )}
 
+                  {/* Aksiyon Butonları */}
                   <div className="pt-2 flex flex-col gap-2">
                     {isCurrentUser ? (
-                      <button
-                        onClick={() => setEditing(true)}
-                        className="w-full py-2 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                        Profili Düzenle
-                      </button>
+                      isBusiness ? (
+                        <button
+                          onClick={() => setActiveTab('business_tools')}
+                          className="w-full py-2.5 px-3 text-xs font-bold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/50 border border-red-200 dark:border-red-900/60 rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Store className="w-3.5 h-3.5" />
+                          <span>İşletme Araçlarını Yönet</span>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => setEditing(true)}
+                          className="w-full py-2 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>Profili Düzenle</span>
+                        </button>
+                      )
                     ) : (
                       <>
                         {isBlocked ? (
@@ -654,18 +847,23 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                                 {isRedChatAI(user) ? (
                                   <>
                                     <Bot className="w-4 h-4" />
-                                    DeepRed ile Sohbet Et
+                                    <span>DeepRed ile Sohbet Et</span>
+                                  </>
+                                ) : isBusiness ? (
+                                  <>
+                                    <MessageSquare className="w-4 h-4" />
+                                    <span>İşletmeyle Sohbet Başlat</span>
                                   </>
                                 ) : (
                                   <>
                                     <MessageSquare className="w-4 h-4" />
-                                    Sohbet Başlat
+                                    <span>Sohbet Başlat</span>
                                   </>
                                 )}
                               </button>
                             )}
 
-                            {/* 🚫 Kullanıcıyı Engelle Butonu (RedChat AI için gösterilmez) */}
+                            {/* 🚫 Kullanıcıyı Engelle Butonu */}
                             {!isRedChatAI(user) && currentUserId && (
                               <button
                                 type="button"
@@ -689,8 +887,72 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               )}
             </>
           ) : (
-            /* SETTINGS TAB */
+            /* ⚙️ SEKME: AYARLAR */
             <div className="space-y-4 py-1">
+              {/* 🏢 İŞLETME HESABI BÖLÜMÜ (AYARLAR -> HESAP) */}
+              {isCurrentUser && (
+                <div>
+                  <h4 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mb-2 flex items-center gap-1.5">
+                    <Building2 className="w-3.5 h-3.5 text-red-600" />
+                    Hesap Türü & İşletme
+                  </h4>
+
+                  {isBusiness ? (
+                    <div className="p-3.5 rounded-2xl border border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-950/30 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Store className="w-4 h-4 text-red-600 dark:text-red-400" />
+                          <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                            {business?.businessName || user.displayName}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-900/60">
+                          İşletme Hesabı
+                        </span>
+                      </div>
+
+                      <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                        İşletme profilinizi, kategorinizi ve iletişim detaylarınızı İşletme Araçları sekmesinden dilediğiniz gibi güncelleyebilirsiniz.
+                      </p>
+
+                      <button
+                        onClick={() => setActiveTab('business_tools')}
+                        className="w-full py-2 px-3 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                      >
+                        <Store className="w-3.5 h-3.5" />
+                        <span>İşletme Araçlarını Aç</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="p-3.5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-800/40 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <h5 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                            <Store className="w-3.5 h-3.5 text-red-600" />
+                            İşletme Hesabına Geç
+                          </h5>
+                          <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1 leading-relaxed">
+                            RedChat üzerinde işletmenizi daha profesyonel şekilde tanıtın.
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => setShowBusinessSetupModal(true)}
+                        className="w-full mt-1 py-2 px-3 text-xs font-bold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/50 border border-red-200 dark:border-red-900/60 rounded-xl transition-colors flex items-center justify-between cursor-pointer"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <Building2 className="w-3.5 h-3.5" />
+                          <span>İşletme Hesabına Geç</span>
+                        </span>
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Görünüm ve Tema */}
               <div>
                 <h4 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mb-2 flex items-center gap-1.5">
                   <Palette className="w-3.5 h-3.5 text-red-600" />
@@ -734,7 +996,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               </div>
 
               {/* Bildirim Ayarı */}
-              <div className="mb-6">
+              <div>
                 <h4 className="text-xs font-semibold text-zinc-900 dark:text-white mb-2.5 flex items-center gap-1.5">
                   <Bell className="w-4 h-4 text-zinc-500" />
                   Bildirimler
@@ -769,10 +1031,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               {/* Mavi Tik Doğrulama Başvurusu */}
               {isCurrentUser && <UserVerificationForm user={user} />}
 
-              <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800">
+              {/* Alt Butonlar */}
+              <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800 space-y-2">
                 <button
                   onClick={() => setShowMemory(true)}
-                  className="w-full py-2.5 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 rounded-xl transition-colors flex items-center justify-between cursor-pointer mb-2 border border-red-100 dark:border-red-500/20"
+                  className="w-full py-2.5 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 rounded-xl transition-colors flex items-center justify-between cursor-pointer border border-red-100 dark:border-red-500/20"
                 >
                   <span className="flex items-center gap-2">
                     <Book className="w-3.5 h-3.5 text-red-500" /> DeepRed AI Belleği
@@ -780,18 +1043,30 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   <span className="text-zinc-400">›</span>
                 </button>
 
-                <button
-                  onClick={() => {
-                    setActiveTab('profile');
-                    setEditing(true);
-                  }}
-                  className="w-full py-2.5 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl transition-colors flex items-center justify-between cursor-pointer mb-2"
-                >
-                  <span className="flex items-center gap-2">
-                    <Edit3 className="w-3.5 h-3.5" /> Profili Düzenle
-                  </span>
-                  <span className="text-zinc-400">›</span>
-                </button>
+                {isBusiness ? (
+                  <button
+                    onClick={() => setActiveTab('business_tools')}
+                    className="w-full py-2.5 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Store className="w-3.5 h-3.5 text-red-600" /> İşletme Araçları
+                    </span>
+                    <span className="text-zinc-400">›</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      setActiveTab('profile');
+                      setEditing(true);
+                    }}
+                    className="w-full py-2.5 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Edit3 className="w-3.5 h-3.5" /> Profili Düzenle
+                    </span>
+                    <span className="text-zinc-400">›</span>
+                  </button>
+                )}
 
                 <button
                   onClick={async () => {
@@ -801,7 +1076,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   className="w-full py-2.5 px-3 text-xs font-semibold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/50 rounded-xl border border-rose-200/60 dark:border-rose-900/60 transition-colors flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <LogOut className="w-3.5 h-3.5" />
-                  Çıkış Yap
+                  <span>Çıkış Yap</span>
                 </button>
               </div>
             </div>
@@ -814,12 +1089,22 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         <MemoryModal userId={user.uid} onClose={() => setShowMemory(false)} />
       )}
 
+      {/* 🏢 İŞLETME HESABINA GEÇİŞ KURULUM MODALI */}
+      {showBusinessSetupModal && (
+        <BusinessSetupModal
+          currentUser={user}
+          isOpen={showBusinessSetupModal}
+          onClose={() => setShowBusinessSetupModal(false)}
+          onSuccess={() => {
+            setActiveTab('business_tools');
+          }}
+        />
+      )}
 
       {/* 🔴 REDCHAT ÖZEL PROFİL FOTOĞRAFI ONAY & YÜKLEME MODALI */}
       {showConfirmModal && previewUrl && (
         <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
           <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl relative text-center">
-            {/* Fotoğraf Önizleme */}
             <div className="relative mx-auto w-28 h-28 mb-4">
               <div className="w-full h-full rounded-full overflow-hidden border-3 border-red-600 shadow-xl bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center">
                 <img
@@ -829,7 +1114,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 />
               </div>
 
-              {/* Yükleniyor Göstergesi Overlay */}
               {isUploadingPhoto && (
                 <div className="absolute inset-0 rounded-full bg-black/70 flex flex-col items-center justify-center text-white">
                   <Loader2 className="w-8 h-8 animate-spin text-red-500 mb-1" />
@@ -837,7 +1121,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               )}
             </div>
 
-            {/* Metinler */}
             <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100 mb-1.5">
               {isUploadingPhoto
                 ? 'Fotoğraf yükleniyor…'
@@ -849,7 +1132,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 : 'Fotoğraf kırpılarak profilinizde ve sohbetlerinizde görüntülenecektir.'}
             </p>
 
-            {/* Butonlar */}
             <div className="flex gap-3">
               <button
                 type="button"
@@ -894,42 +1176,40 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
           className="fixed inset-0 z-[10000] flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-xs overflow-y-auto select-none"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="block-confirm-modal-title"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-5 sm:p-6 shadow-2xl relative my-auto text-center"
+            className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-5 sm:p-6 shadow-2xl relative my-auto text-center animate-in fade-in zoom-in-95"
           >
-            {/* Kapat butonu (X) */}
             <button
               type="button"
-              onClick={() => !blockLoading && setShowBlockConfirmModal(false)}
+              onClick={() => {
+                if (!blockLoading) setShowBlockConfirmModal(false);
+              }}
               disabled={blockLoading}
               className="absolute top-3.5 right-3.5 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 p-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer disabled:opacity-40"
-              title="Kapat"
-              aria-label="Kapat"
             >
               <X className="w-4 h-4" />
             </button>
 
-            <div className="w-12 h-12 rounded-full bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto mb-3 shadow-xs">
+            <div className="w-12 h-12 rounded-full bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 flex items-center justify-center mx-auto mb-3">
               <UserX className="w-6 h-6" />
             </div>
 
-            <h3 id="block-confirm-modal-title" className="text-base font-bold text-zinc-900 dark:text-zinc-100 mb-1.5">
+            <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100 mb-1.5">
               Kullanıcıyı Engelle
             </h3>
 
-            <p className="text-xs font-medium text-zinc-700 dark:text-zinc-300 mb-2">
-              Bu kullanıcıyı engellemek istediğine emin misin?
+            <p className="text-xs font-semibold text-zinc-800 dark:text-zinc-200 mb-2">
+              @{user.username} kullanıcısını engellemek istediğinize emin misiniz?
             </p>
 
             <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-5 leading-relaxed">
-              Engellediğinizde bu kullanıcı size özel mesaj gönderemez, kullanıcı aramasında ve listenizde görünmez.
+              Bu kullanıcıyı engellediğinizde birbirinize doğrudan mesaj gönderemezsiniz.
             </p>
 
             {blockError && (
-              <div className="mb-4 p-2.5 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 text-xs rounded-xl border border-rose-200 dark:border-rose-900/50 flex items-center gap-2 text-left">
+              <div className="mb-4 p-2.5 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 text-xs rounded-xl border border-rose-200 dark:border-rose-900/50 flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 shrink-0" />
                 <span>{blockError}</span>
               </div>

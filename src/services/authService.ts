@@ -20,7 +20,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { auth, db } from './firebase';
-import type { UserProfile } from '../types';
+import type { UserProfile, BusinessProfile } from '../types';
 
 export function validateUsername(username: string): { valid: boolean; error?: string } {
   const clean = username.trim();
@@ -275,3 +275,129 @@ export function subscribeToAuthState(callback: (user: User | null) => void): () 
   }
   return onAuthStateChanged(auth, callback);
 }
+
+/**
+ * Kullanıcıyı işletme hesabına geçirir ve işletme profil bilgilerini Firestore'a kaydeder.
+ */
+export async function switchToBusinessAccount(
+  uid: string,
+  businessData: BusinessProfile,
+  photoURL?: string | null
+): Promise<void> {
+  if (!db || !uid) throw new Error('Firestore bağlantısı hazır değil');
+
+  const userDocRef = doc(db, 'users', uid);
+  const cleanBusinessProfile: BusinessProfile = {
+    businessName: businessData.businessName?.trim() || '',
+    category: businessData.category?.trim() || 'Diğer',
+    description: businessData.description?.trim() || '',
+    website: businessData.website?.trim() || '',
+    email: businessData.email?.trim() || '',
+    phone: businessData.phone?.trim() || '',
+    location: businessData.location?.trim() || '',
+    hours: businessData.hours?.trim() || '',
+    photoURL: photoURL !== undefined ? photoURL : businessData.photoURL || null,
+    updatedAt: serverTimestamp(),
+  };
+
+  const updates: any = {
+    accountType: 'business',
+    businessProfile: cleanBusinessProfile,
+    updatedAt: serverTimestamp(),
+  };
+
+  if (businessData.businessName?.trim()) {
+    updates.displayName = businessData.businessName.trim();
+  }
+  if (businessData.description?.trim()) {
+    updates.bio = businessData.description.trim();
+  }
+  if (photoURL !== undefined) {
+    updates.photoURL = photoURL;
+  }
+
+  await updateDoc(userDocRef, updates);
+
+  if (auth?.currentUser) {
+    try {
+      const authUpdates: any = {};
+      if (updates.displayName) authUpdates.displayName = updates.displayName;
+      if (photoURL !== undefined) authUpdates.photoURL = photoURL;
+      if (Object.keys(authUpdates).length > 0) {
+        await updateProfile(auth.currentUser, authUpdates);
+      }
+    } catch (err) {
+      console.warn('Auth profile sync warning:', err);
+    }
+  }
+}
+
+/**
+ * İşletme hesabından normal (bireysel) hesaba dönüş yapar.
+ * İşletme bilgileri Firestore'da korunur, sadece hesap türü 'personal' yapılır.
+ */
+export async function switchToPersonalAccount(uid: string): Promise<void> {
+  if (!db || !uid) throw new Error('Firestore bağlantısı hazır değil');
+
+  const userDocRef = doc(db, 'users', uid);
+  await updateDoc(userDocRef, {
+    accountType: 'personal',
+    updatedAt: serverTimestamp(),
+  });
+}
+
+/**
+ * İşletme profil bilgilerini günceller.
+ */
+export async function updateBusinessProfile(
+  uid: string,
+  businessData: BusinessProfile,
+  photoURL?: string | null
+): Promise<void> {
+  if (!db || !uid) throw new Error('Firestore bağlantısı hazır değil');
+
+  const userDocRef = doc(db, 'users', uid);
+  const cleanBusinessProfile: BusinessProfile = {
+    businessName: businessData.businessName?.trim() || '',
+    category: businessData.category?.trim() || 'Diğer',
+    description: businessData.description?.trim() || '',
+    website: businessData.website?.trim() || '',
+    email: businessData.email?.trim() || '',
+    phone: businessData.phone?.trim() || '',
+    location: businessData.location?.trim() || '',
+    hours: businessData.hours?.trim() || '',
+    photoURL: photoURL !== undefined ? photoURL : businessData.photoURL || null,
+    updatedAt: serverTimestamp(),
+  };
+
+  const updates: any = {
+    businessProfile: cleanBusinessProfile,
+    updatedAt: serverTimestamp(),
+  };
+
+  if (businessData.businessName?.trim()) {
+    updates.displayName = businessData.businessName.trim();
+  }
+  if (businessData.description !== undefined) {
+    updates.bio = businessData.description.trim();
+  }
+  if (photoURL !== undefined) {
+    updates.photoURL = photoURL;
+  }
+
+  await updateDoc(userDocRef, updates);
+
+  if (auth?.currentUser) {
+    try {
+      const authUpdates: any = {};
+      if (updates.displayName) authUpdates.displayName = updates.displayName;
+      if (photoURL !== undefined) authUpdates.photoURL = photoURL;
+      if (Object.keys(authUpdates).length > 0) {
+        await updateProfile(auth.currentUser, authUpdates);
+      }
+    } catch (err) {
+      console.warn('Auth profile sync warning:', err);
+    }
+  }
+}
+

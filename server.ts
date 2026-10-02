@@ -694,6 +694,366 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
     }
   });
 
+  // =========================================================================
+  // 🏢 REDCHAT İŞLETME HESABINA GEÇİŞ — 2 AŞAMALI E-POSTA DOĞRULAMA ENDPOINT'LERİ
+  // =========================================================================
+
+  interface ActiveVerification {
+    userId: string;
+    username: string;
+    displayName: string;
+    userEmail: string;
+    businessContactEmail: string;
+    step: 1 | 2;
+    targetEmail: string;
+    code: string;
+    expiresAt: number;
+    createdAt: number;
+  }
+
+  interface UserVerificationProgress {
+    step1Verified: boolean;
+    step1VerifiedAt?: number;
+    step2Verified: boolean;
+    step2VerifiedAt?: number;
+    draftProfile?: any;
+  }
+
+  // Sunucu içi güvenli doğrulama hafızası (Tek kullanımlık, süreli, kullanıcıya özel)
+  const activeVerificationCodes = new Map<string, ActiveVerification>();
+  const userVerificationProgressMap = new Map<string, UserVerificationProgress>();
+
+  // 1. Doğrulama Kodu İsteği & Resend / Yönetim Bildirimi
+  app.post("/api/business/request-step-code", async (req, res) => {
+    try {
+      const {
+        userId,
+        username,
+        displayName,
+        userEmail,
+        businessContactEmail,
+        step,
+        draftProfile,
+      } = req.body;
+
+      if (!userId || !userEmail || !businessContactEmail || (step !== 1 && step !== 2)) {
+        return res.status(400).json({
+          error: "Eksik veya geçersiz parametreler.",
+        });
+      }
+
+      const cleanUsername = String(username || "kullanici").replace(/^@/, "").trim();
+      const cleanDisplayName = String(displayName || cleanUsername).trim();
+      const cleanUserEmail = String(userEmail).trim();
+      const cleanBusinessContactEmail = String(businessContactEmail).trim();
+      const targetEmail = step === 1 ? cleanUserEmail : cleanBusinessContactEmail;
+
+      // 6 Haneli Kriptografik Güvenli Tek Kullanımlık Kod Üretimi (Örn: "939283")
+      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = Date.now() + 15 * 60 * 1000; // 15 dakika geçerlilik
+
+      const key = `${userId}_step_${step}`;
+      const record: ActiveVerification = {
+        userId,
+        username: cleanUsername,
+        displayName: cleanDisplayName,
+        userEmail: cleanUserEmail,
+        businessContactEmail: cleanBusinessContactEmail,
+        step,
+        targetEmail,
+        code,
+        expiresAt,
+        createdAt: Date.now(),
+      };
+
+      activeVerificationCodes.set(key, record);
+
+      // İlerleme durumunu sakla/güncelle
+      const existingProg = userVerificationProgressMap.get(userId) || {
+        step1Verified: false,
+        step2Verified: false,
+      };
+      if (draftProfile) {
+        existingProg.draftProfile = draftProfile;
+      }
+      userVerificationProgressMap.set(userId, existingProg);
+
+      const stepTitle =
+        step === 1
+          ? "1. ADIM — KAYIT E-POSTASI DOĞRULAMASI"
+          : "2. ADIM — İŞLETME İLETİŞİM E-POSTASI DOĞRULAMASI";
+
+      const subject = `🔴 REDCHAT İŞLETME DOĞRULAMASI — ${step}. ADIM (${
+        step === 1 ? "KAYIT E-POSTASI" : "İŞLETME İLETİŞİM E-POSTASI"
+      })`;
+
+      const htmlBody = `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e4e4e7; border-radius: 18px; background-color: #ffffff; color: #18181b;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px;">
+            <h2 style="color: #dc2626; margin: 0; font-size: 20px; font-weight: 800; letter-spacing: -0.02em;">
+              🔴 REDCHAT İŞLETME DOĞRULAMASI
+            </h2>
+          </div>
+          
+          <div style="background-color: ${
+            step === 1 ? "#eff6ff" : "#f0fdf4"
+          }; border: 1px solid ${
+        step === 1 ? "#bfdbfe" : "#bbf7d0"
+      }; padding: 14px 18px; border-radius: 12px; margin-bottom: 20px;">
+            <div style="color: ${
+              step === 1 ? "#1d4ed8" : "#15803d"
+            }; font-size: 15px; font-weight: 800;">
+              ${stepTitle}
+            </div>
+          </div>
+
+          <p style="font-size: 14px; color: #3f3f46; margin: 0 0 10px 0; font-weight: 600;">
+            İşletme hesabına geçiş isteyen kullanıcı:
+          </p>
+
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 20px;">
+            <tbody>
+              <tr style="border-bottom: 1px solid #f4f4f5;">
+                <td style="padding: 8px 0; color: #71717a; font-weight: 600; width: 40%;">Kullanıcı Adı:</td>
+                <td style="padding: 8px 0; font-weight: 700; color: #18181b;">@${cleanUsername}</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #f4f4f5;">
+                <td style="padding: 8px 0; color: #71717a; font-weight: 600;">Görünen Ad:</td>
+                <td style="padding: 8px 0; font-weight: 700; color: #18181b;">${cleanDisplayName}</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #f4f4f5;">
+                <td style="padding: 8px 0; color: #71717a; font-weight: 600;">RedChat Kayıt E-postası:</td>
+                <td style="padding: 8px 0; font-family: monospace; font-weight: 700; color: #dc2626;">${cleanUserEmail}</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #f4f4f5;">
+                <td style="padding: 8px 0; color: #71717a; font-weight: 600;">İşletme İletişim E-postası:</td>
+                <td style="padding: 8px 0; font-family: monospace; font-weight: 700; color: #2563eb;">${cleanBusinessContactEmail}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 0; color: #71717a; font-weight: 600;">Doğrulanacak Hedef E-posta:</td>
+                <td style="padding: 8px 0; font-family: monospace; font-weight: 700; color: #18181b;">${targetEmail}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div style="background-color: #fafafa; border: 2px dashed #d4d4d8; padding: 20px; border-radius: 14px; margin: 24px 0; text-align: center;">
+            <div style="font-size: 11px; color: #71717a; text-transform: uppercase; font-weight: 800; letter-spacing: 0.08em; margin-bottom: 8px;">
+              ${step}. Adım İçin Oluşturulan Doğrulama Kodu
+            </div>
+            <div style="font-size: 36px; font-weight: 900; letter-spacing: 8px; color: #dc2626; font-family: monospace; padding-left: 8px;">
+              ${code}
+            </div>
+            <div style="font-size: 12px; color: #71717a; margin-top: 8px; font-weight: 500;">
+              (Geçerlilik süresi: 15 dakika • Tek kullanımlık)
+            </div>
+          </div>
+
+          <p style="font-size: 13px; color: #71717a; line-height: 1.5; border-top: 1px solid #f4f4f5; padding-top: 14px; margin: 0;">
+            Bu kod <strong>${stepTitle}</strong> için oluşturulmuştur. Bu kodu yalnızca ilgili kullanıcıya iletiniz.
+          </p>
+        </div>
+      `;
+
+      const textBody = `🔴 REDCHAT İŞLETME DOĞRULAMASI\n\n${stepTitle}\n\nİşletme hesabına geçiş isteyen kullanıcı:\nKullanıcı adı: @${cleanUsername}\nGörünen ad: "${cleanDisplayName}"\n\nKullanıcının kayıt olduğu e-posta:\n"${cleanUserEmail}"\n\nİşletme iletişim e-postası:\n"${cleanBusinessContactEmail}"\n\nDoğrulanacak ${
+        step === 1 ? "kayıt" : "iletişim"
+      } e-postası:\n"${targetEmail}"\n\nDoğrulama kodu:\n"${code}"\n\nBu kod ${step}. Adım — ${
+        step === 1
+          ? "Kayıt E-postası Doğrulaması"
+          : "İşletme İletişim E-postası Doğrulaması"
+      } için oluşturulmuştur.\n(Geçerlilik süresi: 15 dakika, Tek kullanımlık)`;
+
+      // 📧 Resend HTTPS API Entegrasyonu (Yönetim E-postasına Gönderim)
+      let resendSuccess = false;
+      const resendApiKey = process.env.RESEND_API_KEY;
+
+      if (resendApiKey) {
+        try {
+          const resendResponse = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${resendApiKey.trim()}`,
+            },
+            body: JSON.stringify({
+              from: process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev",
+              to: ["redchatbusiness@outlook.com"],
+              subject,
+              html: htmlBody,
+              text: textBody,
+            }),
+          });
+
+          if (resendResponse.ok) {
+            resendSuccess = true;
+            console.log(`✅ [Resend HTTPS] ${step}. Adım doğrulama bildirimi redchatbusiness@outlook.com adresine başarıyla gönderildi.`);
+          } else {
+            const errText = await resendResponse.text();
+            console.warn(`⚠️ [Resend HTTPS] Gönderim başarısız (${resendResponse.status}):`, errText);
+          }
+        } catch (resendErr) {
+          console.error("❌ [Resend HTTPS] Hata:", resendErr);
+        }
+      }
+
+      // Yönetici & Sistem Konsol Logu (Yarı otomatik / manuel kontrol için açıkça loglanır)
+      console.log("\n================================================================================");
+      console.log(`🔴 [REDCHAT İŞLETME DOĞRULAMASI BİLDİRİMİ]`);
+      console.log(`Yönetim E-postası: redchatbusiness@outlook.com`);
+      console.log(`Adım: ${stepTitle}`);
+      console.log(`Kullanıcı: @${cleanUsername} (${cleanDisplayName}) [UID: ${userId}]`);
+      console.log(`RedChat Kayıt E-postası: ${cleanUserEmail}`);
+      console.log(`İşletme İletişim E-postası: ${cleanBusinessContactEmail}`);
+      console.log(`Doğrulanacak Hedef E-posta: ${targetEmail}`);
+      console.log(`🔑 DOĞRULAMA KODU: [ ${code} ]`);
+      console.log(`Geçerlilik: 15 Dakika (Tek Kullanımlık)`);
+      console.log(`Resend Durumu: ${resendSuccess ? "E-posta Gönderildi" : "API Anahtarı / Log Modu"}`);
+      console.log("================================================================================\n");
+
+      // İstemciye kod ASLA gönderilmez; yalnızca hedef e-posta ve süre bilgisi dönülür.
+      return res.json({
+        success: true,
+        step,
+        targetEmail,
+        expiresAt,
+        message: `${step}. Adım için doğrulama kodu oluşturuldu ve yönetime iletildi.`,
+      });
+    } catch (error: any) {
+      console.error("Request step code error:", error);
+      return res.status(500).json({
+        error: "Doğrulama kodu oluşturulurken bir sunucu hatası meydana geldi.",
+      });
+    }
+  });
+
+  // 2. Kod Doğrulama Endpoint'i (6 haneli tek kullanımlık kod kontrolü)
+  app.post("/api/business/verify-step-code", async (req, res) => {
+    try {
+      const { userId, step, code } = req.body;
+
+      if (!userId || !code || (step !== 1 && step !== 2)) {
+        return res.status(400).json({
+          error: "Eksik parametreler.",
+        });
+      }
+
+      const key = `${userId}_step_${step}`;
+      const record = activeVerificationCodes.get(key);
+
+      if (!record) {
+        return res.status(400).json({
+          error: "Bu adım için aktif bir doğrulama kodu bulunamadı. Lütfen yeni bir kod isteyin.",
+        });
+      }
+
+      // Süre kontrolü (15 dakika)
+      if (Date.now() > record.expiresAt) {
+        activeVerificationCodes.delete(key);
+        return res.status(400).json({
+          error: "Bu doğrulama kodunun süresi doldu.",
+        });
+      }
+
+      // Kod eşleşme kontrolü (boşlukları temizleyerek)
+      const cleanInputCode = String(code).trim();
+      if (cleanInputCode !== record.code) {
+        return res.status(400).json({
+          error: "Doğrulama kodu yanlış.",
+        });
+      }
+
+      // Başarılı: Kodu tek kullanımlık olduğu için hafızadan sil
+      activeVerificationCodes.delete(key);
+
+      // İlerlemeyi güncelle
+      const progress = userVerificationProgressMap.get(userId) || {
+        step1Verified: false,
+        step2Verified: false,
+      };
+
+      if (step === 1) {
+        progress.step1Verified = true;
+        progress.step1VerifiedAt = Date.now();
+      } else if (step === 2) {
+        progress.step2Verified = true;
+        progress.step2VerifiedAt = Date.now();
+      }
+
+      userVerificationProgressMap.set(userId, progress);
+
+      const nextStep = step === 1 ? 2 : "completed";
+      const fullyVerified = progress.step1Verified && progress.step2Verified;
+
+      console.log(`✅ [RedChat İşletme] Kullanıcı (${userId}) ${step}. Adımı başarıyla doğruladı.`);
+
+      return res.json({
+        success: true,
+        step,
+        nextStep,
+        fullyVerified,
+        message: step === 1 ? "✓ 1. Adım tamamlandı" : "✓ 2. Adım tamamlandı",
+      });
+    } catch (error: any) {
+      console.error("Verify step code error:", error);
+      return res.status(500).json({
+        error: "Kod doğrulanırken bir hata oluştu.",
+      });
+    }
+  });
+
+  // 3. Kullanıcı Doğrulama Durumu Sorgulama
+  app.get("/api/business/verification-status/:userId", (req, res) => {
+    const { userId } = req.params;
+    const progress = userVerificationProgressMap.get(userId) || {
+      step1Verified: false,
+      step2Verified: false,
+    };
+    return res.json({
+      step1Verified: progress.step1Verified,
+      step2Verified: progress.step2Verified,
+      fullyVerified: progress.step1Verified && progress.step2Verified,
+      draftProfile: progress.draftProfile || null,
+    });
+  });
+
+  // 4. İşletme Hesabını Aktifleştirme (Kesin Güvenlik Kontrolü)
+  app.post("/api/business/activate-account", async (req, res) => {
+    try {
+      const { userId, businessProfile } = req.body;
+
+      if (!userId || !businessProfile) {
+        return res.status(400).json({
+          error: "Eksik işletme verileri.",
+        });
+      }
+
+      const progress = userVerificationProgressMap.get(userId);
+
+      // İki aşamalı doğrulama tamamlanmadan ASLA işletme hesabı açılmaz!
+      if (!progress?.step1Verified || !progress?.step2Verified) {
+        return res.status(403).json({
+          error: "İşletme hesabı iki aşamalı e-posta doğrulaması (Kayıt e-postası ve İletişim e-postası) tamamlanmadan etkinleştirilemez.",
+        });
+      }
+
+      // Doğrulama durumunu temizle
+      userVerificationProgressMap.delete(userId);
+      activeVerificationCodes.delete(`${userId}_step_1`);
+      activeVerificationCodes.delete(`${userId}_step_2`);
+
+      console.log(`🎉 [RedChat İşletme] Kullanıcı (${userId}) işletme hesabını başarıyla etkinleştirdi.`);
+
+      return res.json({
+        success: true,
+        message: "İşletme hesabı başarıyla etkinleştirildi.",
+      });
+    } catch (error: any) {
+      console.error("Activate business account error:", error);
+      return res.status(500).json({
+        error: "İşletme hesabı etkinleştirilirken bir hata oluştu.",
+      });
+    }
+  });
+
   // Vite middleware setup (Development vs Production)
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

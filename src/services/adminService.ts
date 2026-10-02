@@ -18,6 +18,7 @@ import {
 import { auth, db } from './firebase';
 import type { AppSettings, UserProfile, Conversation, ChatMessage, BannedDevice } from '../types';
 import { getDeterministicConversationId } from './chatService';
+import { REDCHAT_AI_UID } from './aiService';
 
 export const ADMIN_EMAILS = [
   'robloxenes930@gmail.com',
@@ -489,19 +490,51 @@ export async function fetchRealAdminStats(): Promise<AdminStats> {
     console.warn('Conversations count fetch warning:', e);
   }
 
-  // 4. Kapatılan AI Sohbetleri Sayısı (securityStatus: 'terminated')
+  // 4. Kapatılan AI Sohbetleri Sayısı (securityStatus: 'terminated' ve aiAccess: 'blocked')
   try {
+    const termUsersSet = new Set<string>();
+
+    // 4.a. Güvenlik İhlali ile kapatılmış konuşmalar
     const convCol = collection(db, 'conversations');
-    const termQuery = query(convCol, where('securityStatus', '==', 'terminated'));
+    const termConvQuery = query(convCol, where('securityStatus', '==', 'terminated'));
     try {
-      const termSnap = await getCountFromServer(termQuery);
-      terminatedAiCount = termSnap.data().count;
-    } catch {
-      const termDocs = await getDocs(termQuery);
-      terminatedAiCount = termDocs.size;
+      const termConvDocs = await getDocs(termConvQuery);
+      termConvDocs.forEach((doc) => {
+        const data = doc.data();
+        if (Array.isArray(data.participantIds)) {
+          data.participantIds.forEach((pid: string) => {
+            if (pid && pid !== REDCHAT_AI_UID) termUsersSet.add(pid);
+          });
+        } else {
+          termUsersSet.add(doc.id);
+        }
+      });
+    } catch (e) {
+      console.warn('Terminated AI conversations count fetch warning:', e);
     }
+
+    // 4.b. securityStatus === 'terminated' olan kullanıcılar
+    const usersCol = collection(db, 'users');
+    const termUserQuery = query(usersCol, where('securityStatus', '==', 'terminated'));
+    try {
+      const userTermDocs = await getDocs(termUserQuery);
+      userTermDocs.forEach((doc) => termUsersSet.add(doc.id));
+    } catch (e) {
+      console.warn('Terminated users query warning:', e);
+    }
+
+    // 4.c. aiAccess === 'blocked' olan kullanıcılar
+    const blockedUserQuery = query(usersCol, where('aiAccess', '==', 'blocked'));
+    try {
+      const userBlockedDocs = await getDocs(blockedUserQuery);
+      userBlockedDocs.forEach((doc) => termUsersSet.add(doc.id));
+    } catch (e) {
+      console.warn('Blocked users query warning:', e);
+    }
+
+    terminatedAiCount = termUsersSet.size;
   } catch (e) {
-    console.warn('Terminated AI conversations count fetch warning:', e);
+    console.warn('Terminated AI count fetch warning:', e);
   }
 
   // 5. Mesajlar Sayısı

@@ -1,5 +1,61 @@
 export type GroupRole = 'owner' | 'admin' | 'member';
 
+export type AccountType = 'personal' | 'business';
+
+export type BusinessCategory =
+  | 'Mağaza'
+  | 'Teknoloji'
+  | 'Yazılım'
+  | 'Oyun'
+  | 'Eğitim'
+  | 'Yiyecek & İçecek'
+  | 'Hizmet'
+  | 'Sağlık'
+  | 'Giyim'
+  | 'Medya'
+  | 'İçerik Üreticisi'
+  | 'Diğer';
+
+export const BUSINESS_CATEGORIES: BusinessCategory[] = [
+  'Mağaza',
+  'Teknoloji',
+  'Yazılım',
+  'Oyun',
+  'Eğitim',
+  'Yiyecek & İçecek',
+  'Hizmet',
+  'Sağlık',
+  'Giyim',
+  'Medya',
+  'İçerik Üreticisi',
+  'Diğer',
+];
+
+export interface BusinessProfile {
+  businessName?: string;
+  category?: BusinessCategory | string;
+  description?: string;
+  website?: string;
+  email?: string;
+  phone?: string;
+  location?: string;
+  hours?: string;
+  photoURL?: string | null;
+  updatedAt?: any;
+}
+
+export interface BusinessVerificationState {
+  currentStep?: 1 | 2 | 3; // 1: Kayıt e-postası, 2: İşletme iletişim e-postası, 3: Doğrulandı / Etkinleştirmeye hazır
+  step1Email?: string;
+  step1Verified?: boolean;
+  step1VerifiedAt?: any;
+  step2Email?: string;
+  step2Verified?: boolean;
+  step2VerifiedAt?: any;
+  draftProfile?: BusinessProfile;
+  updatedAt?: any;
+}
+
 export interface UserProfile {
   uid: string;
   username: string;
@@ -21,6 +77,10 @@ export interface UserProfile {
   muteReason?: string;
   mutedAt?: any;
   isSystemAI?: boolean;
+  // 🏢 İşletme Hesabı Alanları
+  accountType?: AccountType;
+  businessProfile?: BusinessProfile;
+  businessVerification?: BusinessVerificationState;
   // 🤖 DeepRed AI Erişim Durumu (Yalnızca AI sohbetini kısıtlar, hesap banı değildir)
   aiAccess?: 'allowed' | 'blocked';
   aiAccessUpdatedAt?: any;
