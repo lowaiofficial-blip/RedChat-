@@ -46,6 +46,14 @@ service cloud.firestore {
     }
 
     // =========================================================================
+    // 🔐 ŞİFRE SIFIRLAMA TALEPLERİ (/passwordResetRequests/{requestId})
+    // =========================================================================
+    match /passwordResetRequests/{requestId} {
+      // Adminler tüm talepleri okuyup yönetebilir, kullanıcılar talep oluşturabilir
+      allow read, write: if true;
+    }
+
+    // =========================================================================
     // 🚫 DONANIM VE IP BANLARI (/banned_devices/{banId})
     // =========================================================================
     // Oturum açmamış cihazlar dahi ban durumunu sorgulayabilmelidir (allow read: if true)

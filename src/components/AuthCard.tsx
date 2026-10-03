@@ -6,6 +6,7 @@ import {
   isUsernameTaken,
 } from '../services/authService';
 import { checkDeviceBanNow } from '../services/deviceService';
+import { ForgotPasswordModal } from './ForgotPasswordModal';
 import {
   User,
   AtSign,
@@ -16,6 +17,7 @@ import {
   CheckCircle2,
   Flame,
   ArrowRight,
+  KeyRound,
 } from 'lucide-react';
 
 interface AuthCardProps {
@@ -26,6 +28,7 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess }) => {
   const [isLogin, setIsLogin] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showForgotPasswordModal, setShowForgotPasswordModal] = useState(false);
 
   // Form Fields
   const [displayName, setDisplayName] = useState('');
@@ -218,9 +221,23 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess }) => {
         </div>
 
         <div>
-          <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300 mb-1.5">
-            Şifre
-          </label>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+              Şifre
+            </label>
+            {isLogin && (
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setShowForgotPasswordModal(true);
+                }}
+                className="text-[11px] font-semibold text-red-600 hover:text-red-700 dark:text-red-400 hover:underline cursor-pointer"
+              >
+                Şifremi Unuttum
+              </button>
+            )}
+          </div>
           <div className="relative">
             <Lock className="w-4 h-4 text-zinc-400 absolute left-3.5 top-3" />
             <input
@@ -254,6 +271,12 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess }) => {
           )}
         </button>
       </form>
+
+      {/* Forgot Password Modal */}
+      <ForgotPasswordModal
+        isOpen={showForgotPasswordModal}
+        onClose={() => setShowForgotPasswordModal(false)}
+      />
 
       {/* Switch Form Action */}
       <div className="mt-6 pt-5 border-t border-zinc-100 dark:border-zinc-800 text-center">

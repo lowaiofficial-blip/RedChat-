@@ -1054,6 +1054,331 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
     }
   });
 
+  // =========================================================================
+  // 🔐 REDCHAT MANUEL ŞİFRE SIFIRLAMA SİSTEMİ (GERÇEK FIREBASE LINKİ + RESEND)
+  // =========================================================================
+
+  interface PasswordResetRateLimit {
+    lastRequestTime: number;
+    countInWindow: number;
+  }
+  const passwordResetRateLimits = new Map<string, PasswordResetRateLimit>();
+
+  const FIREBASE_WEB_API_KEY =
+    process.env.FIREBASE_API_KEY ||
+    process.env.VITE_FIREBASE_API_KEY ||
+    "AIzaSyBYhgYrEdHagHmyj2R7QgywccHyYEBdX8I";
+
+  app.post("/api/auth/request-password-reset", async (req, res) => {
+    try {
+      const { email } = req.body;
+      const forwarded = req.headers["x-forwarded-for"];
+      let clientIp = "";
+      if (typeof forwarded === "string") {
+        clientIp = forwarded.split(",")[0].trim();
+      } else if (Array.isArray(forwarded) && forwarded.length > 0) {
+        clientIp = forwarded[0].trim();
+      } else {
+        clientIp = req.socket.remoteAddress || req.ip || "127.0.0.1";
+      }
+
+      if (!email || typeof email !== "string" || !email.includes("@") || !email.includes(".")) {
+        return res.status(400).json({
+          error: "Lütfen geçerli bir e-posta adresi girin.",
+        });
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+      const rateLimitKey = `${clientIp}_${cleanEmail}`;
+      const now = Date.now();
+      const existingLimit = passwordResetRateLimits.get(rateLimitKey);
+
+      // Rate Limit: Aynı e-posta/IP için en az 60 saniye aralık, saatte en fazla 5 talep
+      if (existingLimit) {
+        if (now - existingLimit.lastRequestTime < 60 * 1000) {
+          const waitSeconds = Math.ceil((60 * 1000 - (now - existingLimit.lastRequestTime)) / 1000);
+          return res.status(429).json({
+            error: `Çok fazla talep gönderdiniz. Lütfen ${waitSeconds} saniye bekleyin.`,
+          });
+        }
+        if (now - existingLimit.lastRequestTime < 60 * 60 * 1000 && existingLimit.countInWindow >= 5) {
+          return res.status(429).json({
+            error: "Bu e-posta adresi için saatlik şifre sıfırlama limitine ulaşıldı. Lütfen daha sonra tekrar deneyin.",
+          });
+        }
+        passwordResetRateLimits.set(rateLimitKey, {
+          lastRequestTime: now,
+          countInWindow:
+            now - existingLimit.lastRequestTime < 60 * 60 * 1000
+              ? existingLimit.countInWindow + 1
+              : 1,
+        });
+      } else {
+        passwordResetRateLimits.set(rateLimitKey, {
+          lastRequestTime: now,
+          countInWindow: 1,
+        });
+      }
+
+      // 1. Firebase Identity Toolkit REST API ile gerçek, süreli, tek kullanımlık oobCode üret
+      let oobCode = "";
+      let oobLink = "";
+
+      try {
+        const idToolRes = await fetch(
+          `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${FIREBASE_WEB_API_KEY}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestType: "PASSWORD_RESET",
+              email: cleanEmail,
+              returnOobLink: true,
+            }),
+          }
+        );
+
+        if (idToolRes.ok) {
+          const idToolData = await idToolRes.json();
+          oobCode = idToolData.oobCode || "";
+          oobLink = idToolData.oobLink || "";
+        } else {
+          const errBody = await idToolRes.text();
+          console.warn("⚠️ [Password Reset] Identity Toolkit response:", errBody);
+        }
+      } catch (idErr) {
+        console.error("❌ [Password Reset] Identity Toolkit call error:", idErr);
+      }
+
+      // 2. Kullanıcının RedChat profil detaylarını Firestore üzerinden bul
+      let username = cleanEmail.split("@")[0];
+      let displayName = username;
+      let accountType: "personal" | "business" = "personal";
+      let userId = "";
+
+      try {
+        const adminDb = getApps().length > 0 ? getFirestore() : null;
+        if (adminDb) {
+          const usersSnap = await adminDb
+            .collection("users")
+            .where("email", "==", cleanEmail)
+            .limit(1)
+            .get();
+
+          if (!usersSnap.empty) {
+            const userDoc = usersSnap.docs[0];
+            const data = userDoc.data();
+            userId = userDoc.id;
+            username = data.username || username;
+            displayName = data.displayName || username;
+            accountType = data.accountType === "business" ? "business" : "personal";
+          }
+        }
+      } catch (dbErr) {
+        console.warn("Could not query user doc from Firestore:", dbErr);
+      }
+
+      // 3. Özel RedChat şifre sıfırlama bağlantısını oluştur
+      const appBaseUrl =
+        process.env.APP_URL ||
+        req.headers.origin ||
+        "https://ais-pre-pyf56vdscd2v7kyeqky2er-525538923843.europe-west3.run.app";
+
+      const customResetLink = oobCode
+        ? `${appBaseUrl}/?mode=resetPassword&oobCode=${encodeURIComponent(
+            oobCode
+          )}&email=${encodeURIComponent(cleanEmail)}`
+        : oobLink || `${appBaseUrl}/?mode=resetPassword&email=${encodeURIComponent(cleanEmail)}`;
+
+      const requestId = `reset_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      const requestTimestamp = new Date();
+
+      // 4. Firestore 'passwordResetRequests' koleksiyonuna kaydet (Admin paneli için)
+      try {
+        const adminDb = getApps().length > 0 ? getFirestore() : null;
+        if (adminDb) {
+          await adminDb.collection("passwordResetRequests").doc(requestId).set({
+            id: requestId,
+            userId: userId || null,
+            username,
+            displayName,
+            email: cleanEmail,
+            accountType,
+            status: "pending", // 🟡 Bekliyor
+            createdAt: requestTimestamp,
+            resetLink: customResetLink,
+            ip: clientIp,
+          });
+        }
+      } catch (saveErr) {
+        console.warn("Could not save password reset request to Firestore:", saveErr);
+      }
+
+      // 5. Resend HTTPS ile redchatbusiness@outlook.com adresine profesyonel yönetim bildirimi gönder
+      const subject = "RedChat — Şifre Sıfırlama Talebi";
+      const formattedDate = requestTimestamp.toLocaleString("tr-TR", {
+        timeZone: "Europe/Istanbul",
+        dateStyle: "full",
+        timeStyle: "medium",
+      });
+
+      const emailHtml = `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e4e4e7; border-radius: 18px; background-color: #ffffff; color: #18181b;">
+          <div style="border-bottom: 2px solid #fee2e2; padding-bottom: 12px; margin-bottom: 16px;">
+            <h2 style="color: #dc2626; margin: 0; font-size: 20px; font-weight: 800; letter-spacing: -0.02em;">
+              🔐 REDCHAT ŞİFRE SIFIRLAMA TALEBİ
+            </h2>
+            <p style="font-size: 13px; color: #71717a; margin: 4px 0 0 0;">
+              Yeni bir şifre sıfırlama talebi oluşturuldu.
+            </p>
+          </div>
+
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 20px;">
+            <tbody>
+              <tr style="border-bottom: 1px solid #f4f4f5;">
+                <td style="padding: 8px 0; color: #71717a; font-weight: 600; width: 35%;">Kullanıcı Adı:</td>
+                <td style="padding: 8px 0; font-weight: 700; color: #18181b;">@${username}</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #f4f4f5;">
+                <td style="padding: 8px 0; color: #71717a; font-weight: 600;">Görünen Ad:</td>
+                <td style="padding: 8px 0; font-weight: 700; color: #18181b;">${displayName}</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #f4f4f5;">
+                <td style="padding: 8px 0; color: #71717a; font-weight: 600;">${
+                  accountType === "business" ? "İşletme E-postası:" : "Kayıtlı E-posta:"
+                }</td>
+                <td style="padding: 8px 0; font-family: monospace; font-weight: 700; color: #dc2626;">${cleanEmail}</td>
+              </tr>
+              <tr style="border-bottom: 1px solid #f4f4f5;">
+                <td style="padding: 8px 0; color: #71717a; font-weight: 600;">Hesap Türü:</td>
+                <td style="padding: 8px 0; font-weight: 700; color: ${
+                  accountType === "business" ? "#2563eb" : "#4b5563"
+                };">
+                  ${accountType === "business" ? "🏢 İşletme Hesabı" : "👤 Kişisel Hesap"}
+                </td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 0; color: #71717a; font-weight: 600;">Talep Zamanı:</td>
+                <td style="padding: 8px 0; font-weight: 600; color: #71717a;">${formattedDate}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div style="background-color: #fef2f2; border: 1px solid #fecaca; padding: 18px; border-radius: 14px; margin: 20px 0;">
+            <div style="font-size: 11px; color: #991b1b; text-transform: uppercase; font-weight: 800; letter-spacing: 0.08em; margin-bottom: 8px;">
+              GERÇEK ŞİFRE SIFIRLAMA BAĞLANTISI:
+            </div>
+            <div style="word-break: break-all; margin-bottom: 14px;">
+              <a href="${customResetLink}" target="_blank" rel="noopener noreferrer" style="color: #dc2626; font-weight: 700; font-size: 13px; text-decoration: underline;">
+                ${customResetLink}
+              </a>
+            </div>
+            <a href="${customResetLink}" target="_blank" rel="noopener noreferrer" style="display: inline-block; background-color: #dc2626; color: #ffffff; text-decoration: none; padding: 10px 18px; border-radius: 10px; font-size: 12px; font-weight: 700; shadow: 0 1px 2px rgba(0,0,0,0.1);">
+              Şifre Sıfırlama Bağlantısını Aç
+            </a>
+          </div>
+
+          <div style="background-color: #fafafa; border: 1px dashed #d4d4d8; padding: 14px 16px; border-radius: 12px; font-size: 12px; color: #52525b; line-height: 1.5; margin-top: 16px;">
+            <p style="margin: 0 0 6px 0;">
+              ℹ️ <strong>Bu bağlantıyı hesap sahibinin kimliği doğrulandıktan sonra manuel olarak kendisine iletebilirsiniz.</strong>
+            </p>
+            <p style="margin: 0; color: #ef4444; font-weight: 600;">
+              ⚠️ Güvenlik nedeniyle bu bağlantıyı yetkisiz kişilerle paylaşmayın.
+            </p>
+          </div>
+
+          <div style="margin-top: 20px; font-size: 12px; color: #a1a1aa; text-align: center; border-top: 1px solid #f4f4f5; padding-top: 12px;">
+            RedChat Yönetimi
+          </div>
+        </div>
+      `;
+
+      const emailText = `🔐 REDCHAT ŞİFRE SIFIRLAMA TALEBİ\n\nYeni bir şifre sıfırlama talebi oluşturuldu.\n\nKullanıcı Adı:\n@${username}\n\n${
+        accountType === "business" ? "İşletme E-postası:" : "Kayıtlı E-posta:"
+      }\n${cleanEmail}\n\nHesap Türü:\n${
+        accountType === "business" ? "İşletme Hesabı" : "Kişisel Hesap"
+      }\n\nTalep Zamanı:\n${formattedDate}\n\n━━━━━━━━━━━━━━━━━━\nGERÇEK ŞİFRE SIFIRLAMA BAĞLANTISI:\n${customResetLink}\n━━━━━━━━━━━━━━━━━━\n\nBu bağlantıyı hesap sahibinin kimliği doğrulandıktan sonra manuel olarak kendisine iletebilirsiniz.\nGüvenlik nedeniyle bu bağlantıyı yetkisiz kişilerle paylaşmayın.\n\nRedChat Yönetimi`;
+
+      let resendSent = false;
+      const resendKey = process.env.RESEND_API_KEY;
+      if (resendKey) {
+        try {
+          const resendResponse = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${resendKey.trim()}`,
+            },
+            body: JSON.stringify({
+              from: process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev",
+              to: ["redchatbusiness@outlook.com"],
+              subject,
+              html: emailHtml,
+              text: emailText,
+            }),
+          });
+
+          if (resendResponse.ok) {
+            resendSent = true;
+            console.log(
+              "✅ [Resend HTTPS] Şifre sıfırlama talebi redchatbusiness@outlook.com adresine başarıyla gönderildi."
+            );
+          } else {
+            const errLog = await resendResponse.text();
+            console.warn("⚠️ [Resend HTTPS] Reset mail error:", errLog);
+          }
+        } catch (resendErr) {
+          console.error("❌ [Resend HTTPS] Reset mail exception:", resendErr);
+        }
+      }
+
+      console.log("\n================================================================================");
+      console.log("🔐 [REDCHAT ŞİFRE SIFIRLAMA TALEBİ]");
+      console.log(`Yönetim E-postası: redchatbusiness@outlook.com`);
+      console.log(`Kullanıcı: @${username} (${displayName}) [E-posta: ${cleanEmail}]`);
+      console.log(`Hesap Türü: ${accountType}`);
+      console.log(`🔗 GERÇEK SIFIRLAMA BAĞLANTISI: ${customResetLink}`);
+      console.log(`Resend Gönderim: ${resendSent ? "Başarılı" : "Log Modu"}`);
+      console.log("================================================================================\n");
+
+      // Kullanıcıya şifre veya link dönülmez; standart güvenli bilgilendirme mesajı verilir.
+      return res.json({
+        success: true,
+        message:
+          "Şifre sıfırlama talebiniz RedChat Yönetimi'ne iletildi. Hesabınız doğrulandıktan sonra sıfırlama bağlantısı tarafınıza gönderilecektir.",
+      });
+    } catch (error: any) {
+      console.error("Password reset request error:", error);
+      return res.status(500).json({
+        error: "Şifre sıfırlama talebi oluşturulurken bir hata oluştu.",
+      });
+    }
+  });
+
+  // Admin: Şifre Sıfırlama Talebi Durumunu Güncelleme
+  app.post("/api/auth/update-reset-request-status", async (req, res) => {
+    try {
+      const { requestId, status, adminEmail } = req.body;
+      if (!requestId || !["pending", "completed", "rejected"].includes(status)) {
+        return res.status(400).json({ error: "Geçersiz parametreler." });
+      }
+
+      const adminDb = getApps().length > 0 ? getFirestore() : null;
+      if (adminDb) {
+        await adminDb.collection("passwordResetRequests").doc(requestId).update({
+          status,
+          processedAt: new Date(),
+          processedBy: adminEmail || "Admin",
+        });
+      }
+
+      return res.json({ success: true, message: "Talep durumu güncellendi." });
+    } catch (error: any) {
+      console.error("Update reset request error:", error);
+      return res.status(500).json({ error: "Talep güncellenemedi." });
+    }
+  });
+
   // Vite middleware setup (Development vs Production)
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

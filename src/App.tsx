@@ -32,6 +32,7 @@ import { doc, updateDoc } from 'firebase/firestore';
 import { preloadBadgeImage } from './components/VerifiedBadge';
 import { getRedChatAIProfile } from './services/aiService';
 import { AuthCard } from './components/AuthCard';
+import { ResetPasswordScreen } from './components/ResetPasswordScreen';
 import { ChatSidebar } from './components/ChatSidebar';
 import { ChatWindow } from './components/ChatWindow';
 import { ProfileModal } from './components/ProfileModal';
@@ -672,6 +673,28 @@ export default function App() {
           </div>
         </div>
       </div>
+    );
+  }
+
+  // 🔐 Şifre Sıfırlama Sayfası Kontrolü (URL'de mode=resetPassword veya oobCode varsa)
+  const urlParams = new URLSearchParams(window.location.search);
+  const hashQuery = window.location.hash.includes('?') ? window.location.hash.split('?')[1] : '';
+  const hashParams = new URLSearchParams(hashQuery);
+
+  const resetMode = urlParams.get('mode') || hashParams.get('mode');
+  const resetOobCode = urlParams.get('oobCode') || hashParams.get('oobCode');
+  const resetEmail = urlParams.get('email') || hashParams.get('email');
+
+  if (resetOobCode || resetMode === 'resetPassword') {
+    return (
+      <ResetPasswordScreen
+        oobCode={resetOobCode || ''}
+        emailParam={resetEmail}
+        onNavigateToLogin={() => {
+          window.history.replaceState({}, document.title, window.location.pathname);
+          window.location.reload();
+        }}
+      />
     );
   }
 

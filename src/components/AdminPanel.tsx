@@ -1,6 +1,7 @@
 import { AdminVerificationTab } from './AdminVerificationTab';
 import { AdminIpBanTab } from './AdminIpBanTab';
 import { AdminAiUsersTab } from './AdminAiUsersTab';
+import { AdminPasswordResetTab } from './AdminPasswordResetTab';
 import { BanHardwareModal } from './BanHardwareModal';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { UserProfile, AppSettings, Conversation, ChatMessage, Channel, ChannelPost } from '../types';
@@ -101,7 +102,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     return map;
   }, [localUsers]);
 
-  const [activeTab, setActiveTab] = useState<'users' | 'ai_users' | 'ipbans' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'ai_users' | 'ipbans' | 'password_resets' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
   const [hardwareBanModalOpen, setHardwareBanModalOpen] = useState(false);
   const [hardwareBanTargetUser, setHardwareBanTargetUser] = useState<UserProfile | null>(null);
   const [searchQuery, setSearchQuery] = useState('');

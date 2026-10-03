@@ -284,6 +284,21 @@ export interface ChannelNotification {
 }
 
 
+export interface PasswordResetRequest {
+  id: string;
+  userId?: string;
+  username?: string;
+  displayName?: string;
+  email: string;
+  accountType?: 'personal' | 'business';
+  status: 'pending' | 'completed' | 'rejected';
+  createdAt: any;
+  processedAt?: any;
+  processedBy?: string;
+  resetLink?: string;
+  ip?: string;
+}
+
 export interface VerificationRequest {
   id: string;
   type: 'user' | 'channel';
