@@ -6,6 +6,7 @@ import dotenv from "dotenv";
 import { initializeApp, cert, applicationDefault, getApps, type AppOptions } from 'firebase-admin/app';
 import { getMessaging, type MulticastMessage } from 'firebase-admin/messaging';
 import { getFirestore } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
 
 dotenv.config();
 
@@ -1120,34 +1121,33 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
         });
       }
 
-      // 1. Firebase Identity Toolkit REST API ile gerçek, süreli, tek kullanımlık oobCode üret
+      // 1. Firebase Admin SDK ile gerçek, süreli, tek kullanımlık oobCode ve link üret
       let oobCode = "";
-      let oobLink = "";
+      let rawFirebaseLink = "";
 
       try {
-        const idToolRes = await fetch(
-          `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${FIREBASE_WEB_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              requestType: "PASSWORD_RESET",
-              email: cleanEmail,
-              returnOobLink: true,
-            }),
+        if (getApps().length > 0) {
+          const adminAuth = getAuth();
+          rawFirebaseLink = await adminAuth.generatePasswordResetLink(cleanEmail);
+          if (rawFirebaseLink) {
+            const parsedUrl = new URL(rawFirebaseLink);
+            oobCode = parsedUrl.searchParams.get("oobCode") || "";
           }
-        );
-
-        if (idToolRes.ok) {
-          const idToolData = await idToolRes.json();
-          oobCode = idToolData.oobCode || "";
-          oobLink = idToolData.oobLink || "";
-        } else {
-          const errBody = await idToolRes.text();
-          console.warn("⚠️ [Password Reset] Identity Toolkit response:", errBody);
         }
-      } catch (idErr) {
-        console.error("❌ [Password Reset] Identity Toolkit call error:", idErr);
+      } catch (authErr: any) {
+        console.error("❌ [Password Reset] Firebase Admin generatePasswordResetLink error:", authErr);
+        if (authErr?.code === "auth/user-not-found") {
+          return res.status(404).json({
+            error: "Bu e-posta adresine ait bir RedChat hesabı bulunamadı. Lütfen kayıtlı e-posta adresinizi kontrol edin.",
+          });
+        }
+      }
+
+      if (!oobCode) {
+        console.error("❌ [Password Reset] oobCode could not be generated for:", cleanEmail);
+        return res.status(500).json({
+          error: "Şifre sıfırlama bağlantısı oluşturulamadı. Lütfen daha sonra tekrar deneyin veya sistem yöneticisiyle iletişime geçin.",
+        });
       }
 
       // 2. Kullanıcının RedChat profil detaylarını Firestore üzerinden bul
@@ -1178,17 +1178,17 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
         console.warn("Could not query user doc from Firestore:", dbErr);
       }
 
-      // 3. Özel RedChat şifre sıfırlama bağlantısını oluştur
-      const appBaseUrl =
-        process.env.APP_URL ||
-        req.headers.origin ||
-        "https://ais-pre-pyf56vdscd2v7kyeqky2er-525538923843.europe-west3.run.app";
+      // 3. Özel RedChat şifre sıfırlama bağlantısını oluştur (Render prod ve aktif origin)
+      const productionBaseUrl = "https://redchat-r9g4.onrender.com";
+      const customResetLink = `${productionBaseUrl}/?mode=resetPassword&oobCode=${encodeURIComponent(oobCode)}`;
 
-      const customResetLink = oobCode
-        ? `${appBaseUrl}/?mode=resetPassword&oobCode=${encodeURIComponent(
-            oobCode
-          )}&email=${encodeURIComponent(cleanEmail)}`
-        : oobLink || `${appBaseUrl}/?mode=resetPassword&email=${encodeURIComponent(cleanEmail)}`;
+      const currentOrigin =
+        (typeof req.headers.origin === "string" && req.headers.origin.startsWith("http"))
+          ? req.headers.origin
+          : (process.env.APP_URL || "");
+      const previewResetLink = currentOrigin && !currentOrigin.includes("redchat-r9g4.onrender.com")
+        ? `${currentOrigin}/?mode=resetPassword&oobCode=${encodeURIComponent(oobCode)}`
+        : "";
 
       const requestId = `reset_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
       const requestTimestamp = new Date();
