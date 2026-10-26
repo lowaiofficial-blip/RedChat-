@@ -245,6 +245,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     return isBlockedByMe || isBlockedByOther;
   }, [isBlockedByMe, isBlockedByOther]);
 
+  // 🔒 Hedef Kullanıcının DM Privacy Ayarı
+  const isTargetDmClosed = useMemo(() => {
+    if (conversation?.isGroup || isDirectAIChat) return false;
+    return Boolean(otherUserObj?.allowDirectMessages === 'none');
+  }, [conversation?.isGroup, isDirectAIChat, otherUserObj?.allowDirectMessages]);
+
   const isOtherBusiness = useMemo(() => {
     if (conversation?.isGroup || isDirectAIChat) return false;
     return Boolean(otherUserObj?.accountType === 'business');
@@ -676,6 +682,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
     if (isBlockedByOther) {
       setImageUploadError('Bu kullanıcıyla mesajlaşamazsınız.');
+      return;
+    }
+
+    if (isTargetDmClosed) {
+      setImageUploadError("🔒 Bu kullanıcının DM'leri kapalı.");
       return;
     }
 
@@ -1915,6 +1926,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           >
             <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
             <span>Bu sohbet oturumu güvenlik ihlali (hakaret/küfür) nedeniyle sonlandırılmıştır.</span>
+          </div>
+        ) : isTargetDmClosed ? (
+          <div className="flex items-center justify-center gap-2.5 p-3.5 bg-zinc-100 dark:bg-zinc-800/90 border border-zinc-200 dark:border-zinc-700/80 rounded-2xl text-zinc-700 dark:text-zinc-200 text-xs font-semibold text-center select-none shadow-xs">
+            <Lock className="w-4 h-4 shrink-0 text-red-500" />
+            <span>🔒 Bu kullanıcının DM'leri kapalı.</span>
           </div>
         ) : editingMessage ? (
           <form onSubmit={handleSaveEdit} className="flex items-center gap-2">

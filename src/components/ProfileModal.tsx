@@ -4,7 +4,7 @@ import { BusinessToolsTab } from './BusinessToolsTab';
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import type { UserProfile } from '../types';
-import { updateUserProfileDetails, logoutUser } from '../services/authService';
+import { updateUserProfileDetails, logoutUser, updateUserPrivacySettings } from '../services/authService';
 import { formatLastSeen } from '../services/chatService';
 import { uploadProfilePhoto } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
@@ -45,6 +45,8 @@ import {
   ExternalLink,
   Briefcase,
   ChevronRight,
+  Lock,
+  Users,
 } from 'lucide-react';
 
 import { MemoryModal } from './MemoryModal';
@@ -54,7 +56,7 @@ interface ProfileModalProps {
   isCurrentUser: boolean;
   onClose: () => void;
   onStartChat?: (user: UserProfile) => void;
-  initialTab?: 'profile' | 'settings' | 'business_tools';
+  initialTab?: 'profile' | 'settings' | 'privacy' | 'business_tools';
   badgeUrl?: string | null;
   currentUserId?: string;
   blockedUserIds?: string[];
@@ -75,7 +77,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const isBusiness = user?.accountType === 'business';
   const business = user?.businessProfile;
 
-  const [activeTab, setActiveTab] = useState<'profile' | 'settings' | 'business_tools'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'profile' | 'settings' | 'privacy' | 'business_tools'>(initialTab);
   const [showMemory, setShowMemory] = useState(false);
   const [showBusinessSetupModal, setShowBusinessSetupModal] = useState(false);
 
@@ -89,6 +91,53 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [bio, setBio] = useState(isBusiness ? business?.description || user?.bio || '' : user?.bio || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // 🔒 Gizlilik Ayarları State'leri
+  const [dmPrivacy, setDmPrivacy] = useState<'everyone' | 'none'>(user?.allowDirectMessages || 'everyone');
+  const [groupPrivacy, setGroupPrivacy] = useState<'everyone' | 'none'>(user?.allowGroupAdditions || 'everyone');
+  const [savingPrivacy, setSavingPrivacy] = useState(false);
+  const [privacyToast, setPrivacyToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (user) {
+      setDmPrivacy(user.allowDirectMessages || 'everyone');
+      setGroupPrivacy(user.allowGroupAdditions || 'everyone');
+    }
+  }, [user]);
+
+  const handleUpdateDmPrivacy = async (val: 'everyone' | 'none') => {
+    if (!isCurrentUser || !user?.uid || savingPrivacy) return;
+    setSavingPrivacy(true);
+    setError(null);
+    try {
+      await updateUserPrivacySettings(user.uid, { allowDirectMessages: val });
+      setDmPrivacy(val);
+      setPrivacyToast('DM gizlilik ayarınız güncellendi.');
+      setTimeout(() => setPrivacyToast(null), 3000);
+    } catch (err: any) {
+      console.error('Gizlilik ayarı kaydedilemedi:', err);
+      setError('DM gizlilik ayarı kaydedilemedi.');
+    } finally {
+      setSavingPrivacy(false);
+    }
+  };
+
+  const handleUpdateGroupPrivacy = async (val: 'everyone' | 'none') => {
+    if (!isCurrentUser || !user?.uid || savingPrivacy) return;
+    setSavingPrivacy(true);
+    setError(null);
+    try {
+      await updateUserPrivacySettings(user.uid, { allowGroupAdditions: val });
+      setGroupPrivacy(val);
+      setPrivacyToast('Grup ekleme gizlilik ayarınız güncellendi.');
+      setTimeout(() => setPrivacyToast(null), 3000);
+    } catch (err: any) {
+      console.error('Gizlilik ayarı kaydedilemedi:', err);
+      setError('Grup ekleme gizlilik ayarı kaydedilemedi.');
+    } finally {
+      setSavingPrivacy(false);
+    }
+  };
 
   // 🚫 Kullanıcı Engelleme State'leri
   const [showBlockConfirmModal, setShowBlockConfirmModal] = useState(false);
@@ -391,6 +440,29 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 Profil
               </button>
 
+              <button
+                onClick={() => setActiveTab('settings')}
+                className={`pb-1 cursor-pointer transition-colors whitespace-nowrap ${
+                  activeTab === 'settings'
+                    ? 'text-red-600 border-b-2 border-red-600'
+                    : 'text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
+                }`}
+              >
+                Ayarlar
+              </button>
+
+              <button
+                onClick={() => setActiveTab('privacy')}
+                className={`pb-1 cursor-pointer transition-colors whitespace-nowrap flex items-center gap-1 ${
+                  activeTab === 'privacy'
+                    ? 'text-red-600 border-b-2 border-red-600'
+                    : 'text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
+                }`}
+              >
+                <Lock className="w-3.5 h-3.5" />
+                <span>Gizlilik</span>
+              </button>
+
               {isBusiness && (
                 <button
                   onClick={() => setActiveTab('business_tools')}
@@ -404,17 +476,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   <span>İşletme Araçları</span>
                 </button>
               )}
-
-              <button
-                onClick={() => setActiveTab('settings')}
-                className={`pb-1 cursor-pointer transition-colors whitespace-nowrap ${
-                  activeTab === 'settings'
-                    ? 'text-red-600 border-b-2 border-red-600'
-                    : 'text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
-                }`}
-              >
-                Ayarlar
-              </button>
             </div>
           )}
 
@@ -424,7 +485,324 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               currentUser={user}
               onSwitchToPersonal={() => setActiveTab('profile')}
             />
-          ) : activeTab === 'profile' ? (
+          ) : activeTab === 'privacy' && isCurrentUser ? (
+            /* 🔒 SEKME: GİZLİLİK */
+            <div className="space-y-4 py-1">
+              <div>
+                <h4 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mb-2.5 flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5 text-red-600" />
+                  Gizlilik Ayarları
+                </h4>
+
+                <div className="space-y-3">
+                  {/* 💬 Direkt Mesajlarım (DM) */}
+                  <div className="p-3.5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 space-y-2.5 shadow-2xs">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <MessageSquare className="w-4 h-4 text-red-600 shrink-0" />
+                        <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                          Direkt Mesajlarım (DM)
+                        </span>
+                      </div>
+                      {savingPrivacy && (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-red-600 shrink-0" />
+                      )}
+                    </div>
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                      Kimlerin sana özel mesaj gönderebileceğini kontrol et.
+                    </p>
+
+                    <div className="grid grid-cols-1 gap-2 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateDmPrivacy('everyone')}
+                        disabled={savingPrivacy}
+                        className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-between transition-all cursor-pointer ${
+                          dmPrivacy === 'everyone'
+                            ? 'border-emerald-500 bg-emerald-50/60 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 shadow-2xs'
+                            : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800/60'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                          <span>DM'lerim açık</span>
+                        </div>
+                        {dmPrivacy === 'everyone' && <Check className="w-4 h-4 text-emerald-600 shrink-0" />}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateDmPrivacy('none')}
+                        disabled={savingPrivacy}
+                        className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-between transition-all cursor-pointer ${
+                          dmPrivacy === 'none'
+                            ? 'border-rose-500 bg-rose-50/60 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300 shadow-2xs'
+                            : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800/60'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />
+                          <span>DM'lerim kapalı</span>
+                        </div>
+                        {dmPrivacy === 'none' && <Check className="w-4 h-4 text-rose-600 shrink-0" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 👥 Beni kimler gruplara ekleyebilir? */}
+                  <div className="p-3.5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 space-y-2.5 shadow-2xs">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Users className="w-4 h-4 text-red-600 shrink-0" />
+                        <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                          Beni kimler gruplara ekleyebilir?
+                        </span>
+                      </div>
+                      {savingPrivacy && (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-red-600 shrink-0" />
+                      )}
+                    </div>
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                      Seni kimlerin yeni gruplara davet edebileceğini seç.
+                    </p>
+
+                    <div className="grid grid-cols-1 gap-2 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateGroupPrivacy('everyone')}
+                        disabled={savingPrivacy}
+                        className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-between transition-all cursor-pointer ${
+                          groupPrivacy === 'everyone'
+                            ? 'border-emerald-500 bg-emerald-50/60 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 shadow-2xs'
+                            : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800/60'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                          <span>Herkes</span>
+                        </div>
+                        {groupPrivacy === 'everyone' && <Check className="w-4 h-4 text-emerald-600 shrink-0" />}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateGroupPrivacy('none')}
+                        disabled={savingPrivacy}
+                        className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-between transition-all cursor-pointer ${
+                          groupPrivacy === 'none'
+                            ? 'border-rose-500 bg-rose-50/60 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300 shadow-2xs'
+                            : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800/60'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0" />
+                          <span>Hiç kimse</span>
+                        </div>
+                        {groupPrivacy === 'none' && <Check className="w-4 h-4 text-rose-600 shrink-0" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : activeTab === 'settings' ? (
+            /* ⚙️ SEKME: AYARLAR */
+            <div className="space-y-4 py-1">
+              {/* 🏢 İŞLETME HESABI BÖLÜMÜ (AYARLAR -> HESAP) */}
+              {isCurrentUser && (
+                <div>
+                  <h4 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mb-2 flex items-center gap-1.5">
+                    <Building2 className="w-3.5 h-3.5 text-red-600" />
+                    Hesap Türü & İşletme
+                  </h4>
+
+                  {isBusiness ? (
+                    <div className="p-3.5 rounded-2xl border border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-950/30 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Store className="w-4 h-4 text-red-600 dark:text-red-400" />
+                          <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                            {business?.businessName || user.displayName}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-900/60">
+                          İşletme Hesabı
+                        </span>
+                      </div>
+
+                      <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                        İşletme profilinizi, kategorinizi ve iletişim detaylarınızı İşletme Araçları sekmesinden dilediğiniz gibi güncelleyebilirsiniz.
+                      </p>
+
+                      <button
+                        onClick={() => setActiveTab('business_tools')}
+                        className="w-full py-2 px-3 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                      >
+                        <Store className="w-3.5 h-3.5" />
+                        <span>İşletme Araçlarını Aç</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="p-3.5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-800/40 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <h5 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                            <Store className="w-3.5 h-3.5 text-red-600" />
+                            İşletme Hesabına Geç
+                          </h5>
+                          <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1 leading-relaxed">
+                            RedChat üzerinde işletmenizi daha profesyonel şekilde tanıtın.
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => setShowBusinessSetupModal(true)}
+                        className="w-full mt-1 py-2 px-3 text-xs font-bold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/50 border border-red-200 dark:border-red-900/60 rounded-xl transition-colors flex items-center justify-between cursor-pointer"
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <Building2 className="w-3.5 h-3.5" />
+                          <span>İşletme Hesabına Geç</span>
+                        </span>
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+
+
+              {/* Görünüm ve Tema */}
+              <div>
+                <h4 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mb-2 flex items-center gap-1.5">
+                  <Palette className="w-3.5 h-3.5 text-red-600" />
+                  Görünüm ve Tema
+                </h4>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    onClick={() => handleSelectTheme('light')}
+                    className={`p-2.5 rounded-xl border text-xs font-medium flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                      themeMode === 'light'
+                        ? 'border-red-600 bg-red-50/50 text-red-600 dark:bg-red-950/20'
+                        : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'
+                    }`}
+                  >
+                    <Sun className="w-4 h-4" />
+                    <span>Açık</span>
+                  </button>
+                  <button
+                    onClick={() => handleSelectTheme('dark')}
+                    className={`p-2.5 rounded-xl border text-xs font-medium flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                      themeMode === 'dark'
+                        ? 'border-red-600 bg-red-50/50 text-red-600 dark:bg-red-950/20'
+                        : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'
+                    }`}
+                  >
+                    <Moon className="w-4 h-4" />
+                    <span>Koyu</span>
+                  </button>
+                  <button
+                    onClick={() => handleSelectTheme('system')}
+                    className={`p-2.5 rounded-xl border text-xs font-medium flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                      themeMode === 'system'
+                        ? 'border-red-600 bg-red-50/50 text-red-600 dark:bg-red-950/20'
+                        : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'
+                    }`}
+                  >
+                    <SettingsIcon className="w-4 h-4" />
+                    <span>Sistem</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Bildirim Ayarı */}
+              <div>
+                <h4 className="text-xs font-semibold text-zinc-900 dark:text-white mb-2.5 flex items-center gap-1.5">
+                  <Bell className="w-4 h-4 text-zinc-500" />
+                  Bildirimler
+                </h4>
+                <div className="flex items-center justify-between p-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
+                  <div className="flex flex-col">
+                    <span className="text-xs font-medium text-zinc-900 dark:text-zinc-100">
+                      Anlık Bildirimler
+                    </span>
+                    <span className="text-[10px] text-zinc-500">
+                      Mesaj geldiğinde cihazına bildirim gönderilir
+                    </span>
+                  </div>
+                  <button
+                    onClick={handleTogglePush}
+                    disabled={pushLoading}
+                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors focus:outline-none ${
+                      pushEnabled ? 'bg-red-600' : 'bg-zinc-200 dark:bg-zinc-700'
+                    } ${pushLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <span className="sr-only">Bildirimleri Aç</span>
+                    <span
+                      aria-hidden="true"
+                      className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
+                        pushEnabled ? 'translate-x-2' : '-translate-x-2'
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+
+              {/* Mavi Tik Doğrulama Başvurusu */}
+              {isCurrentUser && <UserVerificationForm user={user} />}
+
+              {/* Alt Butonlar */}
+              <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800 space-y-2">
+                <button
+                  onClick={() => setShowMemory(true)}
+                  className="w-full py-2.5 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 rounded-xl transition-colors flex items-center justify-between cursor-pointer border border-red-100 dark:border-red-500/20"
+                >
+                  <span className="flex items-center gap-2">
+                    <Book className="w-3.5 h-3.5 text-red-500" /> DeepRed AI Belleği
+                  </span>
+                  <span className="text-zinc-400">›</span>
+                </button>
+
+                {isBusiness ? (
+                  <button
+                    onClick={() => setActiveTab('business_tools')}
+                    className="w-full py-2.5 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Store className="w-3.5 h-3.5 text-red-600" /> İşletme Araçları
+                    </span>
+                    <span className="text-zinc-400">›</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      setActiveTab('profile');
+                      setEditing(true);
+                    }}
+                    className="w-full py-2.5 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl transition-colors flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Edit3 className="w-3.5 h-3.5" /> Profili Düzenle
+                    </span>
+                    <span className="text-zinc-400">›</span>
+                  </button>
+                )}
+
+                <button
+                  onClick={async () => {
+                    await logoutUser();
+                    onClose();
+                  }}
+                  className="w-full py-2.5 px-3 text-xs font-semibold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/50 rounded-xl border border-rose-200/60 dark:border-rose-900/60 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Çıkış Yap</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            /* 👤 SEKME: PROFİL */
             <>
               {/* Profile Header & Avatar */}
               <div className="flex flex-col items-center text-center mb-4">
@@ -898,200 +1276,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 </div>
               )}
             </>
-          ) : (
-            /* ⚙️ SEKME: AYARLAR */
-            <div className="space-y-4 py-1">
-              {/* 🏢 İŞLETME HESABI BÖLÜMÜ (AYARLAR -> HESAP) */}
-              {isCurrentUser && (
-                <div>
-                  <h4 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mb-2 flex items-center gap-1.5">
-                    <Building2 className="w-3.5 h-3.5 text-red-600" />
-                    Hesap Türü & İşletme
-                  </h4>
-
-                  {isBusiness ? (
-                    <div className="p-3.5 rounded-2xl border border-red-200 dark:border-red-900/60 bg-red-50/50 dark:bg-red-950/30 space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <Store className="w-4 h-4 text-red-600 dark:text-red-400" />
-                          <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100">
-                            {business?.businessName || user.displayName}
-                          </span>
-                        </div>
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-900/60">
-                          İşletme Hesabı
-                        </span>
-                      </div>
-
-                      <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
-                        İşletme profilinizi, kategorinizi ve iletişim detaylarınızı İşletme Araçları sekmesinden dilediğiniz gibi güncelleyebilirsiniz.
-                      </p>
-
-                      <button
-                        onClick={() => setActiveTab('business_tools')}
-                        className="w-full py-2 px-3 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
-                      >
-                        <Store className="w-3.5 h-3.5" />
-                        <span>İşletme Araçlarını Aç</span>
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="p-3.5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-800/40 space-y-2">
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <h5 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
-                            <Store className="w-3.5 h-3.5 text-red-600" />
-                            İşletme Hesabına Geç
-                          </h5>
-                          <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-1 leading-relaxed">
-                            RedChat üzerinde işletmenizi daha profesyonel şekilde tanıtın.
-                          </p>
-                        </div>
-                      </div>
-
-                      <button
-                        onClick={() => setShowBusinessSetupModal(true)}
-                        className="w-full mt-1 py-2 px-3 text-xs font-bold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/50 border border-red-200 dark:border-red-900/60 rounded-xl transition-colors flex items-center justify-between cursor-pointer"
-                      >
-                        <span className="flex items-center gap-1.5">
-                          <Building2 className="w-3.5 h-3.5" />
-                          <span>İşletme Hesabına Geç</span>
-                        </span>
-                        <ChevronRight className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Görünüm ve Tema */}
-              <div>
-                <h4 className="text-xs font-bold text-zinc-900 dark:text-zinc-100 mb-2 flex items-center gap-1.5">
-                  <Palette className="w-3.5 h-3.5 text-red-600" />
-                  Görünüm ve Tema
-                </h4>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    onClick={() => handleSelectTheme('light')}
-                    className={`p-2.5 rounded-xl border text-xs font-medium flex flex-col items-center gap-1 transition-all cursor-pointer ${
-                      themeMode === 'light'
-                        ? 'border-red-600 bg-red-50/50 text-red-600 dark:bg-red-950/20'
-                        : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'
-                    }`}
-                  >
-                    <Sun className="w-4 h-4" />
-                    <span>Açık</span>
-                  </button>
-                  <button
-                    onClick={() => handleSelectTheme('dark')}
-                    className={`p-2.5 rounded-xl border text-xs font-medium flex flex-col items-center gap-1 transition-all cursor-pointer ${
-                      themeMode === 'dark'
-                        ? 'border-red-600 bg-red-50/50 text-red-600 dark:bg-red-950/20'
-                        : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'
-                    }`}
-                  >
-                    <Moon className="w-4 h-4" />
-                    <span>Koyu</span>
-                  </button>
-                  <button
-                    onClick={() => handleSelectTheme('system')}
-                    className={`p-2.5 rounded-xl border text-xs font-medium flex flex-col items-center gap-1 transition-all cursor-pointer ${
-                      themeMode === 'system'
-                        ? 'border-red-600 bg-red-50/50 text-red-600 dark:bg-red-950/20'
-                        : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'
-                    }`}
-                  >
-                    <SettingsIcon className="w-4 h-4" />
-                    <span>Sistem</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Bildirim Ayarı */}
-              <div>
-                <h4 className="text-xs font-semibold text-zinc-900 dark:text-white mb-2.5 flex items-center gap-1.5">
-                  <Bell className="w-4 h-4 text-zinc-500" />
-                  Bildirimler
-                </h4>
-                <div className="flex items-center justify-between p-3 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900">
-                  <div className="flex flex-col">
-                    <span className="text-xs font-medium text-zinc-900 dark:text-zinc-100">
-                      Anlık Bildirimler
-                    </span>
-                    <span className="text-[10px] text-zinc-500">
-                      Mesaj geldiğinde cihazına bildirim gönderilir
-                    </span>
-                  </div>
-                  <button
-                    onClick={handleTogglePush}
-                    disabled={pushLoading}
-                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors focus:outline-none ${
-                      pushEnabled ? 'bg-red-600' : 'bg-zinc-200 dark:bg-zinc-700'
-                    } ${pushLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  >
-                    <span className="sr-only">Bildirimleri Aç</span>
-                    <span
-                      aria-hidden="true"
-                      className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
-                        pushEnabled ? 'translate-x-2' : '-translate-x-2'
-                      }`}
-                    />
-                  </button>
-                </div>
-              </div>
-
-              {/* Mavi Tik Doğrulama Başvurusu */}
-              {isCurrentUser && <UserVerificationForm user={user} />}
-
-              {/* Alt Butonlar */}
-              <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800 space-y-2">
-                <button
-                  onClick={() => setShowMemory(true)}
-                  className="w-full py-2.5 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 rounded-xl transition-colors flex items-center justify-between cursor-pointer border border-red-100 dark:border-red-500/20"
-                >
-                  <span className="flex items-center gap-2">
-                    <Book className="w-3.5 h-3.5 text-red-500" /> DeepRed AI Belleği
-                  </span>
-                  <span className="text-zinc-400">›</span>
-                </button>
-
-                {isBusiness ? (
-                  <button
-                    onClick={() => setActiveTab('business_tools')}
-                    className="w-full py-2.5 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span className="flex items-center gap-2">
-                      <Store className="w-3.5 h-3.5 text-red-600" /> İşletme Araçları
-                    </span>
-                    <span className="text-zinc-400">›</span>
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => {
-                      setActiveTab('profile');
-                      setEditing(true);
-                    }}
-                    className="w-full py-2.5 px-3 text-xs font-semibold text-zinc-700 dark:text-zinc-200 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-xl transition-colors flex items-center justify-between cursor-pointer"
-                  >
-                    <span className="flex items-center gap-2">
-                      <Edit3 className="w-3.5 h-3.5" /> Profili Düzenle
-                    </span>
-                    <span className="text-zinc-400">›</span>
-                  </button>
-                )}
-
-                <button
-                  onClick={async () => {
-                    await logoutUser();
-                    onClose();
-                  }}
-                  className="w-full py-2.5 px-3 text-xs font-semibold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/50 rounded-xl border border-rose-200/60 dark:border-rose-900/60 transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  <span>Çıkış Yap</span>
-                </button>
-              </div>
-            </div>
           )}
         </div>
       </div>
@@ -1257,6 +1441,15 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               </button>
             </div>
           </div>
+        </div>,
+        document.body
+      )}
+
+      {/* 🔒 Gizlilik Ayarı Toast Bildirimi */}
+      {privacyToast && typeof document !== 'undefined' && createPortal(
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[10001] bg-zinc-900/95 dark:bg-zinc-100/95 text-white dark:text-zinc-900 text-xs font-semibold px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2 border border-zinc-700/50 dark:border-zinc-300/50 animate-in fade-in slide-in-from-bottom-2 select-none">
+          <Check className="w-4 h-4 text-emerald-400 dark:text-emerald-600 shrink-0" />
+          <span>{privacyToast}</span>
         </div>,
         document.body
       )}

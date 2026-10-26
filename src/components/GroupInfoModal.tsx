@@ -37,6 +37,7 @@ import {
   ChevronRight,
   User as UserIcon,
   CheckCircle2,
+  Lock,
 } from 'lucide-react';
 
 interface GroupInfoModalProps {
@@ -868,6 +869,50 @@ export const GroupInfoModal: React.FC<GroupInfoModalProps> = ({
                 availableUsersToAdd.map((user) => {
                   const isSelected = selectedUserIdsToAdd.includes(user.uid);
                   const uName = getSafeUserName(user);
+                  const isGroupAdditionDisabled = user.allowGroupAdditions === 'none';
+
+                  if (isGroupAdditionDisabled) {
+                    return (
+                      <div
+                        key={user.uid}
+                        onClick={() => {
+                          showFeedback('Bu kullanıcı gruplara eklenmeyi kapatmış.', true);
+                        }}
+                        className="p-2.5 flex items-center justify-between rounded-xl cursor-pointer transition-colors opacity-60 bg-zinc-100/60 dark:bg-zinc-800/30 hover:bg-zinc-100 dark:hover:bg-zinc-800/50 select-none"
+                        title="Bu kullanıcı gruplara eklenmeyi kapatmış."
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="relative shrink-0">
+                            <UserAvatar
+                              photoURL={user.photoURL}
+                              name={uName}
+                              username={user.username}
+                              size="md"
+                              className="grayscale"
+                            />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400 truncate">
+                                {uName}
+                              </span>
+                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-zinc-200/80 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 shrink-0">
+                                <Lock className="w-3 h-3 text-zinc-500" />
+                                <span>Gruplara kapalı</span>
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-zinc-400 font-mono truncate">
+                              @{user.username}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="w-5 h-5 rounded-md border border-zinc-300/60 dark:border-zinc-700/60 bg-zinc-200/50 dark:bg-zinc-800/50 flex items-center justify-center">
+                          <Lock className="w-3 h-3 text-zinc-400" />
+                        </div>
+                      </div>
+                    );
+                  }
 
                   return (
                     <div

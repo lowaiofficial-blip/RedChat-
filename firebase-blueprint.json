@@ -20,7 +20,9 @@
         "bannedAt": { "type": "timestamp", "description": "Ban timestamp" },
         "isMuted": { "type": "boolean", "description": "Account mute status" },
         "muteReason": { "type": "string", "description": "Account mute reason" },
-        "mutedAt": { "type": "timestamp", "description": "Mute timestamp" }
+        "mutedAt": { "type": "timestamp", "description": "Mute timestamp" },
+        "allowDirectMessages": { "type": "string", "description": "DM privacy preference: 'everyone' | 'none'" },
+        "allowGroupAdditions": { "type": "string", "description": "Group addition preference: 'everyone' | 'none'" }
       }
     },
     "UsernameIndex": {

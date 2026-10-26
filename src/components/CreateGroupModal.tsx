@@ -12,6 +12,7 @@ import {
   Loader2,
   Search,
   AlertCircle,
+  Lock,
 } from 'lucide-react';
 
 interface CreateGroupModalProps {
@@ -44,6 +45,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
   const [creating, setCreating] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [privacyNotice, setPrivacyNotice] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -204,6 +206,23 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
               </div>
             )}
 
+            {/* Gizlilik Uyarısı */}
+            {privacyNotice && (
+              <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 rounded-xl flex items-center justify-between text-xs text-amber-700 dark:text-amber-300 animate-in fade-in">
+                <div className="flex items-center gap-2">
+                  <Lock className="w-4 h-4 shrink-0 text-amber-500" />
+                  <span>{privacyNotice}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPrivacyNotice(null)}
+                  className="text-amber-500 hover:text-amber-700 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             {/* Grup Fotoğrafı ve Grup Adı */}
             <div className="flex items-center gap-4">
               <div className="relative group shrink-0">
@@ -342,6 +361,50 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
                 ) : (
                   filteredUsers.map((user) => {
                     const isSelected = selectedUserIds.includes(user.uid);
+                    const isGroupAdditionDisabled = user.allowGroupAdditions === 'none';
+
+                    if (isGroupAdditionDisabled) {
+                      return (
+                        <div
+                          key={user.uid}
+                          onClick={() => {
+                            setPrivacyNotice('Bu kullanıcı gruplara eklenmeyi kapatmış.');
+                            setTimeout(() => setPrivacyNotice(null), 3500);
+                          }}
+                          className="w-full p-2.5 flex items-center justify-between text-left transition-colors cursor-pointer opacity-60 bg-zinc-100/60 dark:bg-zinc-800/30 hover:bg-zinc-100 dark:hover:bg-zinc-800/50 select-none"
+                          title="Bu kullanıcı gruplara eklenmeyi kapatmış."
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <UserAvatar
+                              photoURL={user.photoURL}
+                              name={user.displayName}
+                              username={user.username}
+                              size="sm"
+                              className="grayscale"
+                            />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400 truncate">
+                                  {user.displayName || user.username}
+                                </span>
+                                <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-zinc-200/80 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 shrink-0">
+                                  <Lock className="w-3 h-3 text-zinc-500" />
+                                  <span>Gruplara kapalı</span>
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-zinc-400 font-mono truncate">
+                                @{user.username}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="w-5 h-5 rounded-lg border border-zinc-300/60 dark:border-zinc-700/60 bg-zinc-200/50 dark:bg-zinc-800/50 flex items-center justify-center">
+                            <Lock className="w-3 h-3 text-zinc-400" />
+                          </div>
+                        </div>
+                      );
+                    }
+
                     return (
                       <button
                         key={user.uid}

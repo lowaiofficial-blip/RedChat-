@@ -86,6 +86,9 @@ export interface UserProfile {
   aiAccessUpdatedAt?: any;
   aiAccessUpdatedBy?: string;
   securityStatus?: 'active' | 'terminated';
+  // 🔒 Gizlilik Ayarları
+  allowDirectMessages?: 'everyone' | 'none';
+  allowGroupAdditions?: 'everyone' | 'none';
   // Cihaz ve Donanım Bilgileri
   lastIp?: string;
   lastDeviceId?: string;

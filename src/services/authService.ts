@@ -191,6 +191,21 @@ export async function updateUserBio(uid: string, bio: string): Promise<void> {
   });
 }
 
+export async function updateUserPrivacySettings(
+  uid: string,
+  settings: {
+    allowDirectMessages?: 'everyone' | 'none';
+    allowGroupAdditions?: 'everyone' | 'none';
+  }
+): Promise<void> {
+  if (!db) throw new Error('Firestore hazır değil');
+  const userDocRef = doc(db, 'users', uid);
+  await updateDoc(userDocRef, {
+    ...settings,
+    updatedAt: serverTimestamp(),
+  });
+}
+
 export async function updateUserProfileDetails(
   uid: string,
   data: { displayName?: string; bio?: string; photoURL?: string | null }
