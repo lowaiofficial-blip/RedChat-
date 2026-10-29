@@ -1,94 +1,74 @@
-# 🔒 Privacy Category in Settings (`Ayarlar → Gizlilik`) — RedChat
+# Implementation Plan — GIPHY GIF System Integration for RedChat
 
-Integrate a distinct **🔒 Gizlilik** category directly inside the existing **Ayarlar** tab of `ProfileModal.tsx`, ensuring smooth real-time Firestore persistence, zero disruption to existing features, and full dark/light theme compatibility.
+This plan outlines the implementation of GIPHY GIF search, pre-send preview, chat bubble rendering, and animated fullscreen lightbox preview into RedChat while preserving all existing Firebase, Auth, DM privacy, and media handling systems.
 
----
-
-## User Review & Critical Decisions
-
-> [!IMPORTANT]
-> The following design and workflow decisions were confirmed in Turn 1:
-
-- **Confirmed Decision 1 (UI Placement)**: Embedded inside the existing **Ayarlar** tab as a distinct, framed card section with a dedicated lock 🔒 header and clean option cards. No separate top-level page or tab is created.
-- **Confirmed Decision 2 (Instant Firestore Save)**: Selecting any option triggers an immediate Firestore document update on `users/{userId}` accompanied by an auto-dismissing toast notification (`"Gizlilik ayarınız kaydedildi."`).
-- **Confirmed Decision 3 (DM Lock Behavior)**: Users with DMs closed remain fully visible in lists and profile modals with prior chat history intact. In `ChatWindow.tsx`, the message composer is replaced with a locked status bar: `🔒 Bu kullanıcının DM'leri kapalı.`
-- **Confirmed Decision 4 (Group Addition Privacy)**: Users who disable group additions appear grayed-out with a lock 🔒 icon and `"Gruplara kapalı"` badge in `CreateGroupModal.tsx` and `GroupInfoModal.tsx`. Tapping them displays `Bu kullanıcı gruplara eklenmeyi kapatmış.` while keeping their profile photo and username visible.
-
----
-
-## 1. Overview & Core Concept
-
-- **Scope**:
-  1. **💬 Özel Mesajlar (DM)**:
-     - `🟢 DM'lerim açık` (`allowDirectMessages: 'everyone'`): Anyone can send direct messages.
-     - `🔴 DM'lerim kapalı` (`allowDirectMessages: 'none'`): Blocks new direct message sends while preserving existing chat history and list visibility.
-  2. **👥 Grup Gizliliği**:
-     - `🟢 Herkes` (`allowGroupAdditions: 'everyone'`): Anyone can add the user to new groups.
-     - `🔴 Hiç kimse` (`allowGroupAdditions: 'none'`): Renders the user unselectable in group creation and member add modals. Existing group memberships remain untouched.
+## User Requirements Summary
+1. **GIPHY API Key Management**: Access GIPHY via `process.env.GIPHY_API_KEY` through secure Express proxy endpoints.
+2. **GIF Button & Picker Panel**:
+   - GIF button alongside chat input composer.
+   - Picker modal showing trending GIFs on open + debounced search bar.
+   - Animated thumbnails grid, pagination/load more support, loading & error states.
+   - Dark/Light theme compatibility and mobile-responsive layout.
+3. **Pre-Send Preview Modal**:
+   - Selecting a GIF opens the existing RedChat pre-send preview dialog.
+   - Displays full animated GIF with "Gönder" and "Vazgeç" buttons.
+4. **Chat Bubble Rendering**:
+   - Sent GIFs render animated inside chat bubbles maintaining aspect ratio and maximum height bounds.
+   - Persists in Firestore chat history and syncs in real-time across devices.
+5. **Fullscreen Animated Lightbox Preview**:
+   - Tapping/clicking a sent GIF (sender or recipient) opens the existing RedChat media lightbox.
+   - Animation continues smoothly in full size without breaking scroll position or chat state.
+6. **DM Privacy Compliance**:
+   - Respects user DM privacy settings (`allowDirectMessages === 'none'`).
 
 ---
 
-## 2. Visual & Architectural Design
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│              ProfileModal.tsx (Ayarlar Sekmesi)                  │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │ 🔒 Gizlilik (Özel Kilit İkonlu Çerçeveli Kart)             │  │
-│  │                                                           │  │
-│  │ 💬 Direkt Mesajlarım (DM)                                 │  │
-│  │ [ 🟢 DM'lerim açık ]  [ 🔴 DM'lerim kapalı ]              │  │
-│  │                                                           │  │
-│  │ 👥 Beni kimler gruplara ekleyebilir?                      │  │
-│  │ [ 🟢 Herkes ]         [ 🔴 Hiç kimse ]                    │  │
-│  └───────────────────────────────────────────────────────────┘  │
-└────────────────────────────────┬────────────────────────────────┘
-                                 │ (Anlık Firestore Güncellemesi)
-                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      users/{userId} Doc                         │
-│       `allowDirectMessages` & `allowGroupAdditions`            │
-└────────────────┬────────────────────────────────┬───────────────┘
-                 │                                │
-                 ▼                                ▼
-┌────────────────────────────────┐ ┌──────────────────────────────┐
-│        ChatWindow.tsx          │ │    CreateGroupModal.tsx      │
-│ Target DM = 'none'?            │ │ Group addition = 'none'?     │
-│ Shows locked banner + input off│ │ Grays out + lock badge       │
-└────────────────────────────────┘ └──────────────────────────────┘
-```
+## User Alignment Questions Answered
+- **GIPHY API Key**: Configured exclusively via `process.env.GIPHY_API_KEY` in `.env` and proxied server-side.
 
 ---
 
-## 3. Detailed Component Plan
+## Proposed Changes & File Architecture
 
-1. **`src/components/ProfileModal.tsx`**:
-   - Refine the **🔒 Gizlilik** card layout inside the **Ayarlar** tab.
-   - Use toggle switches / option cards with active green/red state indicators and loading spinners.
-   - Show auto-closing toast notification at the bottom upon Firestore save.
+### 1. `.env.example`
+- Add `GIPHY_API_KEY=` placeholder.
 
-2. **`src/components/ChatWindow.tsx`**:
-   - Check target recipient's `allowDirectMessages`.
-   - If `'none'`, replace message input with locked banner `🔒 Bu kullanıcının DM'leri kapalı.`
-   - Ensure message send handler programmatically enforces this restriction.
+### 2. `server.ts` (Express Server Proxy)
+- Add `/api/giphy/trending` endpoint:
+  - Accepts `offset` parameter (default 0, limit 25).
+  - Fetches trending GIFs from `https://api.giphy.com/v1/gifs/trending`.
+  - Validates `GIPHY_API_KEY` presence and returns clean 400/500 JSON errors if unconfigured or failed.
+- Add `/api/giphy/search` endpoint:
+  - Accepts `q` query string and `offset` parameter.
+  - Fetches matching GIFs from `https://api.giphy.com/v1/gifs/search`.
 
-3. **`src/components/CreateGroupModal.tsx` & `src/components/GroupInfoModal.tsx`**:
-   - Check each candidate's `allowGroupAdditions`.
-   - If `'none'`, render grayed-out with lock 🔒 icon and `"Gruplara kapalı"` badge. Unselectable.
-   - Show notification `Bu kullanıcı gruplara eklenmeyi kapatmış.` when tapped.
+### 3. `src/components/GiphyPickerModal.tsx` (New Component)
+- Mobile-responsive popup/sheet matching RedChat design (Red accents, dark/light themes).
+- Features:
+  - Search bar with instant debouncing (300ms).
+  - Infinite scroll / "Daha Fazla Yükle" for paginated GIPHY results.
+  - Animated GIF grid using GIPHY's `fixed_height` / `downsized_medium` URLs.
+  - Loading spinner, empty results indicator, and missing API key / connection error states.
+  - Official "Powered by GIPHY" attribution badge.
 
-4. **`firestore.rules` & `firebase-blueprint.json`**:
-   - Ensure `allowDirectMessages` and `allowGroupAdditions` properties are validated and protected so users can only update their own profile fields.
+### 4. `src/components/ChatWindow.tsx`
+- **GIF Button**: Add GIF button (`<Film>` / `<FileVideo>` or GIF icon) to the message composer bar next to emoji and photo attachment buttons. Disabled if DM privacy is locked (`isTargetDmClosed`).
+- **Pre-Send Preview**: On GIF selection from `GiphyPickerModal`, open existing pre-send modal (`selectedImageFile` / `selectedImagePreview`). Pass GIF URL to the media preview state with caption support.
+- **Message Dispatch**: `handleSendImageMessage` sends the GIF URL as `imageUrl` in Firestore message document with standard timestamp and status.
+- **Lightbox Integration**: Ensure `previewImage` state handles GIF URLs properly and displays full-screen animated GIF without static frame freezing.
+
+### 5. `src/components/ChatMessageItem.tsx`
+- Ensure image message click handler opens `onSelectImage({ url: msg.imageUrl! })`.
+- Maintain aspect ratio and CSS bounds so animated GIFs render crisp and responsive in chat bubbles for both sender and receiver.
 
 ---
 
-## 4. Verification & Testing Checklist
-
-- [x] DM open user: direct messages can be sent normally.
-- [x] DM closed user: new direct messages blocked, locked banner displayed, profile/history preserved.
-- [x] Group privacy "Herkes": user can be selected in group creation.
-- [x] Group privacy "Hiç kimse": user grayed out with lock badge, unselectable in group creation.
-- [x] Settings persistence: preferences retained after page refresh / re-login.
-- [x] Theme support: verified in both light and dark mode.
-- [x] Build check: `compile_applet` and `lint_applet` pass with zero errors.
+## Verification & Testing Plan
+1. Test GIF picker toggle button in message composer.
+2. Verify GIPHY Trending GIFs load on initial open.
+3. Test search query auto-fetching with debounced input.
+4. Verify clicking a GIF opens pre-send modal with animated preview and "Gönder"/"Vazgeç" options.
+5. Verify "Gönder" posts GIF to Firestore chat in real-time.
+6. Verify clicking a sent GIF in chat bubble opens RedChat's existing fullscreen lightbox modal with active animation.
+7. Verify DM privacy lock (`allowDirectMessages === 'none'`) disables GIF button and blocks send.
+8. Validate `npm run lint` (`tsc --noEmit`) and `compile_applet`.

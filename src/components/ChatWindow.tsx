@@ -16,6 +16,7 @@ import { UserAvatar } from './UserAvatar';
 import { ChatMessageItem } from './ChatMessageItem';
 import { EmojiPicker } from './EmojiPicker';
 import { GroupInfoModal } from './GroupInfoModal';
+import { GiphyPickerModal } from './GiphyPickerModal';
 import { VerifiedBadge } from './VerifiedBadge';
 import { SequentialTypingDots } from './SequentialTypingDots';
 import { getTypingInfo } from '../utils/typingHelper';
@@ -57,6 +58,7 @@ import {
   Lightbulb,
   ChevronDown,
   Lock,
+  Film,
 } from 'lucide-react';
 
 interface ChatWindowProps {
@@ -88,12 +90,23 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
 
 
-  // Fotoğraf Gönderme State'leri
+  // Fotoğraf & GIF Gönderme State'leri
   const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
   const [imageUploadError, setImageUploadError] = useState<string | null>(null);
+  const [showGiphyPicker, setShowGiphyPicker] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleSelectGif = (gifUrl: string) => {
+    setShowGiphyPicker(false);
+    setImageUploadError(null);
+    if (imagePreviewUrl) {
+      URL.revokeObjectURL(imagePreviewUrl);
+    }
+    setSelectedImageFile(null);
+    setImagePreviewUrl(gifUrl);
+  };
 
   // ↩️ Yanıt Verme (Reply) State'leri
   const [replyingToMessage, setReplyingToMessage] = useState<ChatMessage | null>(null);
@@ -711,7 +724,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
 
     const textToSend = inputText.trim();
-    if (!textToSend && !selectedImageFile) return;
+    if (!textToSend && !selectedImageFile && !imagePreviewUrl) return;
 
     setSending(true);
     setImageUploadError(null);
@@ -719,10 +732,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     try {
       let uploadedImageUrl: string | null = null;
 
-      // Eğer fotoğraf seçilmişse önce gerçek ImgBB'ye yükle
+      // Eğer yerel dosya seçilmişse CDN'e yükle, GIF seçilmişse direkt URL'i kullan
       if (selectedImageFile) {
         setIsUploadingImage(true);
         uploadedImageUrl = await uploadImageToImgBB(selectedImageFile);
+      } else if (imagePreviewUrl) {
+        uploadedImageUrl = imagePreviewUrl;
       }
 
       // Yanıt referansı hazırla
@@ -1707,11 +1722,22 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             </div>
             <div className="min-w-0">
               <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
-                <ImageIcon className="w-3.5 h-3.5 text-red-600" />
-                Fotoğraf eklendi
+                {selectedImageFile ? (
+                  <>
+                    <ImageIcon className="w-3.5 h-3.5 text-red-600" />
+                    <span>Fotoğraf eklendi</span>
+                  </>
+                ) : (
+                  <>
+                    <Film className="w-3.5 h-3.5 text-red-600" />
+                    <span>GIPHY GIF eklendi</span>
+                  </>
+                )}
               </span>
               <p className="text-[11px] text-zinc-500 truncate max-w-xs">
-                {selectedImageFile?.name} ({(selectedImageFile ? selectedImageFile.size / 1024 : 0).toFixed(0)} KB)
+                {selectedImageFile
+                  ? `${selectedImageFile.name} (${(selectedImageFile.size / 1024).toFixed(0)} KB)`
+                  : 'Animasyonlu GIF önizlemesi'}
               </p>
             </div>
           </div>
@@ -2170,6 +2196,21 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 <ImageIcon className="w-4 h-4" />
               </button>
 
+              {/* 🎞️ GIF Ekleme Butonu */}
+              <button
+                type="button"
+                onClick={() => setShowGiphyPicker((prev) => !prev)}
+                disabled={sending || isUploadingImage}
+                className={`px-2.5 py-2.5 rounded-xl border transition-all cursor-pointer flex-shrink-0 font-bold select-none disabled:opacity-50 flex items-center justify-center ${
+                  showGiphyPicker || (imagePreviewUrl && !selectedImageFile)
+                    ? 'border-red-500 bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 shadow-2xs'
+                    : 'border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:text-red-600 dark:hover:text-red-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'
+                }`}
+                title="GIF ekle (GIPHY)"
+              >
+                <span className="text-[10px] font-black tracking-widest leading-none">GIF</span>
+              </button>
+
               {/* Metin / Açıklama Inputu */}
               <input
                 ref={inputRef}
@@ -2218,6 +2259,13 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           </div>
         )}
       </div>
+
+      {/* 🎞️ GIPHY GIF Seçici Modalı */}
+      <GiphyPickerModal
+        isOpen={showGiphyPicker}
+        onClose={() => setShowGiphyPicker(false)}
+        onSelectGif={handleSelectGif}
+      />
 
       {/* 👥 Grup Bilgileri Modalı */}
       {showGroupInfoModal && conversation?.isGroup && (

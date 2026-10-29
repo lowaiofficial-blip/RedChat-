@@ -316,6 +316,74 @@ async function startServer() {
     }
   });
 
+  // 🎞️ GIPHY API PROXY ENDPOINT'LERİ (Güvenli Sunucu Tarafı API Çağrıları)
+  app.get("/api/giphy/trending", async (req, res) => {
+    try {
+      const apiKey = process.env.GIPHY_API_KEY?.trim();
+      if (!apiKey) {
+        return res.status(400).json({
+          error: "GIF hizmeti henüz yapılandırılmamış. Lütfen daha sonra tekrar deneyin.",
+        });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 25, 50);
+      const offset = Number(req.query.offset) || 0;
+
+      const giphyUrl = `https://api.giphy.com/v1/gifs/trending?api_key=${encodeURIComponent(apiKey)}&limit=${limit}&offset=${offset}&rating=g`;
+
+      const response = await fetch(giphyUrl);
+      if (!response.ok) {
+        const errJson: any = await response.json().catch(() => ({}));
+        console.error("GIPHY Trending API Error:", response.status, errJson);
+        return res.status(response.status).json({
+          error: errJson?.meta?.msg || "GIPHY trend GIF'leri yüklenemedi.",
+        });
+      }
+
+      const data = await response.json();
+      return res.json(data);
+    } catch (err: any) {
+      console.error("GIPHY Trending Server Error:", err);
+      return res.status(500).json({ error: "GIPHY servisine bağlanırken bir hata oluştu." });
+    }
+  });
+
+  app.get("/api/giphy/search", async (req, res) => {
+    try {
+      const apiKey = process.env.GIPHY_API_KEY?.trim();
+      if (!apiKey) {
+        return res.status(400).json({
+          error: "GIF hizmeti henüz yapılandırılmamış. Lütfen daha sonra tekrar deneyin.",
+        });
+      }
+
+      const query = String(req.query.q || "").trim();
+      if (!query) {
+        return res.status(400).json({ error: "Arama terimi eksik." });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 25, 50);
+      const offset = Number(req.query.offset) || 0;
+
+      const giphyUrl = `https://api.giphy.com/v1/gifs/search?api_key=${encodeURIComponent(apiKey)}&q=${encodeURIComponent(query)}&limit=${limit}&offset=${offset}&rating=g`;
+
+      const response = await fetch(giphyUrl);
+      if (!response.ok) {
+        const errJson: any = await response.json().catch(() => ({}));
+        console.error("GIPHY Search API Error:", response.status, errJson);
+        return res.status(response.status).json({
+          error: errJson?.meta?.msg || "GIPHY GIF araması başarısız oldu.",
+        });
+      }
+
+      const data = await response.json();
+      return res.json(data);
+    } catch (err: any) {
+      console.error("GIPHY Search Server Error:", err);
+      return res.status(500).json({ error: "GIPHY araması sırasında bir sunucu hatası oluştu." });
+    }
+  });
+
   // 🤖 DEEPRED AI PROMPT, MEMORY & SANITIZATION HELPERS
   const sanitizeAIResponse = (raw: string): string => {
     if (!raw) return raw;
