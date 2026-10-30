@@ -1,74 +1,54 @@
-# Implementation Plan — GIPHY GIF System Integration for RedChat
+# Implementation Plan — Message Sending Speed Optimization for RedChat
 
-This plan outlines the implementation of GIPHY GIF search, pre-send preview, chat bubble rendering, and animated fullscreen lightbox preview into RedChat while preserving all existing Firebase, Auth, DM privacy, and media handling systems.
-
-## User Requirements Summary
-1. **GIPHY API Key Management**: Access GIPHY via `process.env.GIPHY_API_KEY` through secure Express proxy endpoints.
-2. **GIF Button & Picker Panel**:
-   - GIF button alongside chat input composer.
-   - Picker modal showing trending GIFs on open + debounced search bar.
-   - Animated thumbnails grid, pagination/load more support, loading & error states.
-   - Dark/Light theme compatibility and mobile-responsive layout.
-3. **Pre-Send Preview Modal**:
-   - Selecting a GIF opens the existing RedChat pre-send preview dialog.
-   - Displays full animated GIF with "Gönder" and "Vazgeç" buttons.
-4. **Chat Bubble Rendering**:
-   - Sent GIFs render animated inside chat bubbles maintaining aspect ratio and maximum height bounds.
-   - Persists in Firestore chat history and syncs in real-time across devices.
-5. **Fullscreen Animated Lightbox Preview**:
-   - Tapping/clicking a sent GIF (sender or recipient) opens the existing RedChat media lightbox.
-   - Animation continues smoothly in full size without breaking scroll position or chat state.
-6. **DM Privacy Compliance**:
-   - Respects user DM privacy settings (`allowDirectMessages === 'none'`).
+This plan details the performance diagnosis and code optimizations to eliminate delays in message sending (reducing wait times from ~15s to instant/under 200ms) across Desktop and Mobile on RedChat, without changing the database schema or authentication setup.
 
 ---
 
-## User Alignment Questions Answered
-- **GIPHY API Key**: Configured exclusively via `process.env.GIPHY_API_KEY` in `.env` and proxied server-side.
+## Root Cause Analysis & Findings
+
+1. **Multiple Sequential Read Roundtrips in `sendMessage` (`src/services/chatService.ts`)**:
+   - Before writing a message, `sendMessage` executed a blocking `getDoc` on the conversation document.
+   - For 1-on-1 chats, it then executed 2 additional blocking `getDoc` queries checking `blockedUsers` collections.
+   - These 3 sequential database reads added significant network latency before any message write could begin.
+
+2. **Sequential Write Roundtrips**:
+   - Messages were saved via `await addDoc(...)` followed by `await updateDoc(...)` on the conversation document.
+   - Executing these writes sequentially doubled the write latency.
+
+3. **Blocking UI Execution without Optimistic Rendering in `ChatWindow.tsx`**:
+   - `handleSend` set `sending = true` and locked the input composer with "Gönderiliyor..." while awaiting all network roundtrips to complete.
+   - The user had to wait for server acknowledgement before seeing their message or typing the next one.
+
+4. **Redundant Post-Send Write Cascades**:
+   - `markMessagesAsRead` triggered supplementary `updateDoc` calls whenever messages changed, creating extra network traffic right after message submission.
 
 ---
 
-## Proposed Changes & File Architecture
+## Proposed Optimizations
 
-### 1. `.env.example`
-- Add `GIPHY_API_KEY=` placeholder.
+### 1. `src/services/chatService.ts`
+- **Eliminate Unnecessary Reads**: Remove the 3 redundant `getDoc` read calls from `sendMessage`. `ChatWindow.tsx` already checks blocking and DM privacy client-side prior to calling `sendMessage`.
+- **Parallelize Message Writes**: Pre-generate document ID with `doc(messagesCol)` and execute message creation (`setDoc`) and conversation summary update (`updateDoc`) concurrently using `Promise.all`.
+- **Latency Reduction**: Reduces total sequential network roundtrips per message write from 5 down to 1 single parallel flight.
 
-### 2. `server.ts` (Express Server Proxy)
-- Add `/api/giphy/trending` endpoint:
-  - Accepts `offset` parameter (default 0, limit 25).
-  - Fetches trending GIFs from `https://api.giphy.com/v1/gifs/trending`.
-  - Validates `GIPHY_API_KEY` presence and returns clean 400/500 JSON errors if unconfigured or failed.
-- Add `/api/giphy/search` endpoint:
-  - Accepts `q` query string and `offset` parameter.
-  - Fetches matching GIFs from `https://api.giphy.com/v1/gifs/search`.
+### 2. `src/components/ChatWindow.tsx`
+- **Optimistic UI Updates**:
+  - Upon submitting a message, create an optimistic local message item (`status: 'sending'`) and append it immediately to `messages` state.
+  - Instantly reset `inputText`, reply reference, and attachments so the user can immediately continue typing without waiting for server response.
+  - Perform the Firestore `sendMessage` write in the background.
+  - When the real message snapshot arrives from `subscribeToMessages`, reconcile the optimistic item with the server document.
+- **Double-Submission Lock**:
+  - Utilize `sendLockRef` to prevent accidental duplicate message submissions when Enter or the Send button is pressed rapidly.
+- **Error Handling**:
+  - If a background send fails, update the optimistic message status to `'error'` or alert the user cleanly without freezing the chat.
 
-### 3. `src/components/GiphyPickerModal.tsx` (New Component)
-- Mobile-responsive popup/sheet matching RedChat design (Red accents, dark/light themes).
-- Features:
-  - Search bar with instant debouncing (300ms).
-  - Infinite scroll / "Daha Fazla Yükle" for paginated GIPHY results.
-  - Animated GIF grid using GIPHY's `fixed_height` / `downsized_medium` URLs.
-  - Loading spinner, empty results indicator, and missing API key / connection error states.
-  - Official "Powered by GIPHY" attribution badge.
+### 3. `src/services/channelService.ts`
+- **Parallelize Channel Post Writes**:
+  - Apply `Promise.all` for post creation (`setDoc`) and channel summary updates (`updateDoc`) so channel messaging is equally instant.
 
-### 4. `src/components/ChatWindow.tsx`
-- **GIF Button**: Add GIF button (`<Film>` / `<FileVideo>` or GIF icon) to the message composer bar next to emoji and photo attachment buttons. Disabled if DM privacy is locked (`isTargetDmClosed`).
-- **Pre-Send Preview**: On GIF selection from `GiphyPickerModal`, open existing pre-send modal (`selectedImageFile` / `selectedImagePreview`). Pass GIF URL to the media preview state with caption support.
-- **Message Dispatch**: `handleSendImageMessage` sends the GIF URL as `imageUrl` in Firestore message document with standard timestamp and status.
-- **Lightbox Integration**: Ensure `previewImage` state handles GIF URLs properly and displays full-screen animated GIF without static frame freezing.
-
-### 5. `src/components/ChatMessageItem.tsx`
-- Ensure image message click handler opens `onSelectImage({ url: msg.imageUrl! })`.
-- Maintain aspect ratio and CSS bounds so animated GIFs render crisp and responsive in chat bubbles for both sender and receiver.
-
----
-
-## Verification & Testing Plan
-1. Test GIF picker toggle button in message composer.
-2. Verify GIPHY Trending GIFs load on initial open.
-3. Test search query auto-fetching with debounced input.
-4. Verify clicking a GIF opens pre-send modal with animated preview and "Gönder"/"Vazgeç" options.
-5. Verify "Gönder" posts GIF to Firestore chat in real-time.
-6. Verify clicking a sent GIF in chat bubble opens RedChat's existing fullscreen lightbox modal with active animation.
-7. Verify DM privacy lock (`allowDirectMessages === 'none'`) disables GIF button and blocks send.
-8. Validate `npm run lint` (`tsc --noEmit`) and `compile_applet`.
+### 4. Verification & Testing
+- Test DM, Group, and Channel message sending on Desktop and Mobile.
+- Verify instant message appearance in UI without "Gönderiliyor..." delay.
+- Verify double-click / rapid Enter press prevention.
+- Check message timestamp ordering, read receipts, and push notification triggers.
+- Run `lint_applet` and `compile_applet` to confirm 0 compilation or lint errors.

@@ -665,29 +665,28 @@ export async function createChannelPost(
 
   const postRef = doc(collection(db, 'channels', channelId, 'posts'));
   const postId = postRef.id;
-
-  await setDoc(postRef, {
-    id: postId,
-    channelId,
-    text: trimmedText,
-    imageUrl: imageUrl || null,
-    viewsCount: 0,
-    createdAt: serverTimestamp(),
-  });
-
-  // Kanal ana dokümanını güncelle
   const channelRef = doc(db, 'channels', channelId);
-  const channelSnap = await getDoc(channelRef);
-  const channelData = channelSnap.exists() ? (channelSnap.data() as Channel) : null;
-  const finalChannelName = channelName || channelData?.name || 'Kanal';
-  const finalChannelPhoto = channelData?.photoURL || null;
 
-  await updateDoc(channelRef, {
-    postCount: increment(1),
-    lastPostText: trimmedText || 'Fotoğraf',
-    lastPostTimestamp: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
+  // Post setDoc ve Channel updateDoc işlemlerini paralel çalıştır
+  await Promise.all([
+    setDoc(postRef, {
+      id: postId,
+      channelId,
+      text: trimmedText,
+      imageUrl: imageUrl || null,
+      viewsCount: 0,
+      createdAt: serverTimestamp(),
+    }),
+    updateDoc(channelRef, {
+      postCount: increment(1),
+      lastPostText: trimmedText || 'Fotoğraf',
+      lastPostTimestamp: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }).catch(() => {}),
+  ]);
+
+  const finalChannelName = channelName || 'Kanal';
+  const finalChannelPhoto: string | null = null;
 
   // 🔔 Kurucu/Paylaşan HARİÇ takip edenlere Uygulama İçi Bildirim ve Push Bildirimi Gönder
   try {

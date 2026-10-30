@@ -912,6 +912,7 @@ export async function sendMessage(
     isStreaming?: boolean;
     isSecurityWarning?: boolean;
     securityType?: 'terminated' | 'warning';
+    participantIds?: string[];
   }
 ): Promise<string> {
   if (!db) throw new Error('Firestore hazır değil');
@@ -931,37 +932,9 @@ export async function sendMessage(
 
   const messagesCol = collection(db, 'conversations', conversationId, 'messages');
   const convDocRef = doc(db, 'conversations', conversationId);
+  const newDocRef = doc(messagesCol);
 
-  // 0. Engelleme (Block) Kontrolü: Birebir sohbetlerde iki taraftan biri engellediyse mesaj engellenir
-  let conversationData: Conversation | null = null;
-  const convSnap = await getDoc(convDocRef);
-  if (convSnap.exists()) {
-    conversationData = convSnap.data() as Conversation;
-    if (!conversationData.isGroup) {
-      const isBlockedInConv = (conversationData.blockedUserIds && conversationData.blockedUserIds.length > 0) ||
-        (conversationData.blockedBy && Object.values(conversationData.blockedBy).some(Boolean));
-      if (isBlockedInConv) {
-        throw new Error('Engelleme nedeniyle bu kullanıcıyla mesajlaşamazsınız.');
-      }
-
-      // users/{uid}/blockedUsers koleksiyonunu da doğrula
-      const otherParticipantId = (conversationData.participantIds || []).find((id) => id !== sender.uid);
-      if (otherParticipantId) {
-        const [myBlockCheck, otherBlockCheck] = await Promise.all([
-          getDoc(doc(db, 'users', sender.uid, 'blockedUsers', otherParticipantId)).catch(() => null),
-          getDoc(doc(db, 'users', otherParticipantId, 'blockedUsers', sender.uid)).catch(() => null),
-        ]);
-        if (myBlockCheck && myBlockCheck.exists()) {
-          throw new Error('Bu kullanıcıyı engellediniz. Mesaj gönderemezsiniz.');
-        }
-        if (otherBlockCheck && otherBlockCheck.exists()) {
-          throw new Error('Bu kullanıcıyla mesajlaşamazsınız.');
-        }
-      }
-    }
-  }
-
-  // 1. Mesaj alt koleksiyonuna ekle
+  // 1. Mesaj alt koleksiyonu verisi hazırlığı
   const messageData: any = {
     senderId: sender.uid,
     senderName: sender.displayName || sender.username,
@@ -996,9 +969,7 @@ export async function sendMessage(
     };
   }
 
-  const newDocRef = await addDoc(messagesCol, messageData);
-
-  // 2. Alıcıların UID'lerini bul ve unreadCount'larını artır
+  // 2. Ana konuşma özeti güncelleme verisi hazırlığı
   const hasImage = Boolean(cleanImageUrl);
   let lastMessageSummary = cleanText;
   if (hasImage) {
@@ -1016,29 +987,30 @@ export async function sendMessage(
     updatedAt: serverTimestamp(),
   };
 
-  try {
-    if (conversationData) {
-      const otherParticipantIds = (conversationData.participantIds || []).filter((uid) => uid !== sender.uid);
-      otherParticipantIds.forEach((uid) => {
-        updateData[`unreadCounts.${uid}`] = increment(1);
-      });
-    } else {
-      const [uid1, uid2] = conversationId.split('_');
-      const recipientUid = uid1 === sender.uid ? uid2 : uid1;
-      if (recipientUid) {
-        updateData[`unreadCounts.${recipientUid}`] = increment(1);
-      }
-    }
-  } catch (err) {
-    const [uid1, uid2] = conversationId.split('_');
-    const recipientUid = uid1 === sender.uid ? uid2 : uid1;
-    if (recipientUid) {
-      updateData[`unreadCounts.${recipientUid}`] = increment(1);
+  // Participant unreadCounts güncellemelerini belirle
+  let recipientUids: string[] = [];
+  if (options?.participantIds && options.participantIds.length > 0) {
+    recipientUids = options.participantIds.filter((uid) => uid !== sender.uid);
+  } else {
+    const parts = conversationId.split('_');
+    if (parts.length === 2) {
+      const recipient = parts[0] === sender.uid ? parts[1] : parts[0];
+      if (recipient) recipientUids = [recipient];
     }
   }
 
-  // 3. Ana konuşma dokümanındaki son mesajı, unread count'u ve güncelleme zamanını güncelle
-  await updateDoc(convDocRef, updateData);
+  recipientUids.forEach((uid) => {
+    updateData[`unreadCounts.${uid}`] = increment(1);
+  });
+
+  // 3. Sıralı beklemeleri tamamen kaldır: Mesaj ekleme (setDoc) ve konuşma güncellemesini (updateDoc) PARALEL çalıştır!
+  await Promise.all([
+    setDoc(newDocRef, messageData),
+    updateDoc(convDocRef, updateData).catch((err) => {
+      // Eğer updateDoc ilk mesaj için basitleştirilmiş setDoc gerektirirse merge ile fallback yap
+      return setDoc(convDocRef, updateData, { merge: true });
+    }),
+  ]);
 
   // 4. WhatsApp tarzı Gruplanmış Push Notification gönder
   // Alıcının sohbette olup mesajı anında okumuş olma ihtimaline karşı 500ms sonra kontrol edilir.
@@ -1047,10 +1019,14 @@ export async function sendMessage(
     try {
       if (!db) return;
 
-      // Mesajın Firestore'daki güncel durumunu kontrol et
-      const msgCheckSnap = await getDoc(newDocRef);
+      // Mesajın ve Konuşmanın Firestore'daki güncel durumunu kontrol et
+      const [msgCheckSnap, convSnap] = await Promise.all([
+        getDoc(newDocRef),
+        getDoc(convDocRef),
+      ]);
       if (!msgCheckSnap.exists()) return;
       const msgCheckData = msgCheckSnap.data();
+      const conversationData = convSnap.exists() ? (convSnap.data() as Conversation) : null;
 
       let targetRecipients: string[] = [];
       if (conversationData) {

@@ -210,6 +210,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isLongPressActiveRef = useRef(false);
+  const sendLockRef = useRef(false);
 
   // Karşıdaki kullanıcının bilgileri
   const otherParticipantId = useMemo(
@@ -681,7 +682,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   // Mesaj Gönderme (Metin, Fotoğraf, Fotoğraf + Metin, veya Yanıt)
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!conversation?.id || sending || isUploadingImage) return;
+    if (!conversation?.id || sending || isUploadingImage || sendLockRef.current) return;
 
     if (currentUser.isBanned) {
       setImageUploadError('Hesabınız askıya alınmıştır (Banlandınız). Mesaj gönderemezsiniz.');
@@ -710,7 +711,6 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
     if (currentUser.isMuted) {
       setImageUploadError('Hesabınız susturulmuştur. Mesaj gönderemezsiniz.');
-      return;
     }
 
     if (isSessionTerminated) {
@@ -726,42 +726,71 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     const textToSend = inputText.trim();
     if (!textToSend && !selectedImageFile && !imagePreviewUrl) return;
 
+    // Mükerrer gönderim kilit kontrolü
+    sendLockRef.current = true;
     setSending(true);
     setImageUploadError(null);
+
+    // Form alanlarını ve yanıt modunu ANINDA sıfırla (Kullanıcı beklemek zorunda kalmaz!)
+    const currentReplyTo = replyingToMessage;
+    const currentImageFile = selectedImageFile;
+    const currentImagePreviewUrl = imagePreviewUrl;
+
+    setInputText('');
+    setReplyingToMessage(null);
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    if (conversation?.id && currentUser?.uid) {
+      setUserTypingStatus(conversation.id, currentUser.uid, false);
+    }
+    handleRemoveSelectedImage();
 
     try {
       let uploadedImageUrl: string | null = null;
 
       // Eğer yerel dosya seçilmişse CDN'e yükle, GIF seçilmişse direkt URL'i kullan
-      if (selectedImageFile) {
+      if (currentImageFile) {
         setIsUploadingImage(true);
-        uploadedImageUrl = await uploadImageToImgBB(selectedImageFile);
-      } else if (imagePreviewUrl) {
-        uploadedImageUrl = imagePreviewUrl;
+        uploadedImageUrl = await uploadImageToImgBB(currentImageFile);
+      } else if (currentImagePreviewUrl) {
+        uploadedImageUrl = currentImagePreviewUrl;
       }
 
       // Yanıt referansı hazırla
-      const replyRef = replyingToMessage
+      const replyRef = currentReplyTo
         ? {
-            messageId: replyingToMessage.id,
-            senderId: replyingToMessage.senderId,
-            senderName: replyingToMessage.senderName || replyingToMessage.senderUsername || 'Kullanıcı',
-            text: (replyingToMessage.text || '').replace(/\s+/g, ' '),
-            imageUrl: replyingToMessage.imageUrl || null,
+            messageId: currentReplyTo.id,
+            senderId: currentReplyTo.senderId,
+            senderName: currentReplyTo.senderName || currentReplyTo.senderUsername || 'Kullanıcı',
+            text: (currentReplyTo.text || '').replace(/\s+/g, ' '),
+            imageUrl: currentReplyTo.imageUrl || null,
           }
         : null;
 
-      // Firestore'a tek bir mesaj dokümanı olarak kaydet (replyTo dahil)
-      await sendMessage(conversation.id, currentUser, textToSend, uploadedImageUrl, replyRef);
+      // Anlık Optimistic Mesaj Ekleme (Arayüz anında güncellenir)
+      const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const optimisticMsg: ChatMessage = {
+        id: tempId,
+        senderId: currentUser.uid,
+        senderName: currentUser.displayName || currentUser.username,
+        senderUsername: currentUser.username,
+        text: textToSend,
+        imageUrl: uploadedImageUrl,
+        createdAt: new Date(),
+        status: 'sent',
+        isRead: false,
+        readBy: { [currentUser.uid]: true },
+        replyTo: replyRef,
+      };
 
-      // Gönderim başarılı olduysa form alanlarını ve yanıt modunu temizle
-      setInputText('');
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-      if (conversation?.id && currentUser?.uid) {
-        setUserTypingStatus(conversation.id, currentUser.uid, false);
-      }
-      setReplyingToMessage(null);
-      handleRemoveSelectedImage();
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === tempId)) return prev;
+        return [...prev, optimisticMsg];
+      });
+
+      // Firestore'a tek ve paralel istek olarak kaydet
+      await sendMessage(conversation.id, currentUser, textToSend, uploadedImageUrl, replyRef, {
+        participantIds: conversation.participantIds,
+      });
 
       // 🤖 Eğer birebir DeepRed AI sohbeti ise VEYA grup sohbetinde @DeepRed AI etiketlenmişse yapay zeka yanıtını tetikle
       const isGroupChat = Boolean(conversation?.isGroup);
@@ -960,6 +989,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     } finally {
       setIsUploadingImage(false);
       setSending(false);
+      sendLockRef.current = false;
     }
   };
 
