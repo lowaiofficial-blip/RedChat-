@@ -290,6 +290,55 @@ export function subscribeToChannels(callback: (channels: Channel[]) => void): Un
 }
 
 /**
+ * 📊 Kanalların Son 7 Günde Gönderilen Mesaj/Post Sayılarını ve Son Aktiflik Zamanlarını Getirir
+ */
+export async function fetchChannelsRecentActivity(
+  channels: Channel[]
+): Promise<Record<string, { recentPostCount: number; lastActiveTimestamp: number }>> {
+  const result: Record<string, { recentPostCount: number; lastActiveTimestamp: number }> = {};
+  if (!db || !channels || channels.length === 0) return result;
+
+  const sevenDaysAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+
+  await Promise.all(
+    channels.map(async (ch) => {
+      const lastPostTime = ch.lastPostTimestamp?.toMillis
+        ? ch.lastPostTimestamp.toMillis()
+        : ch.lastPostTimestamp
+        ? new Date(ch.lastPostTimestamp).getTime()
+        : 0;
+
+      // Son gönderi 7 günden eskiyse veya hiç yoksa, son 7 günlük mesaj sayısı 0'dır
+      if (!lastPostTime || lastPostTime < sevenDaysAgoMs) {
+        result[ch.id] = { recentPostCount: 0, lastActiveTimestamp: lastPostTime };
+        return;
+      }
+
+      try {
+        const sevenDaysAgoDate = new Date(sevenDaysAgoMs);
+        const postsQuery = query(
+          collection(db, 'channels', ch.id, 'posts'),
+          where('createdAt', '>=', sevenDaysAgoDate)
+        );
+        const snap = await getDocs(postsQuery);
+        result[ch.id] = {
+          recentPostCount: snap.size,
+          lastActiveTimestamp: lastPostTime,
+        };
+      } catch (err) {
+        console.warn(`Kanal ${ch.id} aktivitesi alınamadı:`, err);
+        result[ch.id] = {
+          recentPostCount: ch.postCount || 0,
+          lastActiveTimestamp: lastPostTime,
+        };
+      }
+    })
+  );
+
+  return result;
+}
+
+/**
  * 📢 Tek Bir Kanalı Dinle
  */
 export function subscribeToChannel(

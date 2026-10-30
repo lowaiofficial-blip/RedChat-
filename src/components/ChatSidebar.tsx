@@ -2,6 +2,7 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import type { UserProfile, Conversation, Channel } from '../types';
 import { formatLastSeen } from '../services/chatService';
 import { isUserAdmin } from '../services/adminService';
+import { fetchChannelsRecentActivity } from '../services/channelService';
 import { UserAvatar } from './UserAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
 import { isRedChatAI, getRedChatAIProfile } from '../services/aiService';
@@ -27,6 +28,7 @@ import {
   Star,
   Clock,
   BadgeCheck,
+  Activity,
 } from 'lucide-react';
 
 interface ChatSidebarProps {
@@ -87,10 +89,27 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
   onOpenAdmin,
 }) => {
   const [activeTab, setActiveTab] = useState<'chats' | 'channels' | 'users'>('chats');
-  const [channelFilter, setChannelFilter] = useState<'all' | 'popular' | 'new' | 'verified' | 'following'>('all');
+  const [channelSort, setChannelSort] = useState<'newest' | 'active' | 'members'>('newest');
+  const [channelFilter, setChannelFilter] = useState<'all' | 'verified' | 'following'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [now, setNow] = useState<number>(Date.now());
+  const [recentActivityMap, setRecentActivityMap] = useState<Record<string, { recentPostCount: number; lastActiveTimestamp: number }>>({});
+
+  // ⚡ Kanalların Son 7 Günde Gönderilen Mesaj / Gönderi Sayılarını Hesapla
+  useEffect(() => {
+    let isMounted = true;
+    if (activeTab === 'channels' && channels.length > 0) {
+      fetchChannelsRecentActivity(channels).then((data) => {
+        if (isMounted) {
+          setRecentActivityMap(data);
+        }
+      });
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [channels, activeTab, channelSort]);
 
   // Yazıyor durumlarını periyodik kontrol etmek için 1 sn ticker
   useEffect(() => {
@@ -194,7 +213,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
     });
   }, [conversations, currentUser.uid, searchQuery, users, activeConversationId]);
 
-  // 📢 Filtrelenmiş Kanallar Listesi
+  // 📢 Filtrelenmiş ve Sıralanmış Kanallar Listesi
   const filteredChannels = useMemo(() => {
     let list = [...channels];
 
@@ -213,18 +232,76 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
       list = list.filter((ch) => followingChannelIds.includes(ch.id));
     } else if (channelFilter === 'verified') {
       list = list.filter((ch) => ch.isVerified);
-    } else if (channelFilter === 'popular') {
-      list.sort((a, b) => (b.followerCount || 0) - (a.followerCount || 0));
-    } else if (channelFilter === 'new') {
+    }
+
+    // 3. Sıralama (Sorting)
+    const sevenDaysAgoMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+
+    if (channelSort === 'newest') {
+      // 🆕 En yeni: En son oluşturulan kanallar en üstte (createdAt desc)
       list.sort((a, b) => {
-        const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
-        const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+        const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+        const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+        return timeB - timeA;
+      });
+    } else if (channelSort === 'active') {
+      // 🔥 En aktif: Son 7 gün içerisinde en fazla mesaj gönderilen kanallar.
+      // Mesaj sayısı eşitse daha yeni aktif olan kanal üstte.
+      list.sort((a, b) => {
+        const lastTimeA = a.lastPostTimestamp?.toMillis
+          ? a.lastPostTimestamp.toMillis()
+          : a.lastPostTimestamp
+          ? new Date(a.lastPostTimestamp).getTime()
+          : 0;
+        const lastTimeB = b.lastPostTimestamp?.toMillis
+          ? b.lastPostTimestamp.toMillis()
+          : b.lastPostTimestamp
+          ? new Date(b.lastPostTimestamp).getTime()
+          : 0;
+
+        const defaultCountA = lastTimeA >= sevenDaysAgoMs ? Math.max(1, a.postCount || 0) : 0;
+        const defaultCountB = lastTimeB >= sevenDaysAgoMs ? Math.max(1, b.postCount || 0) : 0;
+
+        const activityA = recentActivityMap[a.id] || {
+          recentPostCount: defaultCountA,
+          lastActiveTimestamp: lastTimeA,
+        };
+        const activityB = recentActivityMap[b.id] || {
+          recentPostCount: defaultCountB,
+          lastActiveTimestamp: lastTimeB,
+        };
+
+        // 1. Son 7 gündeki gönderi sayısı (azalan)
+        if (activityB.recentPostCount !== activityA.recentPostCount) {
+          return activityB.recentPostCount - activityA.recentPostCount;
+        }
+
+        // 2. Mesaj sayısı eşitse son aktif olunma zamanına göre (daha yeni aktif olan üstte)
+        if (activityB.lastActiveTimestamp !== activityA.lastActiveTimestamp) {
+          return activityB.lastActiveTimestamp - activityA.lastActiveTimestamp;
+        }
+
+        // 3. O da eşitse kanal oluşturulma tarihine göre (azalan)
+        const createTimeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+        const createTimeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+        return createTimeB - createTimeA;
+      });
+    } else if (channelSort === 'members') {
+      // 👥 En çok üyeli: Üye (takipçi) sayısı en yüksek olanlar. Eşitse daha yeni oluşturulan üstte.
+      list.sort((a, b) => {
+        const followersA = a.followerCount || 0;
+        const followersB = b.followerCount || 0;
+        if (followersB !== followersA) {
+          return followersB - followersA;
+        }
+        const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+        const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
         return timeB - timeA;
       });
     }
 
     return list;
-  }, [channels, searchQuery, channelFilter, followingChannelIds]);
+  }, [channels, searchQuery, channelFilter, channelSort, followingChannelIds, recentActivityMap]);
 
   return (
     <aside className="relative w-full md:w-80 lg:w-96 flex flex-col h-full bg-white dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-800 flex-shrink-0">
@@ -633,7 +710,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
         ) : activeTab === 'channels' ? (
           // 📢 KANALLAR LİSTESİ (CHANNELS LIST)
           <div className="flex flex-col h-full">
-            {/* Üstte + Kanal Oluştur ve Filtreler */}
+            {/* Üstte + Kanal Oluştur, Sıralama Seçenekleri ve Filtreler */}
             <div className="p-3 bg-zinc-50 dark:bg-zinc-800/40 border-b border-zinc-100 dark:border-zinc-800 space-y-2.5">
               <button
                 id="sidebar-create-channel-btn"
@@ -643,6 +720,51 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                 <Plus className="w-4 h-4" />
                 <span>Yeni Kanal Oluştur</span>
               </button>
+
+              {/* 🔀 ÜÇLÜ SIRALAMA MENÜSÜ */}
+              <div className="grid grid-cols-3 gap-1 p-1 bg-zinc-200/70 dark:bg-zinc-800 rounded-xl text-xs font-semibold">
+                <button
+                  id="sort-channel-newest"
+                  onClick={() => setChannelSort('newest')}
+                  className={`py-1.5 px-1 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer ${
+                    channelSort === 'newest'
+                      ? 'bg-white dark:bg-zinc-900 text-red-600 dark:text-red-400 font-bold shadow-xs'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                  }`}
+                  title="En yeni kanallar"
+                >
+                  <Clock className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">En yeni</span>
+                </button>
+
+                <button
+                  id="sort-channel-active"
+                  onClick={() => setChannelSort('active')}
+                  className={`py-1.5 px-1 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer ${
+                    channelSort === 'active'
+                      ? 'bg-white dark:bg-zinc-900 text-red-600 dark:text-red-400 font-bold shadow-xs'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                  }`}
+                  title="Son 7 günün en aktif kanalları"
+                >
+                  <Activity className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">En aktif</span>
+                </button>
+
+                <button
+                  id="sort-channel-members"
+                  onClick={() => setChannelSort('members')}
+                  className={`py-1.5 px-1 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer ${
+                    channelSort === 'members'
+                      ? 'bg-white dark:bg-zinc-900 text-red-600 dark:text-red-400 font-bold shadow-xs'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                  }`}
+                  title="En çok üyeli (takipçili) kanallar"
+                >
+                  <Users className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">En çok üyeli</span>
+                </button>
+              </div>
 
               {/* Filtre Çipleri */}
               <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none pb-0.5 text-[11px]">
@@ -655,28 +777,6 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                   }`}
                 >
                   Tümü
-                </button>
-                <button
-                  onClick={() => setChannelFilter('popular')}
-                  className={`px-2.5 py-1 rounded-lg font-semibold whitespace-nowrap transition-colors flex items-center gap-1 cursor-pointer ${
-                    channelFilter === 'popular'
-                      ? 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900'
-                      : 'bg-zinc-200/70 dark:bg-zinc-700/60 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-300/70'
-                  }`}
-                >
-                  <Star className="w-3 h-3 text-amber-500 fill-amber-500" />
-                  <span>Popüler</span>
-                </button>
-                <button
-                  onClick={() => setChannelFilter('new')}
-                  className={`px-2.5 py-1 rounded-lg font-semibold whitespace-nowrap transition-colors flex items-center gap-1 cursor-pointer ${
-                    channelFilter === 'new'
-                      ? 'bg-zinc-900 dark:bg-white text-white dark:text-zinc-900'
-                      : 'bg-zinc-200/70 dark:bg-zinc-700/60 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-300/70'
-                  }`}
-                >
-                  <Clock className="w-3 h-3 text-blue-500" />
-                  <span>Yeni</span>
                 </button>
                 <button
                   onClick={() => setChannelFilter('verified')}
