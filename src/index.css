@@ -124,3 +124,45 @@ html, body, #root {
   }
 }
 
+/* 🎬 Video Oyuncu İlerleme Çubuğu (Video Range Slider) */
+.video-range-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 9999px;
+  outline: none;
+  transition: background 0.05s linear;
+}
+
+.video-range-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #dc2626;
+  border: 2px solid #ffffff;
+  cursor: pointer;
+  box-shadow: 0 0 10px rgba(220, 38, 38, 0.8);
+  transition: transform 0.1s ease;
+}
+
+.video-range-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
+}
+
+.video-range-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #dc2626;
+  border: 2px solid #ffffff;
+  cursor: pointer;
+  box-shadow: 0 0 10px rgba(220, 38, 38, 0.8);
+  transition: transform 0.1s ease;
+}
+
+.video-range-slider::-moz-range-thumb:hover {
+  transform: scale(1.25);
+}
+

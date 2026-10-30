@@ -10,7 +10,10 @@ import {
   MoreVertical,
   Smile,
   Maximize2,
+  Play,
+  Film,
 } from 'lucide-react';
+import { formatVideoDuration } from '../services/videoUploadService';
 
 const QUICK_REACTIONS = ['❤️', '👍', '😂', '🔥', '👏'];
 
@@ -60,6 +63,7 @@ export interface ChatMessageItemProps {
   onFinishStreaming?: (messageId: string) => void;
   onOpenProfile: (user: UserProfile) => void;
   onSelectImage: (data: { url: string; caption?: string }) => void;
+  onSelectVideo?: (data: { url: string; duration?: number; caption?: string; senderName?: string }) => void;
   onStartReply: (msg: ChatMessage) => void;
   onSelectActionMessage: (msg: ChatMessage) => void;
   onReaction: (msg: ChatMessage, emoji: string) => void;
@@ -91,6 +95,7 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
     onFinishStreaming,
     onOpenProfile,
     onSelectImage,
+    onSelectVideo,
     onStartReply,
     onSelectActionMessage,
     onReaction,
@@ -125,11 +130,6 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
     if (!isActivelyStreaming) return;
 
     if (displayedLength < fullText.length) {
-      // 🚀 Adaptif Hız & Parça Boyutu (Text Length Based Adaptive Streaming)
-      // Çok kısa metin (< 80 karakter): Yavaş daktilo hissi (22ms - 38ms)
-      // Orta boy metin (80 - 300 karakter): Dengeli orta hız (10ms - 18ms)
-      // Uzun metin (300 - 700 karakter): Hızlı akış (3-4 karakterlik adımlarla, 8ms - 14ms)
-      // Çok uzun metin (> 700 karakter): Süper hızlı akış (5-12 karakterlik adımlarla, 6ms - 10ms)
       const totalLen = fullText.length;
       let stepSize = 1;
       let dynamicSpeed = 20;
@@ -169,6 +169,7 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
     : (msg.isStreaming ? fullText : (isActivelyStreaming ? fullText.slice(0, displayedLength) : fullText));
 
   const hasImage = Boolean(msg.imageUrl);
+  const hasVideo = Boolean(msg.videoUrl);
   const hasText = Boolean((liveText !== undefined ? liveText.trim() : (msg.text && msg.text.trim())) || isThinking);
   const isRead =
     msg.isRead ||
@@ -226,7 +227,7 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
               WebkitTouchCallout: 'none',
             }}
             className={`relative rounded-2xl text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] shadow-xs select-none transition-transform active:scale-[0.99] min-w-0 overflow-hidden ${
-              hasImage
+              hasImage || hasVideo
                 ? 'w-56 sm:w-68 max-w-[72vw] p-1 pb-1.5'
                 : 'w-fit max-w-full px-3 py-1.5'
             } ${
@@ -290,8 +291,18 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
                       className="w-8 h-8 rounded-lg object-cover flex-shrink-0 border border-black/10"
                     />
                   )}
+                  {msg.replyTo.videoUrl && (
+                    <div className="w-8 h-8 rounded-lg bg-black/80 flex items-center justify-center shrink-0 border border-black/20 text-red-400">
+                      <Film className="w-4 h-4" />
+                    </div>
+                  )}
                   <div className="min-w-0 max-w-full flex-1 overflow-hidden">
-                    {msg.replyTo.imageUrl && !msg.replyTo.text ? (
+                    {msg.replyTo.videoUrl && !msg.replyTo.text ? (
+                      <span className={`text-[11px] flex items-center gap-1 italic truncate min-w-0 max-w-full ${isMe ? 'text-red-100/80' : 'text-zinc-500 dark:text-zinc-400'}`}>
+                        <Film className="w-3 h-3 shrink-0" />
+                        <span>Video</span>
+                      </span>
+                    ) : msg.replyTo.imageUrl && !msg.replyTo.text ? (
                       <span
                         className={`text-[11px] flex items-center gap-1 italic truncate min-w-0 max-w-full ${
                           isMe ? 'text-red-100/80' : 'text-zinc-500 dark:text-zinc-400'
@@ -300,11 +311,6 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
                         <ImageIcon className="w-3 h-3 shrink-0" />
                         <span>Fotoğraf</span>
                       </span>
-                    ) : msg.replyTo.imageUrl && msg.replyTo.text ? (
-                      <div className="text-[11px] flex items-center gap-1 truncate min-w-0 max-w-full">
-                        <ImageIcon className="w-3 h-3 shrink-0 opacity-80" />
-                        <span className="truncate min-w-0 max-w-full">{msg.replyTo.text.replace(/\s+/g, ' ')}</span>
-                      </div>
                     ) : (
                       <p className="text-[11px] truncate break-all [overflow-wrap:anywhere] opacity-90 min-w-0 max-w-full block">
                         {(msg.replyTo.text || 'Bu mesaj artık kullanılamıyor.').replace(/\s+/g, ' ')}
@@ -315,8 +321,75 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
               </div>
             )}
 
-            {/* 🖼️ Fotoğraf İçeriği veya Metin + Saat (Kompakt Tek Akış) */}
-            {!hasImage ? (
+            {/* 🎬 Video / 🖼️ Fotoğraf / Metin İçeriği */}
+            {hasVideo ? (
+              <>
+                <div
+                  className="relative group/vid overflow-hidden rounded-xl cursor-pointer bg-black/80 flex items-center justify-center min-h-[160px] max-h-60 sm:max-h-68 border border-zinc-700/50"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (onSelectVideo) {
+                      onSelectVideo({
+                        url: msg.videoUrl!,
+                        duration: msg.videoDuration || undefined,
+                        caption: msg.text || undefined,
+                        senderName: senderDisplayName,
+                      });
+                    }
+                  }}
+                >
+                  <video
+                    src={msg.videoUrl!}
+                    className="w-full h-auto max-h-60 sm:max-h-68 object-cover rounded-xl opacity-90 group-hover/vid:opacity-100 transition-opacity"
+                    preload="metadata"
+                    muted
+                  />
+                  <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+                    <div className="p-3 rounded-full bg-red-600 text-white shadow-lg group-hover/vid:scale-110 transition-transform">
+                      <Play className="w-6 h-6 ml-0.5 fill-white" />
+                    </div>
+                  </div>
+                  {msg.videoDuration && (
+                    <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded-md bg-black/75 text-white text-[10px] font-mono border border-white/20">
+                      {formatVideoDuration(msg.videoDuration)}
+                    </div>
+                  )}
+                </div>
+
+                {/* Video Altı Metin + Saat */}
+                <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 px-1 pt-1 max-w-full min-w-0">
+                  {hasText && (
+                    <span className="whitespace-pre-wrap select-none text-xs leading-relaxed break-words break-all [overflow-wrap:anywhere] [word-break:break-word] flex-1 min-w-0 max-w-full">
+                      {renderMessageText(msg.text, isMe)}
+                    </span>
+                  )}
+                  <span
+                    className={`inline-flex items-center gap-1 font-mono text-[10px] select-none shrink-0 self-end ml-auto ${
+                      isMe ? 'text-red-100/80' : 'text-zinc-400 dark:text-zinc-400'
+                    }`}
+                  >
+                    {msg.isEdited && (
+                      <span className="italic text-[9px] opacity-75 mr-0.5">
+                        (düzenlendi)
+                      </span>
+                    )}
+                    <span>{formatMsgTime(msg.createdAt)}</span>
+                    {isMe && (
+                      <span
+                        className="inline-flex items-center ml-0.5"
+                        title={isRead ? 'Okundu' : 'Gönderildi'}
+                      >
+                        {isRead ? (
+                          <CheckCheck className="w-3.5 h-3.5 text-white font-bold" />
+                        ) : (
+                          <Check className="w-3.5 h-3.5 text-red-200" />
+                        )}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              </>
+            ) : !hasImage ? (
               <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 max-w-full min-w-0">
                 {isThinking && !currentText ? (
                   <div className="ai-loader-wrapper py-0.5 select-none min-h-[22px]">

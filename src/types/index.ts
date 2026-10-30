@@ -151,6 +151,8 @@ export interface Conversation {
   lastMessageText?: string;
   lastMessageImageUrl?: string | null;
   lastMessageHasImage?: boolean;
+  lastMessageVideoUrl?: string | null;
+  lastMessageHasVideo?: boolean;
   lastMessageTimestamp?: any;
   lastMessageSenderId?: string;
   unreadCounts?: {
@@ -182,6 +184,7 @@ export interface ChatReplyReference {
   senderName: string;
   text?: string;
   imageUrl?: string | null;
+  videoUrl?: string | null;
 }
 
 export interface ChatMessage {
@@ -191,6 +194,8 @@ export interface ChatMessage {
   senderUsername: string;
   text: string;
   imageUrl?: string | null;
+  videoUrl?: string | null;
+  videoDuration?: number | null;
   createdAt: any;
   status?: 'sent' | 'delivered' | 'read';
   isRead?: boolean;
@@ -254,6 +259,8 @@ export interface ChannelPost {
   channelId: string;
   text: string;
   imageUrl?: string | null;
+  videoUrl?: string | null;
+  videoDuration?: number | null;
   viewsCount: number;
   reactions?: { [emoji: string]: string[] };
   createdAt: any;

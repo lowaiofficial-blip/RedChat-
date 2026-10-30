@@ -913,6 +913,8 @@ export async function sendMessage(
     isSecurityWarning?: boolean;
     securityType?: 'terminated' | 'warning';
     participantIds?: string[];
+    videoUrl?: string | null;
+    videoDuration?: number | null;
   }
 ): Promise<string> {
   if (!db) throw new Error('Firestore hazır değil');
@@ -927,8 +929,10 @@ export async function sendMessage(
 
   const cleanText = text.trim();
   const cleanImageUrl = imageUrl?.trim() || null;
+  const cleanVideoUrl = options?.videoUrl?.trim() || null;
+  const videoDuration = options?.videoDuration || null;
 
-  if (!cleanText && !cleanImageUrl && !options?.isThinking && !options?.isSecurityWarning) return '';
+  if (!cleanText && !cleanImageUrl && !cleanVideoUrl && !options?.isThinking && !options?.isSecurityWarning) return '';
 
   const messagesCol = collection(db, 'conversations', conversationId, 'messages');
   const convDocRef = doc(db, 'conversations', conversationId);
@@ -959,6 +963,11 @@ export async function sendMessage(
     messageData.imageUrl = cleanImageUrl;
   }
 
+  if (cleanVideoUrl) {
+    messageData.videoUrl = cleanVideoUrl;
+    messageData.videoDuration = videoDuration;
+  }
+
   if (replyTo) {
     messageData.replyTo = {
       messageId: replyTo.messageId,
@@ -966,13 +975,17 @@ export async function sendMessage(
       senderName: replyTo.senderName,
       text: replyTo.text || '',
       imageUrl: replyTo.imageUrl || null,
+      videoUrl: replyTo.videoUrl || null,
     };
   }
 
   // 2. Ana konuşma özeti güncelleme verisi hazırlığı
   const hasImage = Boolean(cleanImageUrl);
+  const hasVideo = Boolean(cleanVideoUrl);
   let lastMessageSummary = cleanText;
-  if (hasImage) {
+  if (hasVideo) {
+    lastMessageSummary = cleanText ? cleanText : '🎬 Video';
+  } else if (hasImage) {
     lastMessageSummary = cleanText ? cleanText : 'Fotoğraf';
   } else if (options?.isThinking && !cleanText) {
     lastMessageSummary = 'Düşünüyor...';
@@ -982,6 +995,8 @@ export async function sendMessage(
     lastMessageText: lastMessageSummary,
     lastMessageHasImage: hasImage,
     lastMessageImageUrl: cleanImageUrl || null,
+    lastMessageHasVideo: hasVideo,
+    lastMessageVideoUrl: cleanVideoUrl || null,
     lastMessageSenderId: sender.uid,
     lastMessageTimestamp: serverTimestamp(),
     updatedAt: serverTimestamp(),

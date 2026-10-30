@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 import { initializeApp, cert, applicationDefault, getApps, type AppOptions } from 'firebase-admin/app';
@@ -313,6 +314,40 @@ async function startServer() {
     } catch (err: any) {
       console.error("Görsel yükleme sunucu hatası:", err);
       return res.status(500).json({ error: "Görsel işleme hatası." });
+    }
+  });
+
+  // ☁️ CLOUDINARY İMZA (SIGNATURE) ENDPOINT'İ (Güvenli Video Yükleme)
+  app.get("/api/cloudinary/signature", (req, res) => {
+    try {
+      const cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
+      const apiKey = process.env.CLOUDINARY_API_KEY?.trim();
+      const apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
+
+      if (!cloudName || !apiKey || !apiSecret) {
+        return res.status(500).json({
+          error: "Cloudinary ortam değişkenleri (CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET) sunucuda tanımlanmamış. Lütfen .env dosyasını kontrol edin.",
+        });
+      }
+
+      const timestamp = Math.floor(Date.now() / 1000);
+      const folder = "redchat_videos";
+
+      // Alfabetik sıralı parametre dizisi
+      const paramsToSign = `folder=${folder}&timestamp=${timestamp}`;
+      const stringToSign = `${paramsToSign}${apiSecret}`;
+      const signature = crypto.createHash("sha1").update(stringToSign).digest("hex");
+
+      return res.json({
+        signature,
+        timestamp,
+        cloudName,
+        apiKey,
+        folder,
+      });
+    } catch (err: any) {
+      console.error("Cloudinary signature error:", err);
+      return res.status(500).json({ error: "Cloudinary imza oluşturulurken hata oluştu." });
     }
   });
 

@@ -13,6 +13,9 @@ import { uploadImageToImgBB } from '../services/imageUploadService';
 import { VerifiedBadge } from './VerifiedBadge';
 import { EmojiPicker } from './EmojiPicker';
 import { ChannelProfileModal } from './ChannelProfileModal';
+import { validateVideo, uploadVideoToCloudinary, type UploadVideoTask, formatVideoDuration } from '../services/videoUploadService';
+import { VideoSendPreviewModal } from './VideoSendPreviewModal';
+import { VideoLightboxModal } from './VideoLightboxModal';
 import {
   ArrowLeft,
   Radio,
@@ -34,6 +37,8 @@ import {
   Sparkles,
   Plus,
   RotateCcw,
+  Play,
+  Film,
 } from 'lucide-react';
 
 /**
@@ -145,6 +150,15 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
   // Lightbox modal state (Görseli büyütme)
   const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(null);
 
+  // 🎬 Video Gönderme & Lightbox State'leri
+  const [selectedVideoFile, setSelectedVideoFile] = useState<File | null>(null);
+  const [selectedVideoDuration, setSelectedVideoDuration] = useState<number>(0);
+  const [showVideoPreviewModal, setShowVideoPreviewModal] = useState(false);
+  const [isUploadingVideo, setIsUploadingVideo] = useState(false);
+  const [videoUploadProgress, setVideoUploadProgress] = useState(0);
+  const videoUploadTaskRef = useRef<UploadVideoTask | null>(null);
+  const [lightboxVideo, setLightboxVideo] = useState<{ url: string; duration?: number; caption?: string; channelName?: string } | null>(null);
+
   // Takip Et/Çık Loading ve Spam Koruması State'i
   const [followLoading, setFollowLoading] = useState(false);
 
@@ -208,13 +222,28 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
     return () => unsubscribe();
   }, [channel.id, currentUser.uid]);
 
-  // Fotoğraf seçimi
-  const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Media (Fotoğraf veya Video) seçimi
+  const handleMediaSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (file.type.startsWith('video/')) {
+      setPostError(null);
+      const validation = await validateVideo(file);
+      if (!validation.valid) {
+        setPostError(validation.error || 'Video süresi 30 saniyeyi aşamaz.');
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        return;
+      }
+      setSelectedVideoFile(file);
+      setSelectedVideoDuration(validation.duration);
+      setShowVideoPreviewModal(true);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
     if (!file.type.startsWith('image/')) {
-      setPostError('Lütfen geçerli bir görsel dosyası seçin.');
+      setPostError('Lütfen geçerli bir görsel veya video dosyası seçin.');
       return;
     }
 
@@ -227,6 +256,56 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
     setSelectedPhotoFile(file);
     const objUrl = URL.createObjectURL(file);
     setPreviewPhotoUrl(objUrl);
+  };
+
+  const handleSendVideoFromPreview = async (captionText: string) => {
+    if (!selectedVideoFile || !channel.id || isUploadingVideo) return;
+
+    setShowVideoPreviewModal(false);
+    setIsUploadingVideo(true);
+    setVideoUploadProgress(0);
+    setPostError(null);
+
+    const task = uploadVideoToCloudinary(selectedVideoFile, selectedVideoDuration, (pct) => {
+      setVideoUploadProgress(pct);
+    });
+    videoUploadTaskRef.current = task;
+
+    try {
+      const { videoUrl, duration } = await task.promise;
+      await createChannelPost(
+        channel.id,
+        captionText,
+        null,
+        channel.name,
+        currentUser.uid,
+        videoUrl,
+        duration
+      );
+
+      setSelectedVideoFile(null);
+      setSelectedVideoDuration(0);
+    } catch (err: any) {
+      if (err.message !== 'Yükleme iptal edildi.') {
+        console.error('Video yükleme hatası:', err);
+        setPostError(err.message || 'Video yüklenirken hata oluştu.');
+      }
+    } finally {
+      setIsUploadingVideo(false);
+      setVideoUploadProgress(0);
+      videoUploadTaskRef.current = null;
+    }
+  };
+
+  const handleCancelVideoUpload = () => {
+    if (videoUploadTaskRef.current) {
+      videoUploadTaskRef.current.abort();
+      videoUploadTaskRef.current = null;
+    }
+    setIsUploadingVideo(false);
+    setVideoUploadProgress(0);
+    setSelectedVideoFile(null);
+    setSelectedVideoDuration(0);
   };
 
   const handleRemovePhoto = () => {
@@ -511,8 +590,37 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                 id={`channel-post-${post.id}`}
                 className="bg-white dark:bg-zinc-900 border border-zinc-200/90 dark:border-zinc-800 rounded-2xl shadow-xs overflow-hidden transition-all hover:border-zinc-300 dark:hover:border-zinc-700"
               >
-                {/* 1. Gönderi Görseli (WhatsApp Tarzı En Üstte Tam Genişlik) */}
-                {post.imageUrl && (
+                {/* 1. Gönderi Videosu veya Görseli */}
+                {post.videoUrl ? (
+                  <div
+                    className="relative bg-black overflow-hidden flex justify-center items-center cursor-pointer group min-h-[220px] max-h-[460px]"
+                    onClick={() =>
+                      setLightboxVideo({
+                        url: post.videoUrl!,
+                        duration: post.videoDuration || undefined,
+                        caption: post.text || undefined,
+                        channelName: channel.name,
+                      })
+                    }
+                  >
+                    <video
+                      src={post.videoUrl}
+                      className="w-full max-h-[460px] object-cover opacity-90 group-hover:opacity-100 transition-opacity"
+                      preload="metadata"
+                      muted
+                    />
+                    <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+                      <div className="p-4 rounded-full bg-red-600 text-white shadow-2xl group-hover:scale-110 transition-transform">
+                        <Play className="w-8 h-8 ml-1 fill-white" />
+                      </div>
+                    </div>
+                    {post.videoDuration && (
+                      <div className="absolute bottom-3 right-3 px-2.5 py-1 rounded-lg bg-black/80 text-white text-xs font-mono border border-white/20">
+                        {formatVideoDuration(post.videoDuration)}
+                      </div>
+                    )}
+                  </div>
+                ) : post.imageUrl ? (
                   <div className="relative bg-black/5 dark:bg-black/30 overflow-hidden flex justify-center cursor-pointer group">
                     <img
                       src={post.imageUrl}
@@ -522,7 +630,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                       loading="lazy"
                     />
                   </div>
-                )}
+                ) : null}
 
                 {/* 2. Gönderi İçeriği: Başlık, WhatsApp Formatlı Metin ve Tepkiler */}
                 <div className="p-4 sm:p-5 pt-3.5 pb-3 space-y-3">
@@ -765,12 +873,36 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
               </div>
             )}
 
+            {/* Video Yükleme İlerleme Çubuğu */}
+            {isUploadingVideo && (
+              <div className="mb-3 p-3 bg-zinc-900 border border-zinc-800 text-white rounded-2xl flex items-center justify-between shadow-xl">
+                <div className="flex items-center gap-3">
+                  <div className="relative w-10 h-10 flex items-center justify-center shrink-0">
+                    <svg className="w-10 h-10 transform -rotate-90">
+                      <circle cx="20" cy="20" r="16" stroke="currentColor" strokeWidth="3" className="text-zinc-800" fill="transparent" />
+                      <circle cx="20" cy="20" r="16" stroke="currentColor" strokeWidth="3" className="text-red-500 transition-all duration-200" fill="transparent" strokeDasharray={100.5} strokeDashoffset={100.5 - (videoUploadProgress / 100) * 100.5} strokeLinecap="round" />
+                    </svg>
+                    <button type="button" onClick={handleCancelVideoUpload} className="absolute inset-0 m-auto w-6 h-6 rounded-full bg-red-600 text-white flex items-center justify-center hover:bg-red-500 active:scale-95 transition-all cursor-pointer shadow-md" title="Yüklemeyi İptal Et (X)">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-xs font-bold text-zinc-100 flex items-center gap-1.5">
+                      <Film className="w-4 h-4 text-red-500" />
+                      <span>Video Yükleniyor...</span>
+                    </span>
+                    <span className="text-[10px] font-mono text-zinc-400">%{videoUploadProgress} tamamlandı</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <form onSubmit={handlePublishPost} className="flex flex-col gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*"
-                onChange={handlePhotoSelect}
+                accept="image/*,video/*"
+                onChange={handleMediaSelect}
                 className="hidden"
               />
 
@@ -962,6 +1094,30 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* 🎬 Video Önizleme Modalı */}
+      <VideoSendPreviewModal
+        isOpen={showVideoPreviewModal}
+        file={selectedVideoFile}
+        duration={selectedVideoDuration}
+        onClose={() => {
+          setShowVideoPreviewModal(false);
+          setSelectedVideoFile(null);
+          setSelectedVideoDuration(0);
+        }}
+        onSend={handleSendVideoFromPreview}
+        isSending={isUploadingVideo}
+      />
+
+      {/* 🎬 Fullscreen Custom Video Player Lightbox */}
+      <VideoLightboxModal
+        isOpen={Boolean(lightboxVideo)}
+        videoUrl={lightboxVideo?.url || null}
+        videoDuration={lightboxVideo?.duration}
+        caption={lightboxVideo?.caption}
+        senderName={lightboxVideo?.channelName || channel.name}
+        onClose={() => setLightboxVideo(null)}
+      />
 
       {showChannelProfile && (
         <ChannelProfileModal

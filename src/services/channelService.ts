@@ -655,31 +655,41 @@ export async function createChannelPost(
   text: string,
   imageUrl?: string | null,
   channelName?: string,
-  authorUid?: string
+  authorUid?: string,
+  videoUrl?: string | null,
+  videoDuration?: number | null
 ): Promise<string> {
   if (!db || !channelId) throw new Error('Kanal ID eksik.');
   const trimmedText = text.trim();
-  if (!trimmedText && !imageUrl) {
-    throw new Error('Gönderi için metin veya fotoğraf gereklidir.');
+  const cleanVideoUrl = videoUrl?.trim() || null;
+  if (!trimmedText && !imageUrl && !cleanVideoUrl) {
+    throw new Error('Gönderi için metin, fotoğraf veya video gereklidir.');
   }
 
   const postRef = doc(collection(db, 'channels', channelId, 'posts'));
   const postId = postRef.id;
   const channelRef = doc(db, 'channels', channelId);
 
+  const postData: any = {
+    id: postId,
+    channelId,
+    text: trimmedText,
+    imageUrl: imageUrl || null,
+    viewsCount: 0,
+    createdAt: serverTimestamp(),
+  };
+
+  if (cleanVideoUrl) {
+    postData.videoUrl = cleanVideoUrl;
+    postData.videoDuration = videoDuration || null;
+  }
+
   // Post setDoc ve Channel updateDoc işlemlerini paralel çalıştır
   await Promise.all([
-    setDoc(postRef, {
-      id: postId,
-      channelId,
-      text: trimmedText,
-      imageUrl: imageUrl || null,
-      viewsCount: 0,
-      createdAt: serverTimestamp(),
-    }),
+    setDoc(postRef, postData),
     updateDoc(channelRef, {
       postCount: increment(1),
-      lastPostText: trimmedText || 'Fotoğraf',
+      lastPostText: trimmedText || (cleanVideoUrl ? '🎬 Video' : 'Fotoğraf'),
       lastPostTimestamp: serverTimestamp(),
       updatedAt: serverTimestamp(),
     }).catch(() => {}),

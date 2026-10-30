@@ -21,6 +21,9 @@ import { VerifiedBadge } from './VerifiedBadge';
 import { SequentialTypingDots } from './SequentialTypingDots';
 import { getTypingInfo } from '../utils/typingHelper';
 import { MarkdownMessage } from './MarkdownMessage';
+import { validateVideo, uploadVideoToCloudinary, type UploadVideoTask, formatVideoDuration } from '../services/videoUploadService';
+import { VideoSendPreviewModal } from './VideoSendPreviewModal';
+import { VideoLightboxModal } from './VideoLightboxModal';
 import { isRedChatAI, requestAIChatResponse, requestAIChatStream, getRedChatAIProfile, REDCHAT_AI_UID, type AiChatMode } from '../services/aiService';
 import { isAbusiveMessage } from '../services/moderationService';
 import { SecurityTerminationAlert, SECURITY_TERMINATION_MESSAGE_TEXT } from './SecurityTerminationAlert';
@@ -97,6 +100,15 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const [imageUploadError, setImageUploadError] = useState<string | null>(null);
   const [showGiphyPicker, setShowGiphyPicker] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 🎬 Video Gönderme & Lightbox State'leri
+  const [selectedVideoFile, setSelectedVideoFile] = useState<File | null>(null);
+  const [selectedVideoDuration, setSelectedVideoDuration] = useState<number>(0);
+  const [showVideoPreviewModal, setShowVideoPreviewModal] = useState(false);
+  const [isUploadingVideo, setIsUploadingVideo] = useState(false);
+  const [videoUploadProgress, setVideoUploadProgress] = useState(0);
+  const videoUploadTaskRef = useRef<UploadVideoTask | null>(null);
+  const [lightboxVideo, setLightboxVideo] = useState<{ url: string; duration?: number; caption?: string; senderName?: string } | null>(null);
 
   const handleSelectGif = (gifUrl: string) => {
     setShowGiphyPicker(false);
@@ -439,13 +451,30 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, activeAiStream?.text, activeAiStream?.isThinking]);
 
-  // Fotoğraf Seçimi
-  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Fotoğraf ve Video Seçimi (Galeri)
+  const handleMediaSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // 🎬 Video Dosyası Seçildiğinde
+    if (file.type.startsWith('video/')) {
+      setImageUploadError(null);
+      const validation = await validateVideo(file);
+      if (!validation.valid) {
+        setImageUploadError(validation.error || 'Video süresi 30 saniyeyi aşamaz.');
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        return;
+      }
+      setSelectedVideoFile(file);
+      setSelectedVideoDuration(validation.duration);
+      setShowVideoPreviewModal(true);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    // 🖼️ Fotoğraf Dosyası Seçildiğinde
     if (!file.type.startsWith('image/')) {
-      setImageUploadError('Lütfen geçerli bir görsel dosyası seçin (PNG, JPG, WEBP).');
+      setImageUploadError('Lütfen geçerli bir görsel veya video dosyası seçin.');
       return;
     }
 
@@ -462,6 +491,67 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     setSelectedImageFile(file);
     setImagePreviewUrl(objectUrl);
     setImageUploadError(null);
+  };
+
+  // Video Önizleme Ekranından Gönder Tıklandığında
+  const handleSendVideoFromPreview = async (captionText: string) => {
+    if (!selectedVideoFile || !conversation?.id || isUploadingVideo) return;
+
+    setShowVideoPreviewModal(false);
+    setIsUploadingVideo(true);
+    setVideoUploadProgress(0);
+    setImageUploadError(null);
+
+    const task = uploadVideoToCloudinary(selectedVideoFile, selectedVideoDuration, (pct) => {
+      setVideoUploadProgress(pct);
+    });
+    videoUploadTaskRef.current = task;
+
+    try {
+      const { videoUrl, duration } = await task.promise;
+
+      const replyRef = replyingToMessage
+        ? {
+            messageId: replyingToMessage.id,
+            senderId: replyingToMessage.senderId,
+            senderName: replyingToMessage.senderName || replyingToMessage.senderUsername || 'Kullanıcı',
+            text: (replyingToMessage.text || '').replace(/\s+/g, ' '),
+            imageUrl: replyingToMessage.imageUrl || null,
+            videoUrl: replyingToMessage.videoUrl || null,
+          }
+        : null;
+
+      await sendMessage(conversation.id, currentUser, captionText, null, replyRef, {
+        videoUrl,
+        videoDuration: duration,
+        participantIds: conversation.participantIds,
+      });
+
+      setSelectedVideoFile(null);
+      setSelectedVideoDuration(0);
+      setReplyingToMessage(null);
+    } catch (err: any) {
+      if (err.message !== 'Yükleme iptal edildi.') {
+        console.error('Video yükleme hatası:', err);
+        setImageUploadError(err.message || 'Video yüklenirken hata oluştu.');
+      }
+    } finally {
+      setIsUploadingVideo(false);
+      setVideoUploadProgress(0);
+      videoUploadTaskRef.current = null;
+    }
+  };
+
+  // Video Yüklemesini İptal Et
+  const handleCancelVideoUpload = () => {
+    if (videoUploadTaskRef.current) {
+      videoUploadTaskRef.current.abort();
+      videoUploadTaskRef.current = null;
+    }
+    setIsUploadingVideo(false);
+    setVideoUploadProgress(0);
+    setSelectedVideoFile(null);
+    setSelectedVideoDuration(0);
   };
 
   // Seçili Fotoğrafı Kaldır
@@ -1428,6 +1518,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 onFinishStreaming={(id) => setStreamingMessageId((curr) => (curr === id ? null : curr))}
                 onOpenProfile={onOpenProfile}
                 onSelectImage={setLightboxImage}
+                onSelectVideo={(data) => setLightboxVideo(data)}
                 onStartReply={handleStartReply}
                 onSelectActionMessage={setSelectedActionMessage}
                 onReaction={handleReaction}
@@ -1734,6 +1825,58 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         </div>
       )}
 
+      {/* 🎬 VİDEO YÜKLEME İLERLEME ÇUBUĞU (WhatsApp Tarzı Kırmızı Halka + İptal Butonu) */}
+      {isUploadingVideo && (
+        <div className="px-4 py-3 bg-zinc-900 border-t border-zinc-800 text-white flex items-center justify-between animate-in slide-in-from-bottom-2 shadow-xl">
+          <div className="flex items-center gap-3">
+            {/* SVG Circular Progress Ring with Centered 'X' Cancel Button */}
+            <div className="relative w-11 h-11 flex items-center justify-center shrink-0">
+              <svg className="w-11 h-11 transform -rotate-90">
+                <circle
+                  cx="22"
+                  cy="22"
+                  r="18"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  className="text-zinc-800"
+                  fill="transparent"
+                />
+                <circle
+                  cx="22"
+                  cy="22"
+                  r="18"
+                  stroke="currentColor"
+                  strokeWidth="3"
+                  className="text-red-500 transition-all duration-200"
+                  fill="transparent"
+                  strokeDasharray={113}
+                  strokeDashoffset={113 - (videoUploadProgress / 100) * 113}
+                  strokeLinecap="round"
+                />
+              </svg>
+              <button
+                type="button"
+                onClick={handleCancelVideoUpload}
+                className="absolute inset-0 m-auto w-7 h-7 rounded-full bg-red-600 text-white flex items-center justify-center hover:bg-red-500 active:scale-90 transition-all shadow-md cursor-pointer"
+                title="Yüklemeyi İptal Et (X)"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex flex-col">
+              <div className="text-xs font-bold text-zinc-100 flex items-center gap-1.5">
+                <Film className="w-4 h-4 text-red-500" />
+                <span>Video Yükleniyor...</span>
+              </div>
+              <span className="text-[11px] font-mono text-zinc-400">
+                %{videoUploadProgress} tamamlandı • İptal etmek için X'e dokunun
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 🔴 SEÇİLEN FOTOĞRAF ÖNİZLEME ÇUBUĞU (Göndermeden önce kaldırma / önizleme) */}
       {imagePreviewUrl && !editingMessage && (
         <div className="px-4 py-3 bg-zinc-100 dark:bg-zinc-800/80 border-t border-zinc-200 dark:border-zinc-700 flex items-center justify-between animate-in slide-in-from-bottom-2">
@@ -1930,12 +2073,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           </div>
         )}
 
-        {/* Gizli Dosya Seçici */}
+        {/* Gizli Dosya Seçici (Fotoğraf & Video) */}
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
-          onChange={handleImageSelect}
+          accept="image/*,video/*"
+          onChange={handleMediaSelect}
           className="hidden"
         />
 
@@ -2295,6 +2438,30 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         isOpen={showGiphyPicker}
         onClose={() => setShowGiphyPicker(false)}
         onSelectGif={handleSelectGif}
+      />
+
+      {/* 🎬 Video Önizleme ve Gönderme Modalı */}
+      <VideoSendPreviewModal
+        isOpen={showVideoPreviewModal}
+        file={selectedVideoFile}
+        duration={selectedVideoDuration}
+        onClose={() => {
+          setShowVideoPreviewModal(false);
+          setSelectedVideoFile(null);
+          setSelectedVideoDuration(0);
+        }}
+        onSend={handleSendVideoFromPreview}
+        isSending={isUploadingVideo}
+      />
+
+      {/* 🎬 Fullscreen Custom Video Player Lightbox */}
+      <VideoLightboxModal
+        isOpen={Boolean(lightboxVideo)}
+        videoUrl={lightboxVideo?.url || null}
+        videoDuration={lightboxVideo?.duration}
+        caption={lightboxVideo?.caption}
+        senderName={lightboxVideo?.senderName}
+        onClose={() => setLightboxVideo(null)}
       />
 
       {/* 👥 Grup Bilgileri Modalı */}
