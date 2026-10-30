@@ -248,6 +248,10 @@ export interface Channel {
   followerCount: number;
   postCount?: number;
   lastPostText?: string | null;
+  lastPostVideoUrl?: string | null;
+  lastPostHasVideo?: boolean;
+  lastPostImageUrl?: string | null;
+  lastPostHasImage?: boolean;
   lastPostTimestamp?: any;
   disabled?: boolean;
   createdAt: any;

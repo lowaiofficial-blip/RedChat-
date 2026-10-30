@@ -984,7 +984,7 @@ export async function sendMessage(
   const hasVideo = Boolean(cleanVideoUrl);
   let lastMessageSummary = cleanText;
   if (hasVideo) {
-    lastMessageSummary = cleanText ? cleanText : '🎬 Video';
+    lastMessageSummary = cleanText ? cleanText : 'Video';
   } else if (hasImage) {
     lastMessageSummary = cleanText ? cleanText : 'Fotoğraf';
   } else if (options?.isThinking && !cleanText) {

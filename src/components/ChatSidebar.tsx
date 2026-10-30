@@ -29,6 +29,7 @@ import {
   Clock,
   BadgeCheck,
   Activity,
+  Clapperboard,
 } from 'lucide-react';
 
 interface ChatSidebarProps {
@@ -530,6 +531,15 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                           }`}
                         >
                           {(() => {
+                            const hasVideo = Boolean(
+                              conv.lastMessageHasVideo ||
+                              conv.lastMessageVideoUrl ||
+                              conv.lastMessageText === '🎬 Video' ||
+                              conv.lastMessageText === 'Video' ||
+                              conv.lastMessageText?.startsWith('🎬 Video') ||
+                              conv.lastMessageText?.startsWith('Video')
+                            );
+
                             const hasImage = Boolean(
                               conv.lastMessageHasImage ||
                               conv.lastMessageImageUrl ||
@@ -539,9 +549,32 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                             );
 
                             const raw = conv.lastMessageText || 'Grup oluşturuldu';
-                            const cleanText = raw.replace(/^📷\s*/, '').trim();
+
+                            if (hasVideo) {
+                              let caption = raw
+                                .replace(/^🎬\s*/, '')
+                                .replace(/^Video\s*(·|-|:)?\s*/i, '')
+                                .trim();
+
+                              if (
+                                caption.toLowerCase() === 'video' ||
+                                caption.toLowerCase() === 'fotoğraf'
+                              ) {
+                                caption = '';
+                              }
+
+                              return (
+                                <div className="flex items-center gap-1 min-w-0 truncate">
+                                  <Clapperboard className="w-3.5 h-3.5 shrink-0 text-red-600 dark:text-red-400" />
+                                  <span className="truncate">
+                                    Video{caption ? ` · ${caption}` : ''}
+                                  </span>
+                                </div>
+                              );
+                            }
 
                             if (hasImage) {
+                              const cleanText = raw.replace(/^📷\s*/, '').trim();
                               const displayText = cleanText || 'Fotoğraf';
                               return (
                                 <div className="flex items-center gap-1 min-w-0 truncate">
@@ -667,6 +700,15 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                             );
                           }
 
+                          const hasVideo = Boolean(
+                            conv.lastMessageHasVideo ||
+                            conv.lastMessageVideoUrl ||
+                            conv.lastMessageText === '🎬 Video' ||
+                            conv.lastMessageText === 'Video' ||
+                            conv.lastMessageText?.startsWith('🎬 Video') ||
+                            conv.lastMessageText?.startsWith('Video')
+                          );
+
                           const hasImage = Boolean(
                             conv.lastMessageHasImage ||
                             conv.lastMessageImageUrl ||
@@ -676,9 +718,32 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                           );
 
                           const raw = conv.lastMessageText || 'Sohbet başlatıldı';
-                          const cleanText = raw.replace(/^📷\s*/, '').trim();
+
+                          if (hasVideo) {
+                            let caption = raw
+                              .replace(/^🎬\s*/, '')
+                              .replace(/^Video\s*(·|-|:)?\s*/i, '')
+                              .trim();
+
+                            if (
+                              caption.toLowerCase() === 'video' ||
+                              caption.toLowerCase() === 'fotoğraf'
+                            ) {
+                              caption = '';
+                            }
+
+                            return (
+                              <div className="flex items-center gap-1 min-w-0 truncate">
+                                <Clapperboard className="w-3.5 h-3.5 shrink-0 text-red-600 dark:text-red-400" />
+                                <span className="truncate">
+                                  Video{caption ? ` · ${caption}` : ''}
+                                </span>
+                              </div>
+                            );
+                          }
 
                           if (hasImage) {
+                            const cleanText = raw.replace(/^📷\s*/, '').trim();
                             const displayText = cleanText || 'Fotoğraf';
                             return (
                               <div className="flex items-center gap-1 min-w-0 truncate">
@@ -884,7 +949,61 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
 
                         <div className="flex items-center justify-between gap-1.5">
                           <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate min-w-0">
-                            {ch.lastPostText || ch.description || 'Henüz gönderi yok'}
+                            {(() => {
+                              const hasVideo = Boolean(
+                                ch.lastPostHasVideo ||
+                                ch.lastPostVideoUrl ||
+                                ch.lastPostText === '🎬 Video' ||
+                                ch.lastPostText === 'Video' ||
+                                ch.lastPostText?.startsWith('🎬 Video') ||
+                                ch.lastPostText?.startsWith('Video')
+                              );
+
+                              const hasImage = Boolean(
+                                ch.lastPostHasImage ||
+                                ch.lastPostImageUrl ||
+                                ch.lastPostText === 'Fotoğraf' ||
+                                ch.lastPostText?.startsWith('📷')
+                              );
+
+                              const raw = ch.lastPostText || ch.description || 'Henüz gönderi yok';
+
+                              if (hasVideo) {
+                                let caption = raw
+                                  .replace(/^🎬\s*/, '')
+                                  .replace(/^Video\s*(·|-|:)?\s*/i, '')
+                                  .trim();
+
+                                if (
+                                  caption.toLowerCase() === 'video' ||
+                                  caption.toLowerCase() === 'fotoğraf'
+                                ) {
+                                  caption = '';
+                                }
+
+                                return (
+                                  <div className="flex items-center gap-1 min-w-0 truncate">
+                                    <Clapperboard className="w-3.5 h-3.5 shrink-0 text-red-600 dark:text-red-400" />
+                                    <span className="truncate">
+                                      Video{caption ? ` · ${caption}` : ''}
+                                    </span>
+                                  </div>
+                                );
+                              }
+
+                              if (hasImage) {
+                                let caption = raw.replace(/^📷\s*/, '').trim();
+                                if (caption.toLowerCase() === 'fotoğraf') caption = '';
+                                return (
+                                  <div className="flex items-center gap-1 min-w-0 truncate">
+                                    <ImageIcon className="w-3.5 h-3.5 shrink-0 text-red-600 dark:text-red-400" />
+                                    <span className="truncate">{caption || 'Fotoğraf'}</span>
+                                  </div>
+                                );
+                              }
+
+                              return <span className="truncate">{raw}</span>;
+                            })()}
                           </div>
 
                           <div className="flex items-center gap-1 shrink-0">

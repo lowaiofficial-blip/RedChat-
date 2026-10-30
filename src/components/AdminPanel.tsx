@@ -3,6 +3,7 @@ import { AdminIpBanTab } from './AdminIpBanTab';
 import { AdminAiUsersTab } from './AdminAiUsersTab';
 import { AdminPasswordResetTab } from './AdminPasswordResetTab';
 import { BanHardwareModal } from './BanHardwareModal';
+import { VideoLightboxModal } from './VideoLightboxModal';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { UserProfile, AppSettings, Conversation, ChatMessage, Channel, ChannelPost } from '../types';
 import {
@@ -61,6 +62,7 @@ import {
   ShieldCheck,
   FileText,
   Image as ImageIcon,
+  Clapperboard,
   Reply,
   Maximize2,
   Bot,
@@ -287,6 +289,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Görsel büyütme modalı
   const [expandedImageUrl, setExpandedImageUrl] = useState<string | null>(null);
+
+  // Video lightbox preview modalı
+  const [videoLightboxData, setVideoLightboxData] = useState<{
+    videoUrl: string | null;
+    videoDuration?: number | null;
+    caption?: string | null;
+    senderName?: string | null;
+    timeString?: string | null;
+  } | null>(null);
 
   // İstatistikleri çekme fonksiyonu
   const loadStats = async () => {
@@ -1830,10 +1841,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         {/* Son Mesaj Önizlemesi */}
                         <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800/80 flex items-center justify-between text-[11px] text-zinc-500">
                           <div className="truncate flex-1 pr-2">
-                            {conv.lastMessageHasImage ? (
-                              <span className="text-zinc-700 dark:text-zinc-300 flex items-center gap-1 font-medium">
-                                <ImageIcon className="w-3.5 h-3.5 text-red-500" />
-                                {conv.lastMessageText || 'Fotoğraf'}
+                            {conv.lastMessageHasVideo || conv.lastMessageVideoUrl || conv.lastMessageText?.includes('Video') ? (
+                              <span className="text-zinc-700 dark:text-zinc-300 flex items-center gap-1 font-medium truncate">
+                                <Clapperboard className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                                <span>
+                                  Video{conv.lastMessageText && !['Video', '🎬 Video'].includes(conv.lastMessageText) ? ` · ${conv.lastMessageText.replace(/^🎬\s*/, '').replace(/^Video\s*(·|-|:)?\s*/i, '')}` : ''}
+                                </span>
+                              </span>
+                            ) : conv.lastMessageHasImage ? (
+                              <span className="text-zinc-700 dark:text-zinc-300 flex items-center gap-1 font-medium truncate">
+                                <ImageIcon className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                                <span>{conv.lastMessageText || 'Fotoğraf'}</span>
                               </span>
                             ) : conv.lastMessageText ? (
                               <span className="truncate">{conv.lastMessageText}</span>
@@ -2964,6 +2982,48 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </div>
                       )}
 
+                      {/* Video Mesajı Varsa */}
+                      {msg.videoUrl && (
+                        <div className="space-y-1.5 max-w-sm">
+                          <div
+                            onClick={() =>
+                              setVideoLightboxData({
+                                videoUrl: msg.videoUrl || null,
+                                videoDuration: msg.videoDuration || null,
+                                caption:
+                                  msg.text && !['Video', '🎬 Video'].includes(msg.text)
+                                    ? msg.text
+                                    : null,
+                                senderName: senderDisplayName,
+                                timeString: timeFormatted,
+                              })
+                            }
+                            className="relative rounded-2xl overflow-hidden border border-zinc-200 dark:border-zinc-800 bg-black cursor-pointer group/video aspect-video flex items-center justify-center max-h-60"
+                          >
+                            <video
+                              src={msg.videoUrl}
+                              className="w-full h-full object-cover pointer-events-none"
+                              preload="metadata"
+                            />
+
+                            {/* Overlay & Play Button */}
+                            <div className="absolute inset-0 bg-black/40 group-hover/video:bg-black/20 transition-colors flex flex-col items-center justify-center gap-2">
+                              <div className="w-12 h-12 rounded-full bg-red-600/90 text-white flex items-center justify-center shadow-lg group-hover/video:scale-110 transition-transform">
+                                <Clapperboard className="w-6 h-6" />
+                              </div>
+                              <span className="text-[11px] font-bold text-white bg-black/60 px-2.5 py-1 rounded-full backdrop-blur-xs flex items-center gap-1.5">
+                                <span>Oynat</span>
+                                {msg.videoDuration ? (
+                                  <span className="text-zinc-300">
+                                    • {Math.round(msg.videoDuration)} sn
+                                  </span>
+                                ) : null}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Metin İçeriği */}
                       {msg.text && (
                         <p className="text-xs text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap break-words break-all [overflow-wrap:anywhere] [word-break:break-word] leading-relaxed">
@@ -3254,6 +3314,44 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </div>
                     )}
 
+                    {post.videoUrl && (
+                      <div className="max-w-xs space-y-1.5">
+                        <div
+                          onClick={() =>
+                            setVideoLightboxData({
+                              videoUrl: post.videoUrl || null,
+                              videoDuration: post.videoDuration || null,
+                              caption: post.text || null,
+                              senderName: inspectingChannel?.name || 'Kanal',
+                              timeString: post.createdAt
+                                ? new Date(post.createdAt).toLocaleString('tr-TR')
+                                : null,
+                            })
+                          }
+                          className="relative rounded-xl overflow-hidden border border-zinc-200 dark:border-zinc-700 bg-black cursor-pointer group/video aspect-video flex items-center justify-center max-h-48"
+                        >
+                          <video
+                            src={post.videoUrl}
+                            className="w-full h-full object-cover pointer-events-none"
+                            preload="metadata"
+                          />
+                          <div className="absolute inset-0 bg-black/40 group-hover/video:bg-black/20 transition-colors flex flex-col items-center justify-center gap-1.5">
+                            <div className="w-10 h-10 rounded-full bg-red-600/90 text-white flex items-center justify-center shadow-lg group-hover/video:scale-110 transition-transform">
+                              <Clapperboard className="w-5 h-5" />
+                            </div>
+                            <span className="text-[10px] font-bold text-white bg-black/60 px-2 py-0.5 rounded-full backdrop-blur-xs flex items-center gap-1">
+                              <span>Oynat</span>
+                              {post.videoDuration ? (
+                                <span className="text-zinc-300">
+                                  • {Math.round(post.videoDuration)} sn
+                                </span>
+                              ) : null}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-1 border-t border-zinc-100 dark:border-zinc-700/40">
                       <div className="flex items-center gap-2">
                         <span className="flex items-center gap-1">
@@ -3284,6 +3382,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           setTimeout(() => setUserActionSuccess(null), 4000);
         }}
       />
+
+      {/* 🎬 Video Lightbox Preview Modalı */}
+      {videoLightboxData && (
+        <VideoLightboxModal
+          isOpen={Boolean(videoLightboxData)}
+          videoUrl={videoLightboxData.videoUrl}
+          videoDuration={videoLightboxData.videoDuration}
+          caption={videoLightboxData.caption}
+          senderName={videoLightboxData.senderName}
+          timeString={videoLightboxData.timeString}
+          onClose={() => setVideoLightboxData(null)}
+        />
+      )}
     </div>
   );
 };

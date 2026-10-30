@@ -616,17 +616,27 @@ export function subscribeToChannelPosts(
         const channelRef = doc(db, 'channels', channelId);
         if (posts.length > 0) {
           const latestPost = posts[posts.length - 1];
-          const latestText = latestPost.text || (latestPost.imageUrl ? 'Fotoğraf' : null);
+          const latestHasVideo = Boolean(latestPost.videoUrl);
+          const latestHasImage = Boolean(latestPost.imageUrl);
+          const latestText = latestPost.text || (latestHasVideo ? 'Video' : latestHasImage ? 'Fotoğraf' : null);
           const latestTimestamp = latestPost.createdAt || null;
           updateDoc(channelRef, {
             postCount: posts.length,
             lastPostText: latestText,
+            lastPostHasVideo: latestHasVideo,
+            lastPostVideoUrl: latestPost.videoUrl || null,
+            lastPostHasImage: latestHasImage,
+            lastPostImageUrl: latestPost.imageUrl || null,
             lastPostTimestamp: latestTimestamp,
           }).catch(() => {});
         } else {
           updateDoc(channelRef, {
             postCount: 0,
             lastPostText: null,
+            lastPostHasVideo: false,
+            lastPostVideoUrl: null,
+            lastPostHasImage: false,
+            lastPostImageUrl: null,
             lastPostTimestamp: null,
           }).catch(() => {});
         }
@@ -689,7 +699,11 @@ export async function createChannelPost(
     setDoc(postRef, postData),
     updateDoc(channelRef, {
       postCount: increment(1),
-      lastPostText: trimmedText || (cleanVideoUrl ? '🎬 Video' : 'Fotoğraf'),
+      lastPostText: trimmedText || (cleanVideoUrl ? 'Video' : 'Fotoğraf'),
+      lastPostHasVideo: Boolean(cleanVideoUrl),
+      lastPostVideoUrl: cleanVideoUrl || null,
+      lastPostHasImage: Boolean(cleanImageUrl),
+      lastPostImageUrl: cleanImageUrl || null,
       lastPostTimestamp: serverTimestamp(),
       updatedAt: serverTimestamp(),
     }).catch(() => {}),
