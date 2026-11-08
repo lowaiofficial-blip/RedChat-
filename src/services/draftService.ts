@@ -8,11 +8,18 @@ import {
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 
+export interface DraftData {
+  text: string;
+  mediaType?: 'image' | 'video' | 'gif' | null;
+  mediaUrl?: string | null;
+  videoDuration?: number | null;
+}
+
 // Debounce haritası (targetId -> NodeJS.Timeout)
 const saveDebounceMap = new Map<string, ReturnType<typeof setTimeout>>();
 
 // Canlı dinleyiciler (UI anında güncellenmesi için)
-const draftListeners = new Set<(draftsMap: Map<string, string>) => void>();
+const draftListeners = new Set<(draftsMap: Map<string, DraftData>) => void>();
 
 /**
  * Taslak anahtarı (localStorage için)
@@ -22,10 +29,35 @@ function getLocalDraftKey(userId: string, targetId: string): string {
 }
 
 /**
+ * Ham localStorage verisini DraftData yapısına dönüştürür (Geriye dönük uyumlu)
+ */
+function parseDraftRaw(rawVal: string | null): DraftData | null {
+  if (!rawVal) return null;
+  try {
+    const parsed = JSON.parse(rawVal);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        text: parsed.text || '',
+        mediaType: parsed.mediaType || null,
+        mediaUrl: parsed.mediaUrl || null,
+        videoDuration: parsed.videoDuration || null,
+      };
+    }
+  } catch (e) {}
+
+  // Eski düz metin taslağı ise
+  if (rawVal.trim()) {
+    return { text: rawVal };
+  }
+
+  return null;
+}
+
+/**
  * Yerel hafızadaki tüm aktif taslakları tarar ve Map döner
  */
-export function getAllLocalDrafts(userId: string): Map<string, string> {
-  const map = new Map<string, string>();
+export function getAllLocalDrafts(userId: string): Map<string, DraftData> {
+  const map = new Map<string, DraftData>();
   if (!userId) return map;
   try {
     const prefix = `redchat_draft_${userId}_`;
@@ -33,9 +65,10 @@ export function getAllLocalDrafts(userId: string): Map<string, string> {
       const key = localStorage.key(i);
       if (key && key.startsWith(prefix)) {
         const targetId = key.substring(prefix.length);
-        const text = localStorage.getItem(key);
-        if (targetId && text && text.trim()) {
-          map.set(targetId, text.trim());
+        const rawVal = localStorage.getItem(key);
+        const draft = parseDraftRaw(rawVal);
+        if (targetId && draft && (draft.text?.trim() || draft.mediaUrl || draft.mediaType)) {
+          map.set(targetId, draft);
         }
       }
     }
@@ -60,12 +93,13 @@ function notifyDraftListeners(userId: string) {
 /**
  * Yerel hafızadaki tek bir sohbet taslağını okur
  */
-export function getLocalDraft(userId: string, targetId: string): string {
-  if (!userId || !targetId) return '';
+export function getLocalDraft(userId: string, targetId: string): DraftData | null {
+  if (!userId || !targetId) return null;
   try {
-    return localStorage.getItem(getLocalDraftKey(userId, targetId)) || '';
+    const rawVal = localStorage.getItem(getLocalDraftKey(userId, targetId));
+    return parseDraftRaw(rawVal);
   } catch (e) {
-    return '';
+    return null;
   }
 }
 
@@ -75,23 +109,37 @@ export function getLocalDraft(userId: string, targetId: string): string {
 export function saveDraft(
   userId: string,
   targetId: string,
-  text: string,
+  draftInput: string | DraftData,
   targetType: 'conversation' | 'channel' = 'conversation'
 ) {
   const activeUserId = auth?.currentUser?.uid || userId;
   if (!activeUserId || !targetId) return;
 
-  const trimmedText = text;
+  const draftData: DraftData =
+    typeof draftInput === 'string'
+      ? { text: draftInput }
+      : {
+          text: draftInput.text || '',
+          mediaType: draftInput.mediaType || null,
+          mediaUrl: draftInput.mediaUrl || null,
+          videoDuration: draftInput.videoDuration || null,
+        };
+
+  const isEmpty =
+    (!draftData.text || draftData.text.trim() === '') &&
+    !draftData.mediaUrl &&
+    !draftData.mediaType;
+
   const localKey = getLocalDraftKey(activeUserId, targetId);
 
   // 1. LocalStorage anında güncelle
-  if (!trimmedText || trimmedText.trim() === '') {
+  if (isEmpty) {
     try {
       localStorage.removeItem(localKey);
     } catch (e) {}
   } else {
     try {
-      localStorage.setItem(localKey, trimmedText);
+      localStorage.setItem(localKey, JSON.stringify(draftData));
     } catch (e) {}
   }
 
@@ -108,12 +156,11 @@ export function saveDraft(
     saveDebounceMap.delete(targetId);
     if (!db || !auth?.currentUser?.uid) return;
 
-    // Oturum açmış kullanıcının gerçek UID'sini doğrula
     const currentUid = auth.currentUser.uid;
     const draftDocRef = doc(db, 'users', currentUid, 'drafts', targetId);
 
     try {
-      if (!trimmedText || trimmedText.trim() === '') {
+      if (isEmpty) {
         await deleteDoc(draftDocRef);
       } else {
         await setDoc(
@@ -123,7 +170,10 @@ export function saveDraft(
             userId: currentUid,
             targetId,
             targetType,
-            text: trimmedText,
+            text: draftData.text || '',
+            mediaType: draftData.mediaType || null,
+            mediaUrl: draftData.mediaUrl || null,
+            videoDuration: draftData.videoDuration || null,
             updatedAt: serverTimestamp(),
           },
           { merge: true }
@@ -170,11 +220,11 @@ export async function deleteDraft(userId: string, targetId: string) {
 
 /**
  * Kullanıcının tüm aktif taslaklarını canlı olarak dinler (LocalStorage + Firestore snapshot).
- * Dönüş değeri: Map<targetId, text>
+ * Dönüş değeri: Map<targetId, DraftData>
  */
 export function subscribeUserDrafts(
   userId: string,
-  callback: (draftsMap: Map<string, string>) => void
+  callback: (draftsMap: Map<string, DraftData>) => void
 ): () => void {
   const activeUserId = auth?.currentUser?.uid || userId;
   if (!activeUserId) {
@@ -197,9 +247,15 @@ export function subscribeUserDrafts(
       (snapshot) => {
         snapshot.forEach((docSnap) => {
           const data = docSnap.data();
-          if (data.targetId && data.text && data.text.trim()) {
+          if (data.targetId && (data.text?.trim() || data.mediaUrl || data.mediaType)) {
+            const draftObj: DraftData = {
+              text: data.text || '',
+              mediaType: data.mediaType || null,
+              mediaUrl: data.mediaUrl || null,
+              videoDuration: data.videoDuration || null,
+            };
             try {
-              localStorage.setItem(getLocalDraftKey(activeUserId, data.targetId), data.text);
+              localStorage.setItem(getLocalDraftKey(activeUserId, data.targetId), JSON.stringify(draftObj));
             } catch (e) {}
           }
         });
@@ -209,7 +265,6 @@ export function subscribeUserDrafts(
       },
       (error) => {
         console.warn('Drafts Firestore subscription warning:', error);
-        // Hata durumunda dahi yerel depolamadaki taslakları koru ve sun
         callback(getAllLocalDrafts(activeUserId));
       }
     );
@@ -219,4 +274,92 @@ export function subscribeUserDrafts(
     draftListeners.delete(callback);
     unsubscribeFirestore();
   };
+}
+
+/**
+ * Görsel dosyasından hafif DataURL önizleme oluşturur (max 400px width/height).
+ */
+export function createImageDraftPreview(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const result = e.target?.result as string;
+      if (!result) return resolve('');
+
+      const img = new Image();
+      img.onload = () => {
+        const MAX_SIZE = 400;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_SIZE) {
+            height *= MAX_SIZE / width;
+            width = MAX_SIZE;
+          }
+        } else {
+          if (height > MAX_SIZE) {
+            width *= MAX_SIZE / height;
+            height = MAX_SIZE;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(width);
+        canvas.height = Math.round(height);
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/jpeg', 0.75));
+        } else {
+          resolve(result);
+        }
+      };
+      img.onerror = () => resolve(result);
+      img.src = result;
+    };
+    reader.onerror = () => resolve('');
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Video dosyasından ilk kare önizleme DataURL ve süresini çıkartır.
+ */
+export function createVideoDraftPreview(file: File): Promise<{ previewUrl: string; duration: number }> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.muted = true;
+    video.playsInline = true;
+
+    const url = URL.createObjectURL(file);
+    video.src = url;
+
+    video.onloadedmetadata = () => {
+      const duration = video.duration || 0;
+      video.currentTime = Math.min(0.5, duration / 2);
+    };
+
+    video.onseeked = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.min(video.videoWidth || 320, 400);
+      canvas.height = Math.min(video.videoHeight || 240, 300);
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const previewUrl = canvas.toDataURL('image/jpeg', 0.75);
+        URL.revokeObjectURL(url);
+        resolve({ previewUrl, duration: video.duration || 0 });
+      } else {
+        URL.revokeObjectURL(url);
+        resolve({ previewUrl: '', duration: video.duration || 0 });
+      }
+    };
+
+    video.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve({ previewUrl: '', duration: 0 });
+    };
+  });
 }

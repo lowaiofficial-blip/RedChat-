@@ -10,7 +10,7 @@ import {
   clearChannelPostReactions,
 } from '../services/channelService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
-import { saveDraft, deleteDraft, getLocalDraft } from '../services/draftService';
+import { saveDraft, deleteDraft, getLocalDraft, createImageDraftPreview, createVideoDraftPreview, type DraftData } from '../services/draftService';
 import { VerifiedBadge } from './VerifiedBadge';
 import { EmojiPicker } from './EmojiPicker';
 import { ChannelProfileModal } from './ChannelProfileModal';
@@ -160,6 +160,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
   const videoUploadTaskRef = useRef<UploadVideoTask | null>(null);
   const [lightboxVideo, setLightboxVideo] = useState<{ url: string; duration?: number; caption?: string; channelName?: string } | null>(null);
 
+  // 🖼️/🎬 Taslak Medya State'i (Görsel/Video taslağı)
+  const [draftMedia, setDraftMedia] = useState<{ type: 'image' | 'video' | 'gif'; url: string; duration?: number } | null>(null);
+
   // Takip Et/Çık Loading ve Spam Koruması State'i
   const [followLoading, setFollowLoading] = useState(false);
 
@@ -208,9 +211,24 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
   useEffect(() => {
     if (channel?.id && currentUser?.uid) {
       const draft = getLocalDraft(currentUser.uid, channel.id);
-      setPostText(draft);
+      if (draft) {
+        setPostText(draft.text || '');
+        if (draft.mediaUrl && draft.mediaType) {
+          setDraftMedia({
+            type: draft.mediaType,
+            url: draft.mediaUrl,
+            duration: draft.videoDuration || undefined,
+          });
+        } else {
+          setDraftMedia(null);
+        }
+      } else {
+        setPostText('');
+        setDraftMedia(null);
+      }
     } else {
       setPostText('');
+      setDraftMedia(null);
     }
   }, [channel?.id, currentUser?.uid]);
 
@@ -249,6 +267,20 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
       setSelectedVideoFile(file);
       setSelectedVideoDuration(validation.duration);
       setShowVideoPreviewModal(true);
+
+      createVideoDraftPreview(file).then(({ previewUrl, duration }) => {
+        const dMedia = { type: 'video' as const, url: previewUrl, duration };
+        setDraftMedia(dMedia);
+        if (channel?.id && currentUser?.uid) {
+          saveDraft(currentUser.uid, channel.id, {
+            text: postText,
+            mediaType: 'video',
+            mediaUrl: previewUrl,
+            videoDuration: duration,
+          }, 'channel');
+        }
+      });
+
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
@@ -267,6 +299,18 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
     setSelectedPhotoFile(file);
     const objUrl = URL.createObjectURL(file);
     setPreviewPhotoUrl(objUrl);
+
+    createImageDraftPreview(file).then((previewDataUrl) => {
+      const dMedia = { type: 'image' as const, url: previewDataUrl || objUrl };
+      setDraftMedia(dMedia);
+      if (channel?.id && currentUser?.uid) {
+        saveDraft(currentUser.uid, channel.id, {
+          text: postText,
+          mediaType: 'image',
+          mediaUrl: previewDataUrl || objUrl,
+        }, 'channel');
+      }
+    });
   };
 
   const handleSendVideoFromPreview = async (captionText: string) => {
@@ -296,6 +340,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
 
       setSelectedVideoFile(null);
       setSelectedVideoDuration(0);
+      setDraftMedia(null);
+      deleteDraft(currentUser.uid, channel.id);
     } catch (err: any) {
       if (err.message !== 'Yükleme iptal edildi.') {
         console.error('Video yükleme hatası:', err);
@@ -321,18 +367,33 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
 
   const handleRemovePhoto = () => {
     setSelectedPhotoFile(null);
-    if (previewPhotoUrl) {
+    if (previewPhotoUrl && !draftMedia?.url) {
       URL.revokeObjectURL(previewPhotoUrl);
-      setPreviewPhotoUrl(null);
     }
+    setPreviewPhotoUrl(null);
+    setSelectedVideoFile(null);
+    setSelectedVideoDuration(0);
+    setDraftMedia(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
+    if (channel?.id && currentUser?.uid) {
+      saveDraft(currentUser.uid, channel.id, {
+        text: postText,
+        mediaType: null,
+        mediaUrl: null,
+      }, 'channel');
+    }
   };
 
   const handleEmojiSelect = (emoji: string) => {
     const newText = postText + emoji;
     setPostText(newText);
     if (channel?.id && currentUser?.uid) {
-      saveDraft(currentUser.uid, channel.id, newText, 'channel');
+      saveDraft(currentUser.uid, channel.id, {
+        text: newText,
+        mediaType: draftMedia?.type || (selectedPhotoFile ? 'image' : null),
+        mediaUrl: draftMedia?.url || previewPhotoUrl || null,
+        videoDuration: draftMedia?.duration || selectedVideoDuration || null,
+      }, 'channel');
     }
     setShowEmojiPicker(false);
   };
@@ -341,8 +402,8 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
   const handlePublishPost = async (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = postText.trim();
-    if (!trimmed && !selectedPhotoFile) {
-      setPostError('Lütfen bir metin girin veya görsel ekleyin.');
+    if (!trimmed && !selectedPhotoFile && !draftMedia?.url) {
+      setPostError('Lütfen bir metin girin veya görsel/video ekleyin.');
       return;
     }
 
@@ -362,6 +423,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
         deleteDraft(currentUser.uid, channel.id);
       }
       setPostText('');
+      setDraftMedia(null);
       handleRemovePhoto();
       setShowEmojiPicker(false);
     } catch (err: any) {
@@ -863,18 +925,31 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
               </div>
             )}
 
-            {/* Fotoğraf Önizlemesi */}
-            {previewPhotoUrl && (
+            {/* Medya / Fotoğraf / Video Taslak Önizlemesi */}
+            {(previewPhotoUrl || draftMedia) && (
               <div className="relative mb-2.5 inline-block">
-                <img
-                  src={previewPhotoUrl}
-                  alt="Önizleme"
-                  className="h-24 w-auto rounded-xl object-cover border border-zinc-200 dark:border-zinc-700 shadow-sm"
-                />
+                <div className="relative rounded-xl overflow-hidden border border-zinc-200 dark:border-zinc-700 shadow-sm max-w-xs">
+                  <img
+                    src={draftMedia?.url || previewPhotoUrl || ''}
+                    alt="Önizleme"
+                    className="h-24 w-auto object-cover"
+                  />
+                  {(draftMedia?.type === 'video' || selectedVideoFile) && (
+                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                      <Film className="w-6 h-6 text-white drop-shadow-md" />
+                      {draftMedia?.duration ? (
+                        <span className="absolute bottom-1 right-1 text-[9px] font-mono px-1 py-0.5 rounded bg-black/70 text-white font-bold">
+                          {formatVideoDuration(draftMedia.duration)}
+                        </span>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
                 <button
                   type="button"
                   onClick={handleRemovePhoto}
-                  className="absolute -top-1.5 -right-1.5 p-1 bg-zinc-900 text-white rounded-full shadow-md hover:bg-zinc-800 cursor-pointer"
+                  className="absolute -top-1.5 -right-1.5 p-1 bg-zinc-900 text-white rounded-full shadow-md hover:bg-zinc-800 cursor-pointer z-10"
+                  title="Medyayı Kaldır"
                 >
                   <X className="w-3 h-3" />
                 </button>
@@ -934,7 +1009,12 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                     const val = e.target.value;
                     setPostText(val);
                     if (channel?.id && currentUser?.uid) {
-                      saveDraft(currentUser.uid, channel.id, val, 'channel');
+                      saveDraft(currentUser.uid, channel.id, {
+                        text: val,
+                        mediaType: draftMedia?.type || (selectedPhotoFile ? 'image' : null),
+                        mediaUrl: draftMedia?.url || previewPhotoUrl || null,
+                        videoDuration: draftMedia?.duration || selectedVideoDuration || null,
+                      }, 'channel');
                     }
                   }}
                   onKeyDown={(e) => {

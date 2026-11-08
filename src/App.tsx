@@ -26,7 +26,7 @@ import {
   clearAllChannelNotifications,
 } from './services/channelService';
 import { subscribeToAppSettings, ADMIN_EMAILS } from './services/adminService';
-import { subscribeUserDrafts } from './services/draftService';
+import { subscribeUserDrafts, type DraftData } from './services/draftService';
 import { setupForegroundListener, requestNotificationPermissionAndToken } from './services/messagingService';
 import { db } from './services/firebase';
 import { doc, updateDoc } from 'firebase/firestore';
@@ -71,8 +71,8 @@ export default function App() {
   const [channelNotifications, setChannelNotifications] = useState<ChannelNotification[]>([]);
   const [showChannelNotificationsModal, setShowChannelNotificationsModal] = useState<boolean>(false);
 
-  // ✍️ Mesaj Taslakları State'i (Map<targetId, text>)
-  const [userDrafts, setUserDrafts] = useState<Map<string, string>>(new Map());
+  // ✍️ Mesaj Taslakları State'i (Map<targetId, DraftData>)
+  const [userDrafts, setUserDrafts] = useState<Map<string, DraftData>>(new Map());
 
   // Realtime Taslak Dinleyicisi
   useEffect(() => {

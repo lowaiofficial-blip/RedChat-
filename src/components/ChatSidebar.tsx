@@ -8,6 +8,7 @@ import { VerifiedBadge } from './VerifiedBadge';
 import { isRedChatAI, getRedChatAIProfile } from '../services/aiService';
 import { SequentialTypingDots } from './SequentialTypingDots';
 import { getTypingInfo } from '../utils/typingHelper';
+import type { DraftData } from '../services/draftService';
 import {
   Search,
   MessageSquare,
@@ -31,6 +32,7 @@ import {
   Activity,
   Clapperboard,
   FileEdit,
+  FileImage,
 } from 'lucide-react';
 
 interface ChatSidebarProps {
@@ -38,7 +40,7 @@ interface ChatSidebarProps {
   conversations: Conversation[];
   users: UserProfile[];
   channels?: Channel[];
-  userDrafts?: Map<string, string>;
+  userDrafts?: Map<string, DraftData>;
   activeConversationId: string | null;
   activeChannelId?: string | null;
   followingChannelIds?: string[];
@@ -67,6 +69,51 @@ function formatTime(timestamp: any): string {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
   return date.toLocaleDateString([], { month: 'numeric', day: 'numeric' });
+}
+
+function renderDraftPreview(draft?: DraftData | null) {
+  if (!draft) return null;
+  const text = draft.text?.trim() || '';
+  const hasMedia = Boolean(draft.mediaType && draft.mediaUrl);
+  if (!text && !hasMedia) return null;
+
+  if (draft.mediaType === 'image') {
+    return (
+      <div className="flex items-center gap-1 min-w-0 truncate text-amber-600 dark:text-amber-400 font-semibold">
+        <ImageIcon className="w-3.5 h-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+        <span className="truncate">Fotoğraf taslağı{text ? ` · ${text}` : ''}</span>
+      </div>
+    );
+  }
+
+  if (draft.mediaType === 'gif') {
+    return (
+      <div className="flex items-center gap-1 min-w-0 truncate text-amber-600 dark:text-amber-400 font-semibold">
+        <FileImage className="w-3.5 h-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+        <span className="truncate">GIF taslağı{text ? ` · ${text}` : ''}</span>
+      </div>
+    );
+  }
+
+  if (draft.mediaType === 'video') {
+    return (
+      <div className="flex items-center gap-1 min-w-0 truncate text-amber-600 dark:text-amber-400 font-semibold">
+        <Clapperboard className="w-3.5 h-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+        <span className="truncate">Video taslağı{text ? ` · ${text}` : ''}</span>
+      </div>
+    );
+  }
+
+  if (text) {
+    return (
+      <div className="flex items-center gap-1 min-w-0 truncate text-amber-600 dark:text-amber-400 font-semibold">
+        <FileEdit className="w-3.5 h-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+        <span className="truncate">Taslak: {text}</span>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 export const ChatSidebar: React.FC<ChatSidebarProps> = ({
@@ -534,15 +581,8 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                           }`}
                         >
                           {(() => {
-                            const groupDraft = userDrafts?.get(conv.id)?.trim();
-                            if (groupDraft) {
-                              return (
-                                <div className="flex items-center gap-1 min-w-0 truncate text-amber-600 dark:text-amber-400 font-semibold">
-                                  <FileEdit className="w-3.5 h-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
-                                  <span className="truncate">Taslak: {groupDraft}</span>
-                                </div>
-                              );
-                            }
+                            const groupDraftPreview = renderDraftPreview(userDrafts?.get(conv.id));
+                            if (groupDraftPreview) return groupDraftPreview;
 
                             const hasVideo = Boolean(
                               conv.lastMessageHasVideo ||
@@ -695,15 +735,8 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                         }`}
                       >
                         {(() => {
-                          const dmDraft = userDrafts?.get(conv.id)?.trim();
-                          if (dmDraft) {
-                            return (
-                              <div className="flex items-center gap-1 min-w-0 truncate text-amber-600 dark:text-amber-400 font-semibold">
-                                <FileEdit className="w-3.5 h-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
-                                <span className="truncate">Taslak: {dmDraft}</span>
-                              </div>
-                            );
-                          }
+                          const dmDraftPreview = renderDraftPreview(userDrafts?.get(conv.id));
+                          if (dmDraftPreview) return dmDraftPreview;
 
                           const convTypingInfo = getTypingInfo(
                             conv.typingUsers,
@@ -973,15 +1006,8 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                         <div className="flex items-center justify-between gap-1.5">
                           <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate min-w-0">
                             {(() => {
-                              const channelDraft = userDrafts?.get(ch.id)?.trim();
-                              if (channelDraft) {
-                                return (
-                                  <div className="flex items-center gap-1 min-w-0 truncate text-amber-600 dark:text-amber-400 font-semibold">
-                                    <FileEdit className="w-3.5 h-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
-                                    <span className="truncate">Taslak: {channelDraft}</span>
-                                  </div>
-                                );
-                              }
+                              const channelDraftPreview = renderDraftPreview(userDrafts?.get(ch.id));
+                              if (channelDraftPreview) return channelDraftPreview;
 
                               const hasVideo = Boolean(
                                 ch.lastPostHasVideo ||

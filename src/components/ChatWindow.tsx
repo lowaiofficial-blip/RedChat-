@@ -12,7 +12,7 @@ import {
   setUserTypingStatus,
 } from '../services/chatService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
-import { saveDraft, deleteDraft, getLocalDraft } from '../services/draftService';
+import { saveDraft, deleteDraft, getLocalDraft, createImageDraftPreview, createVideoDraftPreview, type DraftData } from '../services/draftService';
 import { UserAvatar } from './UserAvatar';
 import { ChatMessageItem } from './ChatMessageItem';
 import { EmojiPicker } from './EmojiPicker';
@@ -111,14 +111,26 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const videoUploadTaskRef = useRef<UploadVideoTask | null>(null);
   const [lightboxVideo, setLightboxVideo] = useState<{ url: string; duration?: number; caption?: string; senderName?: string } | null>(null);
 
+  // 🖼️/🎬 Taslak Medya State'i (Sayfa yenilendiğinde veya sohbet değişiminde korunan görsel/video taslağı)
+  const [draftMedia, setDraftMedia] = useState<{ type: 'image' | 'video' | 'gif'; url: string; duration?: number } | null>(null);
+
   const handleSelectGif = (gifUrl: string) => {
     setShowGiphyPicker(false);
     setImageUploadError(null);
-    if (imagePreviewUrl) {
+    if (imagePreviewUrl && !draftMedia?.url) {
       URL.revokeObjectURL(imagePreviewUrl);
     }
     setSelectedImageFile(null);
     setImagePreviewUrl(gifUrl);
+    const dMedia = { type: 'gif' as const, url: gifUrl };
+    setDraftMedia(dMedia);
+    if (conversation?.id && currentUser?.uid) {
+      saveDraft(currentUser.uid, conversation.id, {
+        text: inputText,
+        mediaType: 'gif',
+        mediaUrl: gifUrl,
+      }, 'conversation');
+    }
   };
 
   // ↩️ Yanıt Verme (Reply) State'leri
@@ -376,9 +388,24 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   useEffect(() => {
     if (conversation?.id && currentUser?.uid) {
       const draft = getLocalDraft(currentUser.uid, conversation.id);
-      setInputText(draft);
+      if (draft) {
+        setInputText(draft.text || '');
+        if (draft.mediaUrl && draft.mediaType) {
+          setDraftMedia({
+            type: draft.mediaType,
+            url: draft.mediaUrl,
+            duration: draft.videoDuration || undefined,
+          });
+        } else {
+          setDraftMedia(null);
+        }
+      } else {
+        setInputText('');
+        setDraftMedia(null);
+      }
     } else {
       setInputText('');
+      setDraftMedia(null);
     }
   }, [conversation?.id, currentUser?.uid]);
 
@@ -479,6 +506,21 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       setSelectedVideoFile(file);
       setSelectedVideoDuration(validation.duration);
       setShowVideoPreviewModal(true);
+
+      // Video taslak görseli ve süresi oluştur & kaydet
+      createVideoDraftPreview(file).then(({ previewUrl, duration }) => {
+        const dMedia = { type: 'video' as const, url: previewUrl, duration };
+        setDraftMedia(dMedia);
+        if (conversation?.id && currentUser?.uid) {
+          saveDraft(currentUser.uid, conversation.id, {
+            text: inputText,
+            mediaType: 'video',
+            mediaUrl: previewUrl,
+            videoDuration: duration,
+          }, 'conversation');
+        }
+      });
+
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
@@ -494,7 +536,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       return;
     }
 
-    if (imagePreviewUrl) {
+    if (imagePreviewUrl && !draftMedia?.url) {
       URL.revokeObjectURL(imagePreviewUrl);
     }
 
@@ -502,6 +544,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     setSelectedImageFile(file);
     setImagePreviewUrl(objectUrl);
     setImageUploadError(null);
+
+    // Fotoğraf taslak DataURL oluştur & kaydet
+    createImageDraftPreview(file).then((previewDataUrl) => {
+      const dMedia = { type: 'image' as const, url: previewDataUrl || objectUrl };
+      setDraftMedia(dMedia);
+      if (conversation?.id && currentUser?.uid) {
+        saveDraft(currentUser.uid, conversation.id, {
+          text: inputText,
+          mediaType: 'image',
+          mediaUrl: previewDataUrl || objectUrl,
+        }, 'conversation');
+      }
+    });
   };
 
   // Video Önizleme Ekranından Gönder Tıklandığında
@@ -541,6 +596,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       setSelectedVideoFile(null);
       setSelectedVideoDuration(0);
       setReplyingToMessage(null);
+      setDraftMedia(null);
+      deleteDraft(currentUser.uid, conversation.id);
     } catch (err: any) {
       if (err.message !== 'Yükleme iptal edildi.') {
         console.error('Video yükleme hatası:', err);
@@ -565,17 +622,27 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     setSelectedVideoDuration(0);
   };
 
-  // Seçili Fotoğrafı Kaldır
+  // Seçili Fotoğrafı / Medyayı / Taslağı Kaldır
   const handleRemoveSelectedImage = () => {
-    if (isUploadingImage) return;
-    if (imagePreviewUrl) {
+    if (isUploadingImage || isUploadingVideo) return;
+    if (imagePreviewUrl && !draftMedia?.url) {
       URL.revokeObjectURL(imagePreviewUrl);
     }
     setSelectedImageFile(null);
     setImagePreviewUrl(null);
+    setSelectedVideoFile(null);
+    setSelectedVideoDuration(0);
+    setDraftMedia(null);
     setImageUploadError(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
+    }
+    if (conversation?.id && currentUser?.uid) {
+      saveDraft(currentUser.uid, conversation.id, {
+        text: inputText,
+        mediaType: null,
+        mediaUrl: null,
+      }, 'conversation');
     }
   };
 
@@ -666,9 +733,14 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     const val = e.target.value;
     setInputText(val);
 
-    // ✍️ Mesaj taslağını otomatik kaydet (Debounced)
+    // ✍️ Mesaj ve Medya taslağını otomatik kaydet (Debounced)
     if (conversation?.id && currentUser?.uid) {
-      saveDraft(currentUser.uid, conversation.id, val, 'conversation');
+      saveDraft(currentUser.uid, conversation.id, {
+        text: val,
+        mediaType: draftMedia?.type || (selectedImageFile ? 'image' : imagePreviewUrl ? 'gif' : null),
+        mediaUrl: draftMedia?.url || imagePreviewUrl || null,
+        videoDuration: draftMedia?.duration || selectedVideoDuration || null,
+      }, 'conversation');
     }
 
     // ⌨️ Gerçek Zamanlı Yazıyor (Typing) Durumu Gönderme
@@ -752,7 +824,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       setInputText(newText);
     }
     if (conversation?.id && currentUser?.uid) {
-      saveDraft(currentUser.uid, conversation.id, newText, 'conversation');
+      saveDraft(currentUser.uid, conversation.id, {
+        text: newText,
+        mediaType: draftMedia?.type || (selectedImageFile ? 'image' : imagePreviewUrl ? 'gif' : null),
+        mediaUrl: draftMedia?.url || imagePreviewUrl || null,
+        videoDuration: draftMedia?.duration || selectedVideoDuration || null,
+      }, 'conversation');
     }
   };
 
@@ -835,7 +912,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
 
     const textToSend = inputText.trim();
-    if (!textToSend && !selectedImageFile && !imagePreviewUrl) return;
+    if (!textToSend && !selectedImageFile && !imagePreviewUrl && !draftMedia?.url) return;
 
     // Mükerrer gönderim kilit kontrolü
     sendLockRef.current = true;
@@ -849,6 +926,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
     setInputText('');
     setReplyingToMessage(null);
+    setDraftMedia(null);
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     if (conversation?.id && currentUser?.uid) {
       setUserTypingStatus(conversation.id, currentUser.uid, false);
@@ -1899,16 +1977,26 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         </div>
       )}
 
-      {/* 🔴 SEÇİLEN FOTOĞRAF ÖNİZLEME ÇUBUĞU (Göndermeden önce kaldırma / önizleme) */}
-      {imagePreviewUrl && !editingMessage && (
+      {/* 🔴 SEÇİLEN FOTOĞRAF / VİDEO / GIF ÖNİZLEME ÇUBUĞU (Göndermeden önce kaldırma / önizleme) */}
+      {(imagePreviewUrl || draftMedia) && !editingMessage && (
         <div className="px-4 py-3 bg-zinc-100 dark:bg-zinc-800/80 border-t border-zinc-200 dark:border-zinc-700 flex items-center justify-between animate-in slide-in-from-bottom-2">
           <div className="flex items-center gap-3 min-w-0">
             <div className="relative group/prev w-14 h-14 rounded-xl overflow-hidden bg-black/10 border border-zinc-300 dark:border-zinc-600 flex-shrink-0 shadow-xs">
               <img
-                src={imagePreviewUrl}
-                alt="Seçilen görsel önizleme"
+                src={draftMedia?.url || imagePreviewUrl || ''}
+                alt="Seçilen medya önizlemesi"
                 className="w-full h-full object-cover"
               />
+              {(draftMedia?.type === 'video' || selectedVideoFile) && (
+                <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                  <Film className="w-6 h-6 text-white drop-shadow-md" />
+                  {draftMedia?.duration ? (
+                    <span className="absolute bottom-1 right-1 text-[9px] font-mono px-1 py-0.5 rounded bg-black/70 text-white font-bold">
+                      {formatVideoDuration(draftMedia.duration)}
+                    </span>
+                  ) : null}
+                </div>
+              )}
               {isUploadingImage && (
                 <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
                   <Loader2 className="w-5 h-5 text-red-500 animate-spin" />
@@ -1917,22 +2005,29 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             </div>
             <div className="min-w-0">
               <span className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
-                {selectedImageFile ? (
+                {draftMedia?.type === 'video' || selectedVideoFile ? (
                   <>
-                    <ImageIcon className="w-3.5 h-3.5 text-red-600" />
-                    <span>Fotoğraf eklendi</span>
+                    <Film className="w-3.5 h-3.5 text-red-600" />
+                    <span>Video taslağı eklendi</span>
+                  </>
+                ) : draftMedia?.type === 'gif' ? (
+                  <>
+                    <Film className="w-3.5 h-3.5 text-red-600" />
+                    <span>GIF taslağı eklendi</span>
                   </>
                 ) : (
                   <>
-                    <Film className="w-3.5 h-3.5 text-red-600" />
-                    <span>GIPHY GIF eklendi</span>
+                    <ImageIcon className="w-3.5 h-3.5 text-red-600" />
+                    <span>Fotoğraf taslağı eklendi</span>
                   </>
                 )}
               </span>
               <p className="text-[11px] text-zinc-500 truncate max-w-xs">
                 {selectedImageFile
                   ? `${selectedImageFile.name} (${(selectedImageFile.size / 1024).toFixed(0)} KB)`
-                  : 'Animasyonlu GIF önizlemesi'}
+                  : draftMedia?.type === 'video' && draftMedia.duration
+                  ? `Süre: ${formatVideoDuration(draftMedia.duration)}`
+                  : 'Medya önizlemesi'}
               </p>
             </div>
           </div>
@@ -1940,9 +2035,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           <button
             type="button"
             onClick={handleRemoveSelectedImage}
-            disabled={isUploadingImage}
+            disabled={isUploadingImage || isUploadingVideo}
             className="px-2.5 py-1.5 text-xs font-semibold text-zinc-600 hover:text-rose-600 dark:text-zinc-400 dark:hover:text-rose-400 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-lg transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
-            title="Fotoğrafı Kaldır"
+            title="Medyayı Kaldır"
           >
             <X className="w-4 h-4" />
             <span>Kaldır</span>

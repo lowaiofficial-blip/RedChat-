@@ -151,6 +151,9 @@
         "targetId": { "type": "string", "description": "Target conversation or channel ID" },
         "targetType": { "type": "string", "description": "Type of target: 'conversation' | 'channel'" },
         "text": { "type": "string", "description": "Draft message text" },
+        "mediaType": { "type": "string", "description": "Draft media type: 'image' | 'video' | 'gif' | null" },
+        "mediaUrl": { "type": "string", "description": "Draft media preview URL or Giphy URL" },
+        "videoDuration": { "type": "number", "description": "Video duration in seconds if video" },
         "updatedAt": { "type": "timestamp", "description": "Last update timestamp" }
       }
     }
