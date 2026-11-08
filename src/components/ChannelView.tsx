@@ -10,7 +10,18 @@ import {
   clearChannelPostReactions,
 } from '../services/channelService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
-import { saveDraft, deleteDraft, getLocalDraft, createImageDraftPreview, createVideoDraftPreview, type DraftData } from '../services/draftService';
+import {
+  saveDraft,
+  deleteDraft,
+  getLocalDraft,
+  createImageDraftPreview,
+  createVideoDraftPreview,
+  saveMediaDraftFile,
+  getMediaDraftFile,
+  deleteMediaDraftFile,
+  dataURLtoFile,
+  type DraftData,
+} from '../services/draftService';
 import { VerifiedBadge } from './VerifiedBadge';
 import { EmojiPicker } from './EmojiPicker';
 import { ChannelProfileModal } from './ChannelProfileModal';
@@ -209,6 +220,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
 
   // ✍️ Kanal açıldığında veya değiştiğinde kaydedilmiş taslağı yükle
   useEffect(() => {
+    let isCancelled = false;
     if (channel?.id && currentUser?.uid) {
       const draft = getLocalDraft(currentUser.uid, channel.id);
       if (draft) {
@@ -219,17 +231,48 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
             url: draft.mediaUrl,
             duration: draft.videoDuration || undefined,
           });
+          if (draft.mediaType === 'image') {
+            setPreviewPhotoUrl(draft.mediaUrl);
+          }
+          if (draft.mediaType === 'video' && draft.videoDuration) {
+            setSelectedVideoDuration(draft.videoDuration);
+          }
         } else {
           setDraftMedia(null);
+          setPreviewPhotoUrl(null);
         }
       } else {
         setPostText('');
         setDraftMedia(null);
+        setPreviewPhotoUrl(null);
       }
+
+      // IndexedDB veya bellekten gerçek File nesnesini geri yükle
+      getMediaDraftFile(channel.id).then((savedMedia) => {
+        if (isCancelled || !savedMedia) return;
+        if (savedMedia.mediaType === 'image') {
+          setSelectedPhotoFile(savedMedia.file);
+          setSelectedVideoFile(null);
+          if (!previewPhotoUrl) {
+            setPreviewPhotoUrl(URL.createObjectURL(savedMedia.file));
+          }
+        } else if (savedMedia.mediaType === 'video') {
+          setSelectedVideoFile(savedMedia.file);
+          setSelectedVideoDuration(savedMedia.duration || 0);
+          setSelectedPhotoFile(null);
+        }
+      });
     } else {
       setPostText('');
       setDraftMedia(null);
+      setPreviewPhotoUrl(null);
+      setSelectedPhotoFile(null);
+      setSelectedVideoFile(null);
+      setSelectedVideoDuration(0);
     }
+    return () => {
+      isCancelled = true;
+    };
   }, [channel?.id, currentUser?.uid]);
 
   // Gönderileri canlı dinle
@@ -268,6 +311,10 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
       setSelectedVideoDuration(validation.duration);
       setShowVideoPreviewModal(true);
 
+      if (channel?.id) {
+        saveMediaDraftFile(channel.id, file, 'video', validation.duration);
+      }
+
       createVideoDraftPreview(file).then(({ previewUrl, duration }) => {
         const dMedia = { type: 'video' as const, url: previewUrl, duration };
         setDraftMedia(dMedia);
@@ -299,6 +346,10 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
     setSelectedPhotoFile(file);
     const objUrl = URL.createObjectURL(file);
     setPreviewPhotoUrl(objUrl);
+
+    if (channel?.id) {
+      saveMediaDraftFile(channel.id, file, 'image');
+    }
 
     createImageDraftPreview(file).then((previewDataUrl) => {
       const dMedia = { type: 'image' as const, url: previewDataUrl || objUrl };
@@ -342,6 +393,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
       setSelectedVideoDuration(0);
       setDraftMedia(null);
       deleteDraft(currentUser.uid, channel.id);
+      deleteMediaDraftFile(channel.id);
     } catch (err: any) {
       if (err.message !== 'Yükleme iptal edildi.') {
         console.error('Video yükleme hatası:', err);
@@ -375,6 +427,9 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
     setSelectedVideoDuration(0);
     setDraftMedia(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
+    if (channel?.id) {
+      deleteMediaDraftFile(channel.id);
+    }
     if (channel?.id && currentUser?.uid) {
       saveDraft(currentUser.uid, channel.id, {
         text: postText,
@@ -398,11 +453,38 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
     setShowEmojiPicker(false);
   };
 
-  // Yeni gönderi yayınla
+  // Yeni gönderi yayınla (Metin, Fotoğraf, Video veya Açıklamalı Medya)
   const handlePublishPost = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (posting || isUploadingVideo) return;
+
     const trimmed = postText.trim();
-    if (!trimmed && !selectedPhotoFile && !draftMedia?.url) {
+    const mediaToSend = draftMedia;
+    let fileToSend = selectedPhotoFile;
+    let videoFileToSend = selectedVideoFile;
+    let videoDurationToSend = selectedVideoDuration || draftMedia?.duration || 0;
+
+    // Eğer bellek File nesnesi yoksa ama IndexedDB'de kayıtlıysa yükle
+    if (!fileToSend && !videoFileToSend && channel?.id) {
+      const saved = await getMediaDraftFile(channel.id);
+      if (saved) {
+        if (saved.mediaType === 'image') {
+          fileToSend = saved.file;
+        } else if (saved.mediaType === 'video') {
+          videoFileToSend = saved.file;
+          if (saved.duration) videoDurationToSend = saved.duration;
+        }
+      }
+    }
+
+    const hasMedia = Boolean(
+      fileToSend ||
+      videoFileToSend ||
+      previewPhotoUrl ||
+      mediaToSend?.url
+    );
+
+    if (!trimmed && !hasMedia) {
       setPostError('Lütfen bir metin girin veya görsel/video ekleyin.');
       return;
     }
@@ -412,25 +494,81 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
       setPostError(null);
 
       let finalImageUrl: string | null = null;
-      if (selectedPhotoFile) {
-        finalImageUrl = await uploadImageToImgBB(selectedPhotoFile);
+      let finalVideoUrl: string | null = null;
+      let finalDuration: number | null = null;
+
+      // 🎬 1. Video Gönderimi
+      if (videoFileToSend || mediaToSend?.type === 'video') {
+        if (!videoFileToSend) {
+          throw new Error('Video dosyası bulunamadı. Lütfen videoyu galeriden tekrar seçin.');
+        }
+        setIsUploadingVideo(true);
+        setVideoUploadProgress(0);
+
+        const task = uploadVideoToCloudinary(videoFileToSend, videoDurationToSend, (pct) => {
+          setVideoUploadProgress(pct);
+        });
+        videoUploadTaskRef.current = task;
+
+        const { videoUrl, duration } = await task.promise;
+        finalVideoUrl = videoUrl;
+        finalDuration = duration || videoDurationToSend;
+      }
+      // 🖼️ 2. Fotoğraf Gönderimi
+      else if (fileToSend || mediaToSend?.type === 'image' || previewPhotoUrl) {
+        if (fileToSend) {
+          finalImageUrl = await uploadImageToImgBB(fileToSend);
+        } else if (mediaToSend?.url && mediaToSend.type === 'image') {
+          if (mediaToSend.url.startsWith('data:image/')) {
+            const convertedFile = dataURLtoFile(mediaToSend.url);
+            finalImageUrl = await uploadImageToImgBB(convertedFile);
+          } else {
+            finalImageUrl = mediaToSend.url;
+          }
+        } else if (previewPhotoUrl) {
+          if (previewPhotoUrl.startsWith('data:image/')) {
+            const convertedFile = dataURLtoFile(previewPhotoUrl);
+            finalImageUrl = await uploadImageToImgBB(convertedFile);
+          } else {
+            finalImageUrl = previewPhotoUrl;
+          }
+        }
       }
 
-      await createChannelPost(channel.id, trimmed, finalImageUrl, channel.name, currentUser.uid);
+      await createChannelPost(
+        channel.id,
+        trimmed,
+        finalImageUrl,
+        channel.name,
+        currentUser.uid,
+        finalVideoUrl || undefined,
+        finalDuration || undefined
+      );
 
-      // Taslağı temizle ve formu sıfırla
+      // ✅ Gönderim başarılı: Taslağı ve form alanlarını temizle
       if (channel?.id && currentUser?.uid) {
         deleteDraft(currentUser.uid, channel.id);
+        deleteMediaDraftFile(channel.id);
       }
       setPostText('');
       setDraftMedia(null);
-      handleRemovePhoto();
+      setSelectedPhotoFile(null);
+      setSelectedVideoFile(null);
+      setSelectedVideoDuration(0);
+      if (previewPhotoUrl && !mediaToSend?.url) {
+        URL.revokeObjectURL(previewPhotoUrl);
+      }
+      setPreviewPhotoUrl(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
       setShowEmojiPicker(false);
     } catch (err: any) {
       console.error('Gönderi paylaşılırken hata:', err);
       setPostError(err?.message || 'Gönderi paylaşılırken bir hata oluştu.');
     } finally {
       setPosting(false);
+      setIsUploadingVideo(false);
+      setVideoUploadProgress(0);
+      videoUploadTaskRef.current = null;
     }
   };
 
@@ -1057,11 +1195,15 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                   <button
                     type="submit"
                     id="channel-publish-btn"
-                    disabled={posting || (!postText.trim() && !selectedPhotoFile)}
+                    disabled={
+                      posting ||
+                      isUploadingVideo ||
+                      (!postText.trim() && !selectedPhotoFile && !previewPhotoUrl && !draftMedia?.url && !selectedVideoFile)
+                    }
                     className="p-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:pointer-events-none text-white rounded-xl shadow-md shadow-red-600/20 transition-all cursor-pointer flex items-center justify-center shrink-0"
                     title="Paylaş (Ctrl+Enter)"
                   >
-                    {posting ? (
+                    {posting || isUploadingVideo ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
                     ) : (
                       <Send className="w-4 h-4" />

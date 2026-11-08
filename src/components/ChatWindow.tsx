@@ -12,7 +12,18 @@ import {
   setUserTypingStatus,
 } from '../services/chatService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
-import { saveDraft, deleteDraft, getLocalDraft, createImageDraftPreview, createVideoDraftPreview, type DraftData } from '../services/draftService';
+import {
+  saveDraft,
+  deleteDraft,
+  getLocalDraft,
+  createImageDraftPreview,
+  createVideoDraftPreview,
+  saveMediaDraftFile,
+  getMediaDraftFile,
+  deleteMediaDraftFile,
+  dataURLtoFile,
+  type DraftData,
+} from '../services/draftService';
 import { UserAvatar } from './UserAvatar';
 import { ChatMessageItem } from './ChatMessageItem';
 import { EmojiPicker } from './EmojiPicker';
@@ -121,6 +132,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       URL.revokeObjectURL(imagePreviewUrl);
     }
     setSelectedImageFile(null);
+    setSelectedVideoFile(null);
+    setSelectedVideoDuration(0);
+    if (conversation?.id) {
+      deleteMediaDraftFile(conversation.id);
+    }
     setImagePreviewUrl(gifUrl);
     const dMedia = { type: 'gif' as const, url: gifUrl };
     setDraftMedia(dMedia);
@@ -386,6 +402,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
   // ✍️ Sohbet açıldığında veya değiştiğinde kaydedilmiş taslağı yükle
   useEffect(() => {
+    let isCancelled = false;
     if (conversation?.id && currentUser?.uid) {
       const draft = getLocalDraft(currentUser.uid, conversation.id);
       if (draft) {
@@ -396,17 +413,48 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             url: draft.mediaUrl,
             duration: draft.videoDuration || undefined,
           });
+          if (draft.mediaType === 'image' || draft.mediaType === 'gif') {
+            setImagePreviewUrl(draft.mediaUrl);
+          }
+          if (draft.mediaType === 'video' && draft.videoDuration) {
+            setSelectedVideoDuration(draft.videoDuration);
+          }
         } else {
           setDraftMedia(null);
+          setImagePreviewUrl(null);
         }
       } else {
         setInputText('');
         setDraftMedia(null);
+        setImagePreviewUrl(null);
       }
+
+      // IndexedDB veya bellekten gerçek File nesnesini geri yükle
+      getMediaDraftFile(conversation.id).then((savedMedia) => {
+        if (isCancelled || !savedMedia) return;
+        if (savedMedia.mediaType === 'image') {
+          setSelectedImageFile(savedMedia.file);
+          setSelectedVideoFile(null);
+          if (!imagePreviewUrl) {
+            setImagePreviewUrl(URL.createObjectURL(savedMedia.file));
+          }
+        } else if (savedMedia.mediaType === 'video') {
+          setSelectedVideoFile(savedMedia.file);
+          setSelectedVideoDuration(savedMedia.duration || 0);
+          setSelectedImageFile(null);
+        }
+      });
     } else {
       setInputText('');
       setDraftMedia(null);
+      setImagePreviewUrl(null);
+      setSelectedImageFile(null);
+      setSelectedVideoFile(null);
+      setSelectedVideoDuration(0);
     }
+    return () => {
+      isCancelled = true;
+    };
   }, [conversation?.id, currentUser?.uid]);
 
   // Mesajları dinle
@@ -508,6 +556,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       setShowVideoPreviewModal(true);
 
       // Video taslak görseli ve süresi oluştur & kaydet
+      if (conversation?.id) {
+        saveMediaDraftFile(conversation.id, file, 'video', validation.duration);
+      }
       createVideoDraftPreview(file).then(({ previewUrl, duration }) => {
         const dMedia = { type: 'video' as const, url: previewUrl, duration };
         setDraftMedia(dMedia);
@@ -544,6 +595,10 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     setSelectedImageFile(file);
     setImagePreviewUrl(objectUrl);
     setImageUploadError(null);
+
+    if (conversation?.id) {
+      saveMediaDraftFile(conversation.id, file, 'image');
+    }
 
     // Fotoğraf taslak DataURL oluştur & kaydet
     createImageDraftPreview(file).then((previewDataUrl) => {
@@ -636,6 +691,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     setImageUploadError(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
+    }
+    if (conversation?.id) {
+      deleteMediaDraftFile(conversation.id);
     }
     if (conversation?.id && currentUser?.uid) {
       saveDraft(currentUser.uid, conversation.id, {
@@ -867,10 +925,10 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   }, []);
 
-  // Mesaj Gönderme (Metin, Fotoğraf, Fotoğraf + Metin, veya Yanıt)
+  // Mesaj Gönderme (Metin, Fotoğraf, GIF, Video, Açıklamalı Medya veya Yanıt)
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!conversation?.id || sending || isUploadingImage || sendLockRef.current) return;
+    if (!conversation?.id || sending || isUploadingImage || isUploadingVideo || sendLockRef.current) return;
 
     if (currentUser.isBanned) {
       setImageUploadError('Hesabınız askıya alınmıştır (Banlandınız). Mesaj gönderemezsiniz.');
@@ -899,6 +957,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
     if (currentUser.isMuted) {
       setImageUploadError('Hesabınız susturulmuştur. Mesaj gönderemezsiniz.');
+      return;
     }
 
     if (isSessionTerminated) {
@@ -912,37 +971,86 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
 
     const textToSend = inputText.trim();
-    if (!textToSend && !selectedImageFile && !imagePreviewUrl && !draftMedia?.url) return;
+    const mediaToSend = draftMedia;
+    let fileToSend = selectedImageFile;
+    let videoFileToSend = selectedVideoFile;
+    let videoDurationToSend = selectedVideoDuration || draftMedia?.duration || 0;
+
+    // Eğer bellek File nesnesi yoksa ama IndexedDB'de kayıtlıysa yükle
+    if (!fileToSend && !videoFileToSend && conversation?.id) {
+      const saved = await getMediaDraftFile(conversation.id);
+      if (saved) {
+        if (saved.mediaType === 'image') {
+          fileToSend = saved.file;
+        } else if (saved.mediaType === 'video') {
+          videoFileToSend = saved.file;
+          if (saved.duration) videoDurationToSend = saved.duration;
+        }
+      }
+    }
+
+    const hasMedia = Boolean(
+      fileToSend ||
+      videoFileToSend ||
+      imagePreviewUrl ||
+      mediaToSend?.url
+    );
+
+    if (!textToSend && !hasMedia) return;
 
     // Mükerrer gönderim kilit kontrolü
     sendLockRef.current = true;
     setSending(true);
     setImageUploadError(null);
 
-    // Form alanlarını ve yanıt modunu ANINDA sıfırla (Kullanıcı beklemek zorunda kalmaz!)
     const currentReplyTo = replyingToMessage;
-    const currentImageFile = selectedImageFile;
-    const currentImagePreviewUrl = imagePreviewUrl;
-
-    setInputText('');
-    setReplyingToMessage(null);
-    setDraftMedia(null);
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    if (conversation?.id && currentUser?.uid) {
-      setUserTypingStatus(conversation.id, currentUser.uid, false);
-      deleteDraft(currentUser.uid, conversation.id);
-    }
-    handleRemoveSelectedImage();
 
     try {
       let uploadedImageUrl: string | null = null;
+      let uploadedVideoUrl: string | null = null;
+      let finalVideoDuration: number | null = null;
 
-      // Eğer yerel dosya seçilmişse CDN'e yükle, GIF seçilmişse direkt URL'i kullan
-      if (currentImageFile) {
-        setIsUploadingImage(true);
-        uploadedImageUrl = await uploadImageToImgBB(currentImageFile);
-      } else if (currentImagePreviewUrl) {
-        uploadedImageUrl = currentImagePreviewUrl;
+      // 🎬 1. VİDEO GÖNDERİMİ
+      if (videoFileToSend || mediaToSend?.type === 'video') {
+        if (!videoFileToSend) {
+          throw new Error('Video dosyası bulunamadı. Lütfen videoyu galeriden tekrar seçin.');
+        }
+        setIsUploadingVideo(true);
+        setVideoUploadProgress(0);
+
+        const task = uploadVideoToCloudinary(videoFileToSend, videoDurationToSend, (pct) => {
+          setVideoUploadProgress(pct);
+        });
+        videoUploadTaskRef.current = task;
+
+        const { videoUrl, duration } = await task.promise;
+        uploadedVideoUrl = videoUrl;
+        finalVideoDuration = duration || videoDurationToSend;
+      }
+      // 🖼️ 2. FOTOĞRAF VEYA GIF GÖNDERİMİ
+      else if (fileToSend || mediaToSend?.type === 'image' || mediaToSend?.type === 'gif' || imagePreviewUrl) {
+        if (fileToSend) {
+          setIsUploadingImage(true);
+          uploadedImageUrl = await uploadImageToImgBB(fileToSend);
+        } else if (mediaToSend?.url && mediaToSend.type === 'image') {
+          if (mediaToSend.url.startsWith('data:image/')) {
+            setIsUploadingImage(true);
+            const convertedFile = dataURLtoFile(mediaToSend.url);
+            uploadedImageUrl = await uploadImageToImgBB(convertedFile);
+          } else {
+            uploadedImageUrl = mediaToSend.url;
+          }
+        } else if (mediaToSend?.type === 'gif' && mediaToSend.url) {
+          uploadedImageUrl = mediaToSend.url;
+        } else if (imagePreviewUrl) {
+          if (imagePreviewUrl.startsWith('data:image/')) {
+            setIsUploadingImage(true);
+            const convertedFile = dataURLtoFile(imagePreviewUrl);
+            uploadedImageUrl = await uploadImageToImgBB(convertedFile);
+          } else {
+            uploadedImageUrl = imagePreviewUrl;
+          }
+        }
       }
 
       // Yanıt referansı hazırla
@@ -953,6 +1061,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             senderName: currentReplyTo.senderName || currentReplyTo.senderUsername || 'Kullanıcı',
             text: (currentReplyTo.text || '').replace(/\s+/g, ' '),
             imageUrl: currentReplyTo.imageUrl || null,
+            videoUrl: currentReplyTo.videoUrl || null,
           }
         : null;
 
@@ -965,6 +1074,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         senderUsername: currentUser.username,
         text: textToSend,
         imageUrl: uploadedImageUrl,
+        videoUrl: uploadedVideoUrl || undefined,
+        videoDuration: finalVideoDuration || undefined,
         createdAt: new Date(),
         status: 'sent',
         isRead: false,
@@ -979,8 +1090,27 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
       // Firestore'a tek ve paralel istek olarak kaydet
       await sendMessage(conversation.id, currentUser, textToSend, uploadedImageUrl, replyRef, {
+        videoUrl: uploadedVideoUrl,
+        videoDuration: finalVideoDuration,
         participantIds: conversation.participantIds,
       });
+
+      // ✅ GÖNDERİM BAŞARILI: Taslağı ve girdi alanlarını şimdi temizle!
+      setInputText('');
+      setReplyingToMessage(null);
+      setDraftMedia(null);
+      setSelectedImageFile(null);
+      setImagePreviewUrl(null);
+      setSelectedVideoFile(null);
+      setSelectedVideoDuration(0);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      if (conversation?.id && currentUser?.uid) {
+        setUserTypingStatus(conversation.id, currentUser.uid, false);
+        deleteDraft(currentUser.uid, conversation.id);
+        deleteMediaDraftFile(conversation.id);
+      }
 
       // 🤖 Eğer birebir DeepRed AI sohbeti ise VEYA grup sohbetinde @DeepRed AI etiketlenmişse yapay zeka yanıtını tetikle
       const isGroupChat = Boolean(conversation?.isGroup);
@@ -2528,14 +2658,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               {/* Gönder Butonu */}
               <button
                 type="submit"
-                disabled={(!inputText.trim() && !selectedImageFile) || sending || isUploadingImage}
+                disabled={
+                  (!inputText.trim() && !selectedImageFile && !imagePreviewUrl && !draftMedia?.url && !selectedVideoFile) ||
+                  sending ||
+                  isUploadingImage ||
+                  isUploadingVideo
+                }
                 className="px-4 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-semibold rounded-xl transition-colors flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
               >
-                {isUploadingImage || sending ? (
+                {isUploadingImage || isUploadingVideo || sending ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
                     <span className="hidden sm:inline">
-                      {isUploadingImage ? 'Fotoğraf yükleniyor…' : 'Gönderiliyor…'}
+                      {isUploadingVideo ? 'Video yükleniyor…' : isUploadingImage ? 'Fotoğraf yükleniyor…' : 'Gönderiliyor…'}
                     </span>
                   </>
                 ) : (

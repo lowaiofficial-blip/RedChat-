@@ -8,6 +8,15 @@ import {
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 
+import {
+  deleteMediaDraftFile,
+  saveMediaDraftFile,
+  getMediaDraftFile,
+  dataURLtoFile,
+} from './draftMediaStorage';
+
+export { deleteMediaDraftFile, saveMediaDraftFile, getMediaDraftFile, dataURLtoFile };
+
 export interface DraftData {
   text: string;
   mediaType?: 'image' | 'video' | 'gif' | null;
@@ -205,6 +214,9 @@ export async function deleteDraft(userId: string, targetId: string) {
     localStorage.removeItem(getLocalDraftKey(activeUserId, targetId));
   } catch (e) {}
   notifyDraftListeners(activeUserId);
+
+  // IndexedDB ve bellekten medya dosyasını sil
+  deleteMediaDraftFile(targetId).catch(() => {});
 
   // Firestore'dan sil
   if (db && auth?.currentUser?.uid) {
