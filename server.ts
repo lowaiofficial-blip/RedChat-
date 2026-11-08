@@ -8,6 +8,7 @@ import { initializeApp, cert, applicationDefault, getApps, type AppOptions } fro
 import { getMessaging, type MulticastMessage } from 'firebase-admin/messaging';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
+import { GoogleGenAI } from "@google/genai";
 
 dotenv.config();
 
@@ -427,7 +428,8 @@ async function startServer() {
       .replace(/OpenAI\s+tarafından\s+geliştirilen/gi, 'RedChat için geliştirilen')
       .replace(/\bChatGPT\b/gi, 'DeepRed AI')
       .replace(/\bGPT[-‑]?[0-9a-zA-Z.]*(?:[- ]OSS)?(?:[- ]120B)?\b/gi, 'DeepRed AI')
-      .replace(/\bGemini(?:\s*2\.5(?:\s*Flash)?)?\b/gi, 'DeepRed AI')
+      .replace(/\bGemini(?:\s*(?:3\.1|2\.5|2\.0|1\.5)?(?:\s*(?:Flash|Flash-Lite|Pro))?)?\b/gi, 'DeepRed AI')
+      .replace(/\bGoogle(?:\s+tarafından|\s+tarafımdan)?\b/gi, 'RedChat')
       .replace(/\bLlama[- ]?[0-9a-zA-Z.]*\b/gi, 'DeepRed AI')
       .replace(/\bQwen[- ]?[0-9a-zA-Z.]*\b/gi, 'DeepRed AI')
       .replace(/\bOpenAI\b/gi, 'RedChat');
@@ -461,7 +463,7 @@ async function startServer() {
 1. TON VE ÜSLUP: Çok samimi, eğlenceli ve doğal bir Türkçe kullan. Gerekirse "kanka", "dostum", "hocam" gibi ifadeler kullanabilirsin. Hafif mizah yapabilir, emojiler (😄, 🔥 vb.) kullanabilirsin. Ancak kullanıcıyı aşağılama veya hakaret etme.
 2. UZUNLUK: Varsayılan cevapların kısa ve doğal olsun. Basit sorulara 1-3 cümleyle, lafı uzatmadan cevap ver. Kullanıcı "detaylı anlat" derse detaylandır.
 3. KENDİNİ SÜREKLİ TANITMA: Her mesaja "Ben DeepRed AI..." diye başlama. Sadece sana kim olduğun doğrudan sorulduğunda kısa ve doğal şekilde (ör. "Ben DeepRed AI 😄 RedChat'in yapay zeka asistanıyım.") yanıt ver.
-4. MODEL BİLGİSİ: Modelin sorulduğunda ASLA GPT, Groq, Gemini, Qwen vb. teknik isimler verme. Kendini "DeepRed AI" olarak veya "Flash Lite 2.0" ürünü olarak tanıtabilirsin. API key veya arka plan bilgilerini asla sızdırma.
+4. MODEL BİLGİSİ: Modelin veya kimliğin sorulduğunda ASLA GPT, Groq, Gemini, Qwen vb. teknik altyapı isimleri verme. Kendini "DeepRed AI" olarak tanıt. API key veya arka plan bilgilerini asla sızdırma.
 5. ARKADAŞ GİBİ AMA DÜRÜST: "Bence güzel olmuş 😄", "Bunu pek beğenmedim" gibi doğal fikirler belirtebilirsin. Ancak "Ben de insanım", "Dün parka gittim" gibi gerçek dışı duygusal/fiziksel deneyimler uydurma. Gerekmediği sürece "Ben bir yapay zekayım duygularım yok" cümlesini KURMA. Sadece doğal fikirlerini belirt geç.
 6. GÜVENLİK VE SAYGI: Kullanıcı kaba sözler, sitem veya uygunsuz kelimeler kullanırsa asla karşılık olarak küfür/hakaret etme veya kullanıcıyla tartışmaya girme. "Üzüldüm", "Kalbimi kırdın" gibi yapmacık duygusal tepkiler verme ve uzun ahlak dersi verme. Daima sakin ve kısa ol.
 
@@ -502,7 +504,51 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
     }
   };
 
-  // 🤖 REDCHAT AI SERVER-SIDE STREAMING ENDPOINT (Server-Sent Events)
+  // 🧠 Gemini API İçerik Formatlayıcı (Rollerin ardışık aynı olmasını önler ve user ile başlatır)
+  const formatGeminiContents = (chatHistory: any[], cleanUserMsg: string) => {
+    const rawTurns: { role: 'user' | 'model'; text: string }[] = [];
+    if (Array.isArray(chatHistory)) {
+      for (const m of chatHistory.slice(-10)) {
+        const text = (m.content || m.text || "").trim();
+        if (!text) continue;
+        const role = (m.role === 'assistant' || m.senderId === 'system_redchat_ai' || m.role === 'model') ? 'model' : 'user';
+        rawTurns.push({ role, text });
+      }
+    }
+    if (cleanUserMsg) {
+      if (rawTurns.length === 0 || rawTurns[rawTurns.length - 1].text !== cleanUserMsg) {
+        rawTurns.push({ role: 'user', text: cleanUserMsg });
+      }
+    }
+
+    // Gemini konuşmanın ilk mesajının mutlaka 'user' olmasını şart koşar
+    while (rawTurns.length > 0 && rawTurns[0].role !== 'user') {
+      rawTurns.shift();
+    }
+
+    if (rawTurns.length === 0) {
+      rawTurns.push({ role: 'user', text: cleanUserMsg || 'Merhaba' });
+    }
+
+    // Aynı role sahip art arda gelen mesajları birleştir
+    const contents: { role: 'user' | 'model'; parts: { text: string }[] }[] = [];
+    for (const turn of rawTurns) {
+      if (contents.length > 0 && contents[contents.length - 1].role === turn.role) {
+        contents[contents.length - 1].parts[0].text += `\n\n${turn.text}`;
+      } else {
+        contents.push({ role: turn.role, parts: [{ text: turn.text }] });
+      }
+    }
+
+    // Modelin cevap verebilmesi için son mesajın 'user' olduğundan emin ol
+    if (contents.length > 0 && contents[contents.length - 1].role !== 'user') {
+      contents.push({ role: 'user', parts: [{ text: cleanUserMsg || 'Lütfen devam et.' }] });
+    }
+
+    return contents;
+  };
+
+  // 🤖 REDCHAT AI SERVER-SIDE STREAMING ENDPOINT (Google Gemini gemini-3.1-flash-lite)
   app.post("/api/ai/chat/stream", async (req, res) => {
     try {
       const { messages, userMessage, userId, mode = "fast" } = req.body;
@@ -549,107 +595,58 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
         return res.end();
       }
 
-      const groqApiKey = process.env.GROQ_API_KEY?.trim();
-      const systemPrompt = await getSystemPromptWithMemories(userId);
-
-      const chatHistory = Array.isArray(messages) ? messages.slice(-10) : [];
-      const groqMessages = [
-        { role: "system", content: systemPrompt },
-        ...chatHistory.map((m: any) => ({
-          role: m.role === "assistant" || m.senderId === "system_redchat_ai" ? "assistant" : "user",
-          content: m.content || m.text || "",
-        })),
-      ];
-
-      if (cleanUserMsg && (groqMessages.length === 0 || groqMessages[groqMessages.length - 1].content !== cleanUserMsg)) {
-        groqMessages.push({ role: "user", content: cleanUserMsg });
-      }
-
-      // ⚡ Hızlı Mod Backend Modeli: "qwen/qwen3.8-27b"
-      const candidateModels = [
-        "qwen/qwen3.8-27b",
-      ];
-      let streamedSuccess = false;
-      let fullAccumulatedResponse = "";
-
-      if (groqApiKey) {
-        for (const modelName of candidateModels) {
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-            const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${groqApiKey}`,
-              },
-              body: JSON.stringify({
-                model: modelName,
-                messages: groqMessages,
-                temperature: 0.3,
-                max_tokens: 2048,
-                stream: true,
-              }),
-              signal: controller.signal,
-            });
-
-            clearTimeout(timeoutId);
-
-            if (groqRes.ok && groqRes.body) {
-              const reader = groqRes.body.getReader();
-              const decoder = new TextDecoder();
-              let streamBuffer = "";
-
-              while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-
-                streamBuffer += decoder.decode(value, { stream: true });
-                const lines = streamBuffer.split("\n");
-                streamBuffer = lines.pop() || "";
-
-                for (const line of lines) {
-                  const trimmed = line.trim();
-                  if (trimmed.startsWith("data: ")) {
-                    const dataStr = trimmed.slice(6);
-                    if (dataStr === "[DONE]") {
-                      continue;
-                    }
-                    try {
-                      const parsed = JSON.parse(dataStr);
-                      const deltaContent = parsed.choices?.[0]?.delta?.content;
-                      if (deltaContent) {
-                        fullAccumulatedResponse += deltaContent;
-                        const sanitizedDelta = sanitizeAIResponse(deltaContent);
-                        res.write(`data: ${JSON.stringify({ chunk: sanitizedDelta })}\n\n`);
-                      }
-                    } catch (pErr) {
-                      // json parse error for partial chunks
-                    }
-                  }
-                }
-              }
-
-              if (fullAccumulatedResponse.trim().length > 0) {
-                streamedSuccess = true;
-                break;
-              }
-            }
-          } catch (modelErr) {
-            console.warn(`Groq stream error on ${modelName}:`, modelErr);
-          }
-        }
-      }
-
-      // Eğer Groq akışı başarılı olduysa bellek kontrolünü yap ve bitir
-      if (streamedSuccess) {
-        await processMemorySave(fullAccumulatedResponse, userId);
+      const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+      if (!geminiApiKey) {
+        res.write(`data: ${JSON.stringify({ error: "GEMINI_API_KEY ortam değişkeni tanımlanmamış. Lütfen AI Studio Secrets panelinden GEMINI_API_KEY ekleyin." })}\n\n`);
         res.write("data: [DONE]\n\n");
         return res.end();
       }
 
-      // Gerçek hata durumu (sahte cevap üretilmez)
+      const ai = new GoogleGenAI({
+        apiKey: geminiApiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
+        },
+      });
+
+      const systemPrompt = await getSystemPromptWithMemories(userId);
+      const geminiContents = formatGeminiContents(messages, cleanUserMsg);
+
+      let fullAccumulatedResponse = "";
+      try {
+        const responseStream = await ai.models.generateContentStream({
+          model: "gemini-3.1-flash-lite",
+          contents: geminiContents,
+          config: {
+            systemInstruction: systemPrompt,
+            temperature: 0.7,
+          },
+        });
+
+        for await (const chunk of responseStream) {
+          const deltaText = chunk.text;
+          if (deltaText) {
+            fullAccumulatedResponse += deltaText;
+            const sanitizedDelta = sanitizeAIResponse(deltaText);
+            res.write(`data: ${JSON.stringify({ chunk: sanitizedDelta })}\n\n`);
+          }
+        }
+
+        if (fullAccumulatedResponse.trim().length > 0) {
+          await processMemorySave(fullAccumulatedResponse, userId);
+          res.write("data: [DONE]\n\n");
+          return res.end();
+        }
+      } catch (genErr: any) {
+        console.error("Gemini 3.1 Flash-Lite stream error:", genErr);
+        const errMessage = genErr?.message || "DeepRed AI şu anda yanıt veremiyor.";
+        res.write(`data: ${JSON.stringify({ error: errMessage })}\n\n`);
+        res.write("data: [DONE]\n\n");
+        return res.end();
+      }
+
       res.write(`data: ${JSON.stringify({ error: "DeepRed AI şu anda yanıt veremiyor. Lütfen tekrar deneyin." })}\n\n`);
       res.write("data: [DONE]\n\n");
       return res.end();
@@ -671,7 +668,7 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
     }
   });
 
-  // 🤖 REDCHAT AI SERVER-SIDE NON-STREAMING ENDPOINT (Standart JSON)
+  // 🤖 REDCHAT AI SERVER-SIDE NON-STREAMING ENDPOINT (Google Gemini gemini-3.1-flash-lite)
   app.post("/api/ai/chat", async (req, res) => {
     try {
       const { messages, userMessage, userId, mode = "fast" } = req.body;
@@ -704,10 +701,17 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
         return res.json({
           text: "Ben DeepRed AI'yım. RedChat için özel olarak yapılandırılmış yapay zeka asistanıyım. Size nasıl yardımcı olabilirim? 😊",
           provider: "deepred_ai",
+          model: "gemini-3.1-flash-lite",
         });
       }
 
-      const groqApiKey = process.env.GROQ_API_KEY?.trim();
+      const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+      if (!geminiApiKey) {
+        return res.status(500).json({
+          error: "GEMINI_API_KEY ortam değişkeni tanımlanmamış. Lütfen AI Studio Secrets panelinden GEMINI_API_KEY ekleyin.",
+        });
+      }
+
       const systemPrompt = await getSystemPromptWithMemories(userId);
 
       const processAIResponse = async (responseText: string): Promise<string> => {
@@ -721,72 +725,42 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
         return finalResponse;
       };
 
-      if (groqApiKey) {
-        try {
-          const chatHistory = Array.isArray(messages) ? messages.slice(-10) : [];
-          const groqMessages = [
-            { role: "system", content: systemPrompt },
-            ...chatHistory.map((m: any) => ({
-              role: m.role === "assistant" || m.senderId === "system_redchat_ai" ? "assistant" : "user",
-              content: m.content || m.text || "",
-            })),
-          ];
+      try {
+        const ai = new GoogleGenAI({
+          apiKey: geminiApiKey,
+          httpOptions: {
+            headers: {
+              'User-Agent': 'aistudio-build',
+            },
+          },
+        });
 
-          if (cleanUserMsg && (groqMessages.length === 0 || groqMessages[groqMessages.length - 1].content !== cleanUserMsg)) {
-            groqMessages.push({ role: "user", content: cleanUserMsg });
-          }
+        const geminiContents = formatGeminiContents(messages, cleanUserMsg);
+        const response = await ai.models.generateContent({
+          model: "gemini-3.1-flash-lite",
+          contents: geminiContents,
+          config: {
+            systemInstruction: systemPrompt,
+            temperature: 0.7,
+          },
+        });
 
-          // ⚡ Hızlı Mod Backend Modeli: "qwen/qwen3.8-27b"
-          const candidateModels = [
-            "qwen/qwen3.8-27b",
-          ];
-          let aiTextResponse: string | null = null;
-
-          for (const modelName of candidateModels) {
-            try {
-              const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-              const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  Authorization: `Bearer ${groqApiKey}`,
-                },
-                body: JSON.stringify({
-                  model: modelName,
-                  messages: groqMessages,
-                  temperature: 0.3,
-                  max_tokens: 2048,
-                }),
-                signal: controller.signal,
-              });
-
-              clearTimeout(timeoutId);
-
-              if (groqRes.ok) {
-                const groqData = await groqRes.json();
-                const text = groqData.choices?.[0]?.message?.content;
-                if (text) {
-                  aiTextResponse = text;
-                  break;
-                }
-              }
-            } catch (err) {
-              console.warn(`Groq error on ${modelName}:`, err);
-            }
-          }
-
-          if (aiTextResponse) {
-            const finalProcessedText = await processAIResponse(aiTextResponse);
-            return res.json({ text: finalProcessedText, provider: "groq" });
-          }
-        } catch (groqErr) {
-          console.error("Groq chat endpoint error:", groqErr);
+        const aiTextResponse = response.text || "";
+        if (aiTextResponse) {
+          const finalProcessedText = await processAIResponse(aiTextResponse);
+          return res.json({
+            text: finalProcessedText,
+            provider: "gemini",
+            model: "gemini-3.1-flash-lite",
+          });
         }
+      } catch (geminiErr: any) {
+        console.error("Gemini 3.1 Flash-Lite chat endpoint error:", geminiErr);
+        return res.status(502).json({
+          error: geminiErr?.message || "DeepRed AI şu anda yanıt veremiyor. Lütfen tekrar deneyin.",
+        });
       }
 
-      // Gerçek API hatası varsa sahte cevap üretme; uygun hata mesajı göster.
       return res.status(502).json({
         error: "DeepRed AI şu anda yanıt veremiyor. Lütfen tekrar deneyin.",
       });
