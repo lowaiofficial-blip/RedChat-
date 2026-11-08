@@ -99,6 +99,11 @@ service cloud.firestore {
         allow read, write: if isAuthenticated() && isOwner(userId);
       }
 
+      // ✍️ MESAJ TASLAKLARI (/users/{userId}/drafts/{draftId})
+      match /drafts/{draftId} {
+        allow read, write: if isAuthenticated() && (request.auth.uid == userId || isOwner(userId));
+      }
+
       // 🗂️ KULLANICININ TAKİP ETTİĞİ KANALLAR
       match /followingChannels/{channelId} {
         allow read, write: if isAuthenticated();

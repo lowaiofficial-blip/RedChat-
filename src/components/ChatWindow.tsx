@@ -12,6 +12,7 @@ import {
   setUserTypingStatus,
 } from '../services/chatService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
+import { saveDraft, deleteDraft, getLocalDraft } from '../services/draftService';
 import { UserAvatar } from './UserAvatar';
 import { ChatMessageItem } from './ChatMessageItem';
 import { EmojiPicker } from './EmojiPicker';
@@ -371,6 +372,16 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // ✍️ Sohbet açıldığında veya değiştiğinde kaydedilmiş taslağı yükle
+  useEffect(() => {
+    if (conversation?.id && currentUser?.uid) {
+      const draft = getLocalDraft(currentUser.uid, conversation.id);
+      setInputText(draft);
+    } else {
+      setInputText('');
+    }
+  }, [conversation?.id, currentUser?.uid]);
+
   // Mesajları dinle
   useEffect(() => {
     if (!conversation?.id) {
@@ -655,6 +666,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     const val = e.target.value;
     setInputText(val);
 
+    // ✍️ Mesaj taslağını otomatik kaydet (Debounced)
+    if (conversation?.id && currentUser?.uid) {
+      saveDraft(currentUser.uid, conversation.id, val, 'conversation');
+    }
+
     // ⌨️ Gerçek Zamanlı Yazıyor (Typing) Durumu Gönderme
     if (conversation?.id && currentUser?.uid && !isDirectAIChat) {
       if (val.trim().length > 0) {
@@ -721,17 +737,22 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   // 😀 Input Alanına Emoji Ekle (Cursor korumalı, mevcut metni veya fotoğrafı bozmaz)
   const handleSelectEmoji = (emoji: string) => {
     const inputEl = inputRef.current;
+    let newText = '';
     if (inputEl) {
       const start = inputEl.selectionStart ?? inputText.length;
       const end = inputEl.selectionEnd ?? inputText.length;
-      const newText = inputText.substring(0, start) + emoji + inputText.substring(end);
+      newText = inputText.substring(0, start) + emoji + inputText.substring(end);
       setInputText(newText);
       setTimeout(() => {
         inputEl.focus();
         inputEl.setSelectionRange(start + emoji.length, start + emoji.length);
       }, 0);
     } else {
-      setInputText((prev) => prev + emoji);
+      newText = inputText + emoji;
+      setInputText(newText);
+    }
+    if (conversation?.id && currentUser?.uid) {
+      saveDraft(currentUser.uid, conversation.id, newText, 'conversation');
     }
   };
 
@@ -831,6 +852,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     if (conversation?.id && currentUser?.uid) {
       setUserTypingStatus(conversation.id, currentUser.uid, false);
+      deleteDraft(currentUser.uid, conversation.id);
     }
     handleRemoveSelectedImage();
 

@@ -10,6 +10,7 @@ import {
   clearChannelPostReactions,
 } from '../services/channelService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
+import { saveDraft, deleteDraft, getLocalDraft } from '../services/draftService';
 import { VerifiedBadge } from './VerifiedBadge';
 import { EmojiPicker } from './EmojiPicker';
 import { ChannelProfileModal } from './ChannelProfileModal';
@@ -203,6 +204,16 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
     }
   };
 
+  // ✍️ Kanal açıldığında veya değiştiğinde kaydedilmiş taslağı yükle
+  useEffect(() => {
+    if (channel?.id && currentUser?.uid) {
+      const draft = getLocalDraft(currentUser.uid, channel.id);
+      setPostText(draft);
+    } else {
+      setPostText('');
+    }
+  }, [channel?.id, currentUser?.uid]);
+
   // Gönderileri canlı dinle
   useEffect(() => {
     setLoadingPosts(true);
@@ -318,7 +329,11 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
   };
 
   const handleEmojiSelect = (emoji: string) => {
-    setPostText((prev) => prev + emoji);
+    const newText = postText + emoji;
+    setPostText(newText);
+    if (channel?.id && currentUser?.uid) {
+      saveDraft(currentUser.uid, channel.id, newText, 'channel');
+    }
     setShowEmojiPicker(false);
   };
 
@@ -342,7 +357,10 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
 
       await createChannelPost(channel.id, trimmed, finalImageUrl, channel.name, currentUser.uid);
 
-      // Formu temizle
+      // Taslağı temizle ve formu sıfırla
+      if (channel?.id && currentUser?.uid) {
+        deleteDraft(currentUser.uid, channel.id);
+      }
       setPostText('');
       handleRemovePhoto();
       setShowEmojiPicker(false);
@@ -912,7 +930,13 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
                   id="channel-post-input"
                   rows={2}
                   value={postText}
-                  onChange={(e) => setPostText(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setPostText(val);
+                    if (channel?.id && currentUser?.uid) {
+                      saveDraft(currentUser.uid, channel.id, val, 'channel');
+                    }
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                       e.preventDefault();

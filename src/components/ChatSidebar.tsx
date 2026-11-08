@@ -30,6 +30,7 @@ import {
   BadgeCheck,
   Activity,
   Clapperboard,
+  FileEdit,
 } from 'lucide-react';
 
 interface ChatSidebarProps {
@@ -37,6 +38,7 @@ interface ChatSidebarProps {
   conversations: Conversation[];
   users: UserProfile[];
   channels?: Channel[];
+  userDrafts?: Map<string, string>;
   activeConversationId: string | null;
   activeChannelId?: string | null;
   followingChannelIds?: string[];
@@ -72,6 +74,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
   conversations,
   users,
   channels = [],
+  userDrafts,
   activeConversationId,
   activeChannelId,
   followingChannelIds = [],
@@ -531,6 +534,16 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                           }`}
                         >
                           {(() => {
+                            const groupDraft = userDrafts?.get(conv.id)?.trim();
+                            if (groupDraft) {
+                              return (
+                                <div className="flex items-center gap-1 min-w-0 truncate text-amber-600 dark:text-amber-400 font-semibold">
+                                  <FileEdit className="w-3.5 h-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                                  <span className="truncate">Taslak: {groupDraft}</span>
+                                </div>
+                              );
+                            }
+
                             const hasVideo = Boolean(
                               conv.lastMessageHasVideo ||
                               conv.lastMessageVideoUrl ||
@@ -682,6 +695,16 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                         }`}
                       >
                         {(() => {
+                          const dmDraft = userDrafts?.get(conv.id)?.trim();
+                          if (dmDraft) {
+                            return (
+                              <div className="flex items-center gap-1 min-w-0 truncate text-amber-600 dark:text-amber-400 font-semibold">
+                                <FileEdit className="w-3.5 h-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                                <span className="truncate">Taslak: {dmDraft}</span>
+                              </div>
+                            );
+                          }
+
                           const convTypingInfo = getTypingInfo(
                             conv.typingUsers,
                             currentUser.uid,
@@ -950,6 +973,16 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                         <div className="flex items-center justify-between gap-1.5">
                           <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate min-w-0">
                             {(() => {
+                              const channelDraft = userDrafts?.get(ch.id)?.trim();
+                              if (channelDraft) {
+                                return (
+                                  <div className="flex items-center gap-1 min-w-0 truncate text-amber-600 dark:text-amber-400 font-semibold">
+                                    <FileEdit className="w-3.5 h-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                                    <span className="truncate">Taslak: {channelDraft}</span>
+                                  </div>
+                                );
+                              }
+
                               const hasVideo = Boolean(
                                 ch.lastPostHasVideo ||
                                 ch.lastPostVideoUrl ||

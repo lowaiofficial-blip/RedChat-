@@ -142,6 +142,17 @@
         "blockedUserId": { "type": "string", "description": "Target blocked user UID" },
         "createdAt": { "type": "timestamp", "description": "Block timestamp" }
       }
+    },
+    "MessageDraft": {
+      "path": "users/{uid}/drafts/{targetId}",
+      "fields": {
+        "id": { "type": "string", "description": "Target conversation or channel ID" },
+        "userId": { "type": "string", "description": "User UID who wrote the draft" },
+        "targetId": { "type": "string", "description": "Target conversation or channel ID" },
+        "targetType": { "type": "string", "description": "Type of target: 'conversation' | 'channel'" },
+        "text": { "type": "string", "description": "Draft message text" },
+        "updatedAt": { "type": "timestamp", "description": "Last update timestamp" }
+      }
     }
   }
 }
