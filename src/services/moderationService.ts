@@ -130,8 +130,8 @@ function normalizeText(text: string): string {
 
 /**
  * Gönderilen mesajın hakaret, küfür veya saldırgan içerik barındırıp barındırmadığını tespit eder.
- * Yanlış pozitifleri (ör. "malzeme", "salata", "eksik", "müzik", "sıcak") engellemek için
- * kelime sınırları ve özel kontroller kullanır.
+ * Yanlış pozitifleri (ör. "şık", "ışık", "malzeme", "salata", "teşekkür", "eksik", "müzik") engellemek için
+ * kelime sınırları ve özel Türkçe arama kuralları kullanır.
  */
 export function isAbusiveMessage(rawText: string): boolean {
   if (!rawText || typeof rawText !== 'string') return false;
@@ -146,58 +146,64 @@ export function isAbusiveMessage(rawText: string): boolean {
     }
   }
 
-  // 2. Normalleştirilmiş metin (harf tekrarı ve noktalama temizliği)
-  const normalized = normalizeText(originalLower);
+  // Cümleyi kelimelerine ayır (noktalama işaretlerinden temizle)
+  const words = originalLower.split(/[\s,.:;!?"'()\-[\]{}<>/\\|]+/);
 
-  // Noktalama ve boşluksuz kompakt versiyon (ör. "s.i.k", "a-m-k", "s i k t i r")
-  const compactWithoutPunctuation = normalized.replace(/[^a-z0-9]/g, '');
+  for (const rawWord of words) {
+    if (!rawWord) continue;
 
-  // 3. Tekrarlanan harfleri teke/çifte indirgeme (ör. "salaaaak" -> "salak", "piiiic" -> "pic")
-  const deduplicated = normalized.replace(/([a-z])\1{2,}/g, '$1');
-  const deduplicatedCompact = compactWithoutPunctuation.replace(/([a-z])\1{2,}/g, '$1');
-
-  // 4. Doğrudan küfür listesi kontrolü
-  for (const word of DIRECT_PROFANITY_WORDS) {
-    const normWord = normalizeText(word);
-    
-    // Kelime sınırı ile tam kelime veya kök eşleşmesi
-    const wordRegex = new RegExp(`\\b${normWord}\\b`, 'i');
-    if (wordRegex.test(normalized) || wordRegex.test(deduplicated)) {
-      return true;
+    // "şık", "ışık", "ışıklandırma", "aşık", "beşik", "değişik", "karışık" gibi masum kelimeler kesinlikle küfür değildir
+    if (/^(şık|ışık|ışıklandırma|aşık|beşik|değişik|karışık|bulaşık|dikiş)$/i.test(rawWord)) {
+      continue;
     }
 
-    // Kısa kısaltmalar (amk, aq, oç, pic) kompakt metinde tek başına veya başlangıç/bitişte mi?
-    if (normWord.length <= 4) {
-      if (
-        deduplicatedCompact === normWord ||
-        deduplicatedCompact.startsWith(normWord) ||
-        deduplicatedCompact.endsWith(normWord)
-      ) {
-        // Ancak çok kısa kelimelerde yanlış pozitif önleme (örn. "aq" normal bir kelimenin içinde olmamalı)
-        const strictBoundary = new RegExp(`(^|[^a-z])${normWord}([^a-z]|$)`, 'i');
-        if (strictBoundary.test(normalized) || strictBoundary.test(deduplicated)) {
+    const normWord = normalizeText(rawWord);
+
+    // 2. Doğrudan küfür kontrolü (Kelime bazı)
+    for (const profanity of DIRECT_PROFANITY_WORDS) {
+      // Eğer kelime "şık" ise ve profanity "sik" ise, orijinal kelime 'ş' veya 'ı' içeriyorsa eşleşme yapma
+      if (profanity === 'sik' && (rawWord.includes('ş') || rawWord.includes('ı'))) {
+        continue;
+      }
+
+      const normProf = normalizeText(profanity);
+
+      // Tam kelime eşleşmesi (ör. "amk", "siktir", "orospu")
+      if (normWord === normProf) {
+        // "sik" veya "pic" gibi 3 harfli küfürlerde orijinal harfleri kontrol et
+        if (normProf === 'sik' && (rawWord.includes('ş') || rawWord.includes('ı'))) {
+          continue;
+        }
+        return true;
+      }
+
+      // Kısaltmalar için tam kelime kontrolü (ör. "aq", "oc", "amk", "pic", "sik")
+      if (normProf.length <= 4) {
+        if (normWord === normProf) {
+          if (normProf === 'sik' && (rawWord.includes('ş') || rawWord.includes('ı'))) {
+            continue;
+          }
+          return true;
+        }
+      } else {
+        // Uzun küfürler (ör. "orospucocugu", "siktirgit", "aminakoyim")
+        if (normWord.includes(normProf)) {
           return true;
         }
       }
-    } else {
-      // 5 harf veya daha uzun küfürler (orospu, siktir, sikeyim, pezevenk) kompakt metinde geçiyorsa kesin ihlaldir
-      if (deduplicatedCompact.includes(normWord)) {
+    }
+
+    // 3. Doğrudan hakaret sıfatları kontrolü (salak, aptal, serefsiz, yavsak vb.)
+    for (const insult of DIRECT_INSULT_WORDS) {
+      const normInsult = normalizeText(insult);
+      const insultRegex = new RegExp(`^${normInsult}(s[ıi]n[ıi]z|s[ıi]n|lar|ler|lik|ce|im|sin)?$`, 'i');
+      if (insultRegex.test(normWord)) {
         return true;
       }
     }
   }
 
-  // 5. Doğrudan hakaret sıfatları listesi kontrolü (salak, aptal, serefsiz, yavsak vb.)
-  // Burada kelime sınırları esastır; "salata" salak ile eşleşmemeli!
-  for (const word of DIRECT_INSULT_WORDS) {
-    const normWord = normalizeText(word);
-    
-    // Sadece tam kelime veya Türkçe ek almış halleri: "salaksın", "aptallar", "şerefsizler", "yavşaksın"
-    const insultRegex = new RegExp(`\\b${normWord}(s[ıi]n[ıi]z|s[ıi]n|lar|ler|lik|ce|im|sin)?\\b`, 'i');
-    if (insultRegex.test(normalized) || insultRegex.test(deduplicated)) {
-      return true;
-    }
-  }
-
   return false;
 }
+
+

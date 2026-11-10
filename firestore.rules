@@ -99,6 +99,12 @@ service cloud.firestore {
         allow read, write: if isAuthenticated() && isOwner(userId);
       }
 
+      // 🎨 AI GÖRSEL ÜRETİM KOTASI (/users/{userId}/imageQuota/{quotaId})
+      match /imageQuota/{quotaId} {
+        allow read: if isAuthenticated() && isOwner(userId);
+        allow write: if false; // Yalnızca sunucu tarafı (Firebase Admin SDK) güncelleyebilir
+      }
+
       // ✍️ MESAJ TASLAKLARI (/users/{userId}/drafts/{draftId})
       match /drafts/{draftId} {
         allow read, write: if isAuthenticated() && (request.auth.uid == userId || isOwner(userId));

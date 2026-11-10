@@ -910,6 +910,9 @@ export async function sendMessage(
   options?: {
     isThinking?: boolean;
     isStreaming?: boolean;
+    isGeneratingImage?: boolean;
+    imagePrompt?: string;
+    imageQuotaRemaining?: number;
     isSecurityWarning?: boolean;
     securityType?: 'terminated' | 'warning';
     participantIds?: string[];
@@ -932,7 +935,7 @@ export async function sendMessage(
   const cleanVideoUrl = options?.videoUrl?.trim() || null;
   const videoDuration = options?.videoDuration || null;
 
-  if (!cleanText && !cleanImageUrl && !cleanVideoUrl && !options?.isThinking && !options?.isSecurityWarning) return '';
+  if (!cleanText && !cleanImageUrl && !cleanVideoUrl && !options?.isThinking && !options?.isGeneratingImage && !options?.isSecurityWarning) return '';
 
   const messagesCol = collection(db, 'conversations', conversationId, 'messages');
   const convDocRef = doc(db, 'conversations', conversationId);
@@ -953,6 +956,9 @@ export async function sendMessage(
     isEdited: false,
     ...(options?.isThinking && { isThinking: true }),
     ...(options?.isStreaming && { isStreaming: true }),
+    ...(options?.isGeneratingImage && { isGeneratingImage: true }),
+    ...(options?.imagePrompt && { imagePrompt: options.imagePrompt }),
+    ...(options?.imageQuotaRemaining !== undefined && { imageQuotaRemaining: options.imageQuotaRemaining }),
     ...(options?.isSecurityWarning && {
       isSecurityWarning: true,
       securityType: options.securityType || 'terminated',
@@ -1215,11 +1221,19 @@ export async function editMessage(
   newText: string,
   isLastMessage: boolean = false,
   hasImage: boolean = false,
-  options?: { isThinking?: boolean, isStreaming?: boolean, isAiUpdate?: boolean }
+  options?: {
+    isThinking?: boolean;
+    isStreaming?: boolean;
+    isAiUpdate?: boolean;
+    isGeneratingImage?: boolean;
+    imageUrl?: string | null;
+    imagePrompt?: string;
+    imageQuotaRemaining?: number;
+  }
 ): Promise<void> {
   if (!db) throw new Error('Firestore hazır değil');
   const cleanText = newText;
-  if (!cleanText && !hasImage && !options?.isThinking) return;
+  if (!cleanText && !hasImage && !options?.isThinking && !options?.isGeneratingImage && !options?.imageUrl) return;
 
   const messageDocRef = doc(db, 'conversations', conversationId, 'messages', messageId);
 
@@ -1233,20 +1247,26 @@ export async function editMessage(
   } else {
     if (options.isThinking !== undefined) updates.isThinking = options.isThinking;
     if (options.isStreaming !== undefined) updates.isStreaming = options.isStreaming;
+    if (options.isGeneratingImage !== undefined) updates.isGeneratingImage = options.isGeneratingImage;
+    if (options.imageUrl !== undefined) updates.imageUrl = options.imageUrl;
+    if (options.imagePrompt !== undefined) updates.imagePrompt = options.imagePrompt;
+    if (options.imageQuotaRemaining !== undefined) updates.imageQuotaRemaining = options.imageQuotaRemaining;
   }
 
   await updateDoc(messageDocRef, updates);
 
   if (isLastMessage) {
     let summaryText = cleanText;
-    if (hasImage) {
+    const finalHasImage = Boolean(hasImage || options?.imageUrl);
+    if (finalHasImage) {
       summaryText = cleanText ? cleanText : 'Fotoğraf';
     }
 
     const convDocRef = doc(db, 'conversations', conversationId);
     await updateDoc(convDocRef, {
       lastMessageText: summaryText,
-      lastMessageHasImage: hasImage,
+      lastMessageHasImage: finalHasImage,
+      lastMessageImageUrl: options?.imageUrl || null,
       updatedAt: serverTimestamp(),
     });
   }

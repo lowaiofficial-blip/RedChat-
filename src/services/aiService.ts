@@ -221,3 +221,118 @@ export async function requestAIChatStream(
     }
   }
 }
+
+/**
+ * Kullanıcı metninin bir görsel çizim veya üretim isteği olup olmadığını tespit eder.
+ */
+export function isImageGenerationPrompt(text: string): boolean {
+  if (!text) return false;
+  const t = text.trim().toLowerCase();
+
+  // Hariç tutulacak yaygın kalıplar (False-positive engelleme)
+  if (t.includes('çizgi film') || t.includes('sınır çiz') || t.includes('çizgisini')) {
+    return false;
+  }
+
+  // Kesin çizim/görsel emir kalıpları
+  const drawPatterns = [
+    /\b(bir\s+)?(resim|resmi|görsel|görseli|fotoğraf|fotoğrafı|çizim|çizimi|tablo|tablosu|illüstrasyon)\s+(çiz|oluştur|yap|üret|tasarla)\b/i,
+    /\b(bana\s+)?(bir\s+)?.+?\s+(çiz|çizer\s+misin|çizermisin|resmet|çiziver)\.?$/i,
+    /\b(görselini|resmini|fotoğrafını)\s+(çiz|oluştur|yap|çıkar|getir)\b/i,
+    /\b(generate|draw|create)\s+(an?\s+)?(image|picture|photo|drawing|illustration)\b/i,
+    /\b(draw\s+me|paint\s+me)\b/i,
+  ];
+
+  return drawPatterns.some((pattern) => pattern.test(t));
+}
+
+export interface ImageQuotaResponse {
+  used: number;
+  total: number;
+  remaining: number;
+  isExceeded: boolean;
+  nextResetTime: string;
+}
+
+export interface ImageGenerationResult {
+  success: boolean;
+  imageUrl: string;
+  remainingQuota: number;
+  nextResetTime: string;
+  error?: string;
+}
+
+/**
+ * Kullanıcının günlük FLUX.2-dev görsel üretim kotasını sorgular.
+ */
+export async function fetchAiImageQuota(userId: string): Promise<ImageQuotaResponse> {
+  if (!userId) {
+    return { used: 0, total: 3, remaining: 3, isExceeded: false, nextResetTime: "yarın saat 00:00'da" };
+  }
+  try {
+    const res = await fetch(`/api/ai/image/quota?userId=${encodeURIComponent(userId)}`);
+    if (!res.ok) {
+      return { used: 0, total: 3, remaining: 3, isExceeded: false, nextResetTime: "yarın saat 00:00'da" };
+    }
+    const data = await res.json();
+    return {
+      used: Number(data.used) || 0,
+      total: Number(data.total) || 3,
+      remaining: typeof data.remaining === 'number' ? data.remaining : 3,
+      isExceeded: Boolean(data.isExceeded),
+      nextResetTime: data.nextResetTime || "yarın saat 00:00'da",
+    };
+  } catch (err) {
+    console.warn("fetchAiImageQuota error:", err);
+    return { used: 0, total: 3, remaining: 3, isExceeded: false, nextResetTime: "yarın saat 00:00'da" };
+  }
+}
+
+/**
+ * Sunucu tarafında Hugging Face FLUX.2-dev üzerinden görsel üretir ve Cloudinary'ye yükler.
+ */
+export async function requestAiImageGeneration(
+  prompt: string,
+  userId: string,
+  conversationId?: string
+): Promise<ImageGenerationResult> {
+  const cleanPrompt = prompt.trim();
+  if (!cleanPrompt) {
+    throw new Error('Görsel açıklaması boş olamaz.');
+  }
+
+  const res = await fetch('/api/ai/image/generate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      prompt: cleanPrompt,
+      userId,
+      conversationId,
+    }),
+  });
+
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    const errorMsg = data?.error || 'Görsel üretilemedi. Lütfen tekrar deneyin.';
+    const err = new Error(errorMsg) as any;
+    err.limitExceeded = Boolean(data?.limitExceeded);
+    err.nextResetTime = data?.nextResetTime;
+    err.remainingQuota = data?.remainingQuota;
+    throw err;
+  }
+
+  if (!data?.imageUrl) {
+    throw new Error(data?.error || 'Üretilen görsel bağlantısı alınamadı.');
+  }
+
+  return {
+    success: true,
+    imageUrl: data.imageUrl,
+    remainingQuota: typeof data.remainingQuota === 'number' ? data.remainingQuota : 0,
+    nextResetTime: data.nextResetTime || "yarın saat 00:00'da",
+  };
+}
+

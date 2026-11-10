@@ -14,6 +14,7 @@ import {
   Film,
 } from 'lucide-react';
 import { formatVideoDuration } from '../services/videoUploadService';
+import { AiDrawingAnimation } from './AiDrawingAnimation';
 
 const QUICK_REACTIONS = ['❤️', '👍', '😂', '🔥', '👏'];
 
@@ -321,8 +322,37 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
               </div>
             )}
 
-            {/* 🎬 Video / 🖼️ Fotoğraf / Metin İçeriği */}
-            {hasVideo ? (
+            {/* 🎨 AI Görsel Üretim Animasyonu / 🎬 Video / 🖼️ Fotoğraf / Metin İçeriği */}
+            {msg.isGeneratingImage ? (
+              <div className="flex flex-col gap-1 w-full max-w-[340px] select-none">
+                <AiDrawingAnimation
+                  imageUrl={msg.imageUrl}
+                  isLoading={Boolean(msg.isGeneratingImage && !msg.imageUrl)}
+                  prompt={msg.imagePrompt || msg.text}
+                  remainingQuota={msg.imageQuotaRemaining}
+                  onImageClick={(url) => {
+                    onSelectImage({
+                      url,
+                      caption: msg.imagePrompt || msg.text || undefined,
+                    });
+                  }}
+                />
+                <div className="flex items-center justify-between text-xs px-1">
+                  {hasText && (
+                    <span className="whitespace-pre-wrap select-none text-xs leading-relaxed break-words break-all flex-1 min-w-0 pr-2">
+                      {renderMessageText(msg.text, isMe)}
+                    </span>
+                  )}
+                  <span
+                    className={`inline-flex items-center gap-1 font-mono text-[10px] select-none shrink-0 self-end ml-auto ${
+                      isMe ? 'text-red-100/80' : 'text-zinc-400 dark:text-zinc-400'
+                    }`}
+                  >
+                    <span>{formatMsgTime(msg.createdAt)}</span>
+                  </span>
+                </div>
+              </div>
+            ) : hasVideo ? (
               <>
                 <div
                   className="relative group/vid overflow-hidden rounded-xl cursor-pointer bg-black/80 flex items-center justify-center min-h-[160px] max-h-60 sm:max-h-68 border border-zinc-700/50"

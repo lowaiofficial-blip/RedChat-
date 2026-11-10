@@ -213,6 +213,9 @@ export interface ChatMessage {
   systemType?: 'leave' | 'join' | 'create' | 'info' | 'role_change' | 'ownership_transfer' | 'name_change' | 'photo_change';
   isThinking?: boolean;
   isStreaming?: boolean;
+  isGeneratingImage?: boolean;
+  imagePrompt?: string;
+  imageQuotaRemaining?: number;
   isSecurityWarning?: boolean;
   securityType?: 'terminated' | 'warning';
 }

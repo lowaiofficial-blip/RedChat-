@@ -36,7 +36,18 @@ import { MarkdownMessage } from './MarkdownMessage';
 import { validateVideo, uploadVideoToCloudinary, type UploadVideoTask, formatVideoDuration } from '../services/videoUploadService';
 import { VideoSendPreviewModal } from './VideoSendPreviewModal';
 import { VideoLightboxModal } from './VideoLightboxModal';
-import { isRedChatAI, requestAIChatResponse, requestAIChatStream, getRedChatAIProfile, REDCHAT_AI_UID, type AiChatMode } from '../services/aiService';
+import {
+  isRedChatAI,
+  requestAIChatResponse,
+  requestAIChatStream,
+  getRedChatAIProfile,
+  REDCHAT_AI_UID,
+  type AiChatMode,
+  isImageGenerationPrompt,
+  requestAiImageGeneration,
+  fetchAiImageQuota,
+  type ImageQuotaResponse,
+} from '../services/aiService';
 import { isAbusiveMessage } from '../services/moderationService';
 import { SecurityTerminationAlert, SECURITY_TERMINATION_MESSAGE_TEXT } from './SecurityTerminationAlert';
 import { updateAbusiveCount, terminateAIConversation } from '../services/chatService';
@@ -243,6 +254,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   // 👥 Grup Bilgisi Modal State'i
   const [showGroupInfoModal, setShowGroupInfoModal] = useState(false);
 
+  // 🎨 DeepRed AI Görsel Üretim Kotası State'i
+  const [imageQuota, setImageQuota] = useState<ImageQuotaResponse | null>(null);
+
   // 💬 @ Mention Sistemi State'leri
   const [showMentionSuggestions, setShowMentionSuggestions] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
@@ -272,6 +286,13 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     if (conversation?.isGroup) return false;
     return isRedChatAI(otherUserObj || otherParticipantId);
   }, [conversation?.isGroup, otherUserObj, otherParticipantId]);
+
+  // 🎨 DeepRed AI Görsel Kotasını Yükle
+  useEffect(() => {
+    if (isDirectAIChat && currentUser?.uid) {
+      fetchAiImageQuota(currentUser.uid).then(setImageQuota).catch(() => {});
+    }
+  }, [isDirectAIChat, currentUser?.uid]);
 
   // RedChat AI sohbet oturumunun güvenlik ihlali (hakaret/küfür) nedeniyle sonlandırılmış olup olmadığı
   const isSessionTerminated = useMemo(() => {
@@ -1227,6 +1248,68 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           };
 
           try {
+            const cleanPrompt = isGroupChat
+              ? textToSend.replace(/@DeepRed\s+AI|@DeepRedAI|@DeepRed|@deepred_ai|@deepred|@RedChat\s+AI|@redchat_ai|@RedChatAI/gi, '').trim() || textToSend
+              : textToSend;
+
+            const isDrawRequest = isImageGenerationPrompt(cleanPrompt);
+
+            if (isDrawRequest) {
+              // 🎨 GÖRSEL ÜRETİM AKIŞI (FLUX.2-dev + Özel Çizim Animasyonu + Günlük 3 Hak)
+              let currentQuota = imageQuota;
+              try {
+                currentQuota = await fetchAiImageQuota(currentUser.uid);
+                setImageQuota(currentQuota);
+              } catch (qErr) {
+                console.warn('Quota fetch error:', qErr);
+              }
+
+              if (currentQuota && currentQuota.isExceeded) {
+                const limitMsg = `🎨 Görsel oluşturma limitin doldu. Yeni görsel oluşturma hakkın ${currentQuota.nextResetTime} yenilenecek.`;
+                await sendMessage(conversation.id, aiProfile, limitMsg);
+                return;
+              }
+
+              // Çizim animasyonu başlasın (isGeneratingImage: true)
+              aiMsgId = await sendMessage(conversation.id, aiProfile, '', null, null, {
+                isGeneratingImage: true,
+                imagePrompt: cleanPrompt,
+                imageQuotaRemaining: currentQuota ? currentQuota.remaining : 3,
+              });
+
+              try {
+                const result = await requestAiImageGeneration(cleanPrompt, currentUser.uid, conversation.id);
+                if (aiMsgId) {
+                  await editMessage(conversation.id, aiMsgId, '', true, true, {
+                    isGeneratingImage: true,
+                    imageUrl: result.imageUrl,
+                    imagePrompt: cleanPrompt,
+                    imageQuotaRemaining: result.remainingQuota,
+                    isAiUpdate: true,
+                  });
+                  setImageQuota({
+                    used: 3 - result.remainingQuota,
+                    total: 3,
+                    remaining: result.remainingQuota,
+                    isExceeded: result.remainingQuota <= 0,
+                    nextResetTime: result.nextResetTime,
+                  });
+                }
+              } catch (imgErr: any) {
+                console.error('Görsel üretim hatası:', imgErr);
+                if (aiMsgId) {
+                  const errorText = imgErr?.limitExceeded
+                    ? `🎨 Görsel oluşturma limitin doldu. Yeni görsel oluşturma hakkın ${imgErr.nextResetTime || "yarın saat 00.00'de"} yenilenecek.`
+                    : (imgErr?.message || "Görsel üretilemedi. Lütfen tekrar deneyin.");
+                  await editMessage(conversation.id, aiMsgId, errorText, true, false, {
+                    isGeneratingImage: false,
+                    isAiUpdate: true,
+                  });
+                }
+              }
+              return;
+            }
+
             aiMsgId = await sendMessage(conversation.id, aiProfile, '', null, null, { isThinking: true, isStreaming: true });
             
             if (aiMsgId) {
@@ -1239,10 +1322,6 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 isThinking: true,
               });
             }
-
-            const cleanPrompt = isGroupChat
-              ? textToSend.replace(/@DeepRed\s+AI|@DeepRedAI|@DeepRed|@deepred_ai|@deepred|@RedChat\s+AI|@redchat_ai|@RedChatAI/gi, '').trim() || textToSend
-              : textToSend;
 
             const targetMsgId = aiMsgId;
 
@@ -2581,6 +2660,28 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                     </div>
                   )}
                 </div>
+
+                {/* 🎨 Günlük Görsel Üretim Kotası Göstergesi */}
+                {imageQuota && (
+                  <div className="flex items-center gap-1.5 select-none">
+                    {imageQuota.isExceeded ? (
+                      <span className="text-amber-500 font-medium text-[11px] bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 rounded-full">
+                        🎨 Görsel limitin doldu
+                      </span>
+                    ) : (
+                      <span className="text-zinc-400 dark:text-zinc-400 text-[11px] bg-zinc-800/60 border border-zinc-700/50 px-2.5 py-1 rounded-full flex items-center gap-1">
+                        🎨 <span>3 görsel hakkından <strong className="text-white font-semibold">{imageQuota.remaining}</strong> tanesi kaldı</span>
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ⏰ Limit Doldu Bilgilendirme Metni */}
+            {isDirectAIChat && imageQuota?.isExceeded && (
+              <div className="mb-2 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400 text-xs font-medium flex items-center justify-between select-none">
+                <span>🎨 Görsel oluşturma limitin doldu. Yeni görsel oluşturma hakkın {imageQuota.nextResetTime} yenilenecek.</span>
               </div>
             )}
 

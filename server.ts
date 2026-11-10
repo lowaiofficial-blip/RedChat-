@@ -9,6 +9,8 @@ import { getMessaging, type MulticastMessage } from 'firebase-admin/messaging';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { GoogleGenAI } from "@google/genai";
+import { Client } from "@gradio/client";
+
 
 dotenv.config();
 
@@ -768,6 +770,351 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
       console.error("AI chat server error:", error);
       return res.status(500).json({
         error: "DeepRed AI sunucu hatası oluştu.",
+      });
+    }
+  });
+
+  // =========================================================================
+  // 🎨 DEEPRED AI FLUX.2-DEV GÖRSEL ÜRETİMİ VE GÜNLÜK 3 KOTA ENDPOINT'LERİ
+  // =========================================================================
+
+  const getTodayDateStr = (): string => {
+    try {
+      const formatter = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Europe/Istanbul",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+      return formatter.format(new Date()); // "YYYY-MM-DD"
+    } catch {
+      return new Date().toISOString().slice(0, 10);
+    }
+  };
+
+  const getNextResetText = (): string => {
+    return "yarın saat 00.00'de";
+  };
+
+  // 🎨 GET /api/ai/image/quota (Kullanıcı günlük 3 görsel hakkını sorgular)
+  app.get("/api/ai/image/quota", async (req, res) => {
+    try {
+      const userId = String(req.query.userId || "").trim();
+      if (!userId) {
+        return res.status(400).json({ error: "userId parametresi eksik." });
+      }
+
+      if (!getApps().length) {
+        return res.json({ used: 0, total: 3, remaining: 3, isExceeded: false, nextResetTime: getNextResetText() });
+      }
+
+      const db = getFirestore();
+      const todayStr = getTodayDateStr();
+      const quotaRef = db.doc(`users/${userId}/imageQuota/daily`);
+      const snap = await quotaRef.get();
+
+      let used = 0;
+      if (snap.exists) {
+        const data = snap.data();
+        if (data?.dateStr === todayStr) {
+          used = Number(data?.used) || 0;
+        }
+      }
+
+      const total = 3;
+      const remaining = Math.max(0, total - used);
+      const isExceeded = used >= total;
+
+      return res.json({
+        used,
+        total,
+        remaining,
+        isExceeded,
+        nextResetTime: getNextResetText(),
+      });
+    } catch (err: any) {
+      console.error("AI image quota check error:", err);
+      return res.status(500).json({ error: "Kota sorgulanamadı." });
+    }
+  });
+
+  // 🎨 POST /api/ai/image/generate (Hugging Face FLUX.2-dev + Cloudinary CDN + Günlük 3 Limit)
+  app.post("/api/ai/image/generate", async (req, res) => {
+    try {
+      const { prompt, userId } = req.body;
+      const cleanPrompt = String(prompt || "").trim();
+
+      if (!cleanPrompt) {
+        return res.status(400).json({ error: "Görsel açıklaması (prompt) eksik." });
+      }
+      if (!userId) {
+        return res.status(400).json({ error: "Kullanıcı ID'si eksik." });
+      }
+
+      // 🛡️ AI Erişim Kontrolü: Eğer kullanıcının AI erişimi engellendiyse istek reddedilir
+      if (userId && getApps().length) {
+        try {
+          const db = getFirestore();
+          const userDoc = await db.doc(`users/${userId}`).get();
+          if (userDoc.exists && userDoc.data()?.aiAccess === "blocked") {
+            return res.status(403).json({ error: "AI erişiminiz yönetici tarafından kısıtlanmıştır." });
+          }
+        } catch (checkErr) {
+          console.warn("AI access check error:", checkErr);
+        }
+      }
+
+      // 🔢 1. Kota Denetimi (Firestore Admin SDK üzerinden güvenli)
+      let currentUsed = 0;
+      const todayStr = getTodayDateStr();
+      let quotaRef: any = null;
+
+      if (getApps().length) {
+        const db = getFirestore();
+        quotaRef = db.doc(`users/${userId}/imageQuota/daily`);
+        const quotaSnap = await quotaRef.get();
+        if (quotaSnap.exists) {
+          const data = quotaSnap.data();
+          if (data?.dateStr === todayStr) {
+            currentUsed = Number(data?.used) || 0;
+          }
+        }
+      }
+
+      const totalQuota = 3;
+      if (currentUsed >= totalQuota) {
+        return res.status(403).json({
+          error: "🎨 Görsel oluşturma limitin doldu. Yeni görsel oluşturma hakkın yarın saat 00.00'de yenilenecek.",
+          limitExceeded: true,
+          remainingQuota: 0,
+          nextResetTime: getNextResetText(),
+        });
+      }
+
+      // 🛡️ 2. Prompt Güvenlik Denetimi ve Türkçe -> İngilizce Konu Odaklı Çeviri
+      const explicitUnsafeRegex = /\b(çıplak|seks|nude|nsfw|erotik|memesiz|göğüs|cinsel|porno|sex|naked|boobs|porn|adult|bayan|kadın|sutyen|külot|bikini|penis|vagina|vajina|küfür|sahne)\b/i;
+      
+      if (explicitUnsafeRegex.test(cleanPrompt)) {
+        return res.status(403).json({
+          error: "⚠️ Bu istek güvenlik kurallarına uygun olmadığı için görsel üretilemedi.",
+          isUnsafe: true,
+          limitExceeded: false,
+          remainingQuota: totalQuota - currentUsed,
+        });
+      }
+
+      let englishPrompt = cleanPrompt;
+      const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+      if (geminiApiKey) {
+        try {
+          const ai = new GoogleGenAI({
+            apiKey: geminiApiKey,
+            httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+          });
+
+          const safetyCheckResponse = await ai.models.generateContent({
+            model: "gemini-3.1-flash-lite",
+            contents: `You are an AI image prompt safety and translation filter.
+Analyze the user's request: "${cleanPrompt}"
+
+Rules:
+1. Determine if the request contains NSFW, nudity, sexual content, graphic violence, or explicit themes.
+2. If safe, translate and refine the prompt into a clean, detailed English image generation prompt while preserving the EXACT requested subject (e.g. "Kedi çiz" -> "A cute fluffy cat sitting on a mat, high resolution digital art"). NEVER add unrelated human figures, girls, or anime characters unless explicitly asked.
+
+Return JSON strictly in this format:
+{"isSafe": true, "englishPrompt": "detailed english prompt"} or {"isSafe": false, "reason": "unsafe"}`,
+            config: {
+              responseMimeType: "application/json",
+              temperature: 0.1,
+            },
+          });
+
+          const parsed = JSON.parse(safetyCheckResponse.text || "{}");
+          if (parsed.isSafe === false) {
+            return res.status(403).json({
+              error: "⚠️ Bu istek güvenlik kurallarına uygun olmadığı için görsel üretilemedi.",
+              isUnsafe: true,
+              limitExceeded: false,
+              remainingQuota: totalQuota - currentUsed,
+            });
+          }
+          if (parsed.englishPrompt) {
+            englishPrompt = parsed.englishPrompt;
+          }
+        } catch (gErr) {
+          console.warn("AI safety filter notice:", gErr);
+        }
+      }
+
+      // 🔑 3. API Anahtarları ve Ortam Değişkenleri Kontrolü
+      const hfToken = process.env.HF_TOKEN?.trim();
+      if (!hfToken) {
+        return res.status(500).json({
+          error: "HF_TOKEN ortam değişkeni tanımlanmamış. Lütfen AI Studio Secrets panelinden HF_TOKEN ekleyin.",
+        });
+      }
+
+      const cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
+      const cloudApiKey = process.env.CLOUDINARY_API_KEY?.trim();
+      const cloudApiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
+
+      if (!cloudName || !cloudApiKey || !cloudApiSecret) {
+        return res.status(500).json({
+          error: "Cloudinary ortam değişkenleri eksik. Lütfen Cloudinary yapılandırmasını kontrol edin.",
+        });
+      }
+
+      // 🤖 4. Real Hugging Face ZeroGPU API Call (stabilityai/stable-diffusion-xl-base-1.0 on hysts/SDXL Space)
+      let imageBuffer: Buffer | null = null;
+      let lastHfError: string = "";
+
+      try {
+        console.log("Connecting to Hugging Face ZeroGPU SDXL Space...");
+        const client = await Client.connect("hysts/SDXL", { token: hfToken as any });
+
+        const result: any = await client.predict("/predict", [
+          englishPrompt, // 0: Prompt
+          "",            // 1: Negative prompt
+          "",            // 2: Prompt 2
+          "",            // 3: Negative prompt 2
+          false,         // 4: Use negative prompt
+          false,         // 5: Use prompt 2
+          false,         // 6: Use negative prompt 2
+          Math.floor(Math.random() * 100000), // 7: Seed
+          1024,          // 8: Width
+          1024,          // 9: Height
+          7.5,           // 10: Guidance scale base
+          7.5,           // 11: Guidance scale refiner
+          25,            // 12: Inference steps base
+          25,            // 13: Inference steps refiner
+          false          // 14: Apply refiner
+        ]);
+
+        const rawImageUrl = result?.data?.[0]?.url;
+        if (rawImageUrl) {
+          const imgRes = await fetch(rawImageUrl);
+          if (imgRes.ok) {
+            const arrayBuf = await imgRes.arrayBuffer();
+            if (arrayBuf.byteLength > 1000) {
+              imageBuffer = Buffer.from(arrayBuf);
+            }
+          }
+        }
+      } catch (zeroGpuErr: any) {
+        console.warn("ZeroGPU SDXL Space Call Failed, checking router fallback:", zeroGpuErr?.message);
+        lastHfError = zeroGpuErr?.message || "ZeroGPU bağlantısı başarısız oldu.";
+      }
+
+      // Router Fallback (If ZeroGPU space is busy)
+      if (!imageBuffer || imageBuffer.length < 1000) {
+        const hfEndpoints = [
+          "https://router.huggingface.co/hf-inference/models/stabilityai/stable-diffusion-xl-base-1.0",
+          "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell",
+        ];
+
+        for (const endpoint of hfEndpoints) {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+            const hfRes = await fetch(endpoint, {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${hfToken}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ inputs: englishPrompt }),
+              signal: controller.signal,
+            });
+
+            clearTimeout(timeoutId);
+
+            const contentType = hfRes.headers.get("content-type") || "";
+            if (hfRes.ok && contentType.includes("image")) {
+              const arrayBuf = await hfRes.arrayBuffer();
+              if (arrayBuf.byteLength > 1000) {
+                imageBuffer = Buffer.from(arrayBuf);
+                break;
+              }
+            } else {
+              const errJson = await hfRes.json().catch(() => ({}));
+              lastHfError = errJson?.error || `Hugging Face API Yanıtı (${hfRes.status})`;
+            }
+          } catch (fetchErr: any) {
+            lastHfError = fetchErr?.message || "Hugging Face sunucusuna bağlanılamadı.";
+          }
+        }
+      }
+
+      if (!imageBuffer || imageBuffer.length < 1000) {
+        console.error("Hugging Face API Görsel Üretim Hatası:", lastHfError);
+        return res.status(502).json({
+          error: `Hugging Face API Görsel Üretim Hatası: ${lastHfError || "ZeroGPU SDXL modelinden görsel verisi alınamadı. Lütfen tekrar deneyin."}`,
+        });
+      }
+
+
+      // ☁️ 4. Üretilen Görseli Cloudinary CDN'e Yükleme
+      const timestamp = Math.floor(Date.now() / 1000);
+      const folder = "redchat_ai_images";
+      const paramsToSign = `folder=${folder}&timestamp=${timestamp}`;
+      const stringToSign = `${paramsToSign}${cloudApiSecret}`;
+      const signature = crypto.createHash("sha1").update(stringToSign).digest("hex");
+
+      const base64DataUri = `data:image/jpeg;base64,${imageBuffer.toString("base64")}`;
+
+      const formData = new URLSearchParams();
+      formData.append("file", base64DataUri);
+      formData.append("api_key", cloudApiKey);
+      formData.append("timestamp", String(timestamp));
+      formData.append("folder", folder);
+      formData.append("signature", signature);
+
+      const cloudinaryRes = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: formData.toString(),
+      });
+
+      if (!cloudinaryRes.ok) {
+        const cErrText = await cloudinaryRes.text().catch(() => "");
+        console.error("Cloudinary upload failed:", cErrText);
+        return res.status(502).json({
+          error: "Görsel üretildi ancak bulut depolamaya aktarılamadı. Kotanız düşülmedi.",
+        });
+      }
+
+      const cData = await cloudinaryRes.json();
+      const finalImageUrl = cData.secure_url || cData.url;
+
+      // 🔢 5. Başarılı Üretim Sonrası Kotayı Düş (usedCount++)
+      const newUsed = currentUsed + 1;
+      if (quotaRef) {
+        try {
+          await quotaRef.set({
+            used: newUsed,
+            dateStr: todayStr,
+            updatedAt: new Date(),
+          }, { merge: true });
+        } catch (qErr) {
+          console.error("Kota güncelleme hatası:", qErr);
+        }
+      }
+
+      const remainingQuota = Math.max(0, totalQuota - newUsed);
+
+      return res.json({
+        success: true,
+        imageUrl: finalImageUrl,
+        remainingQuota,
+        nextResetTime: getNextResetText(),
+      });
+    } catch (err: any) {
+      console.error("Görsel üretim sunucu hatası:", err);
+      return res.status(500).json({
+        error: "Görsel üretim sırasında beklenmeyen sunucu hatası oluştu.",
       });
     }
   });
