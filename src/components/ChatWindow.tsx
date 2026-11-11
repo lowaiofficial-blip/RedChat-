@@ -80,6 +80,7 @@ import {
   Ban,
   VolumeX,
   UserX,
+  Mail,
   Zap,
   Lightbulb,
   ChevronDown,
@@ -348,13 +349,22 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     ? 'deepred_ai'
     : (otherUserObj?.username || otherParticipantInfo?.username || '');
   const photoURL = otherUserObj?.photoURL || otherParticipantInfo?.photoURL || null;
-  const isOnline = isDirectAIChat ? true : (otherUserObj?.isOnline ?? false);
+  const isOnline = isDirectAIChat
+    ? true
+    : (otherUserObj?.isEmailInReview || otherUserObj?.isBanned ? false : (otherUserObj?.isOnline ?? false));
 
   // Karşı tarafın banlı olup olmadığı (Birebir sohbetlerde)
   const isOtherUserBanned = useMemo(() => {
     if (conversation?.isGroup || isDirectAIChat) return false;
     return Boolean(otherUserObj?.isBanned);
   }, [conversation?.isGroup, isDirectAIChat, otherUserObj?.isBanned]);
+
+  // Karşı tarafın e-posta incelemesinde olup olmadığı (Birebir sohbetlerde)
+  const isOtherUserInEmailReview = useMemo(() => {
+    if (conversation?.isGroup || isDirectAIChat) return false;
+    return Boolean(otherUserObj?.isEmailInReview);
+  }, [conversation?.isGroup, isDirectAIChat, otherUserObj?.isEmailInReview]);
+
 
   // Zaman damgalarını ve aktif yazanları kontrol etmek için ticker
   // Yalnızca başka kullanıcılar yazıyorken çalışır, boş yere saniyede bir re-render yapmaz
@@ -973,6 +983,16 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
     if (isOtherUserBanned) {
       setImageUploadError('Bu hesap askıya alındığı için mesaj gönderilemez.');
+      return;
+    }
+
+    if (isOtherUserInEmailReview) {
+      setImageUploadError('Bu kullanıcı e-posta incelemesine alındığı için şu anda sohbet kullanılamıyor.');
+      return;
+    }
+
+    if (currentUser.isEmailInReview) {
+      setImageUploadError('E-posta incelemesinde olduğunuz için mesaj gönderemezsiniz.');
       return;
     }
 
@@ -2434,10 +2454,30 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             <Ban className="w-4 h-4 shrink-0 text-red-600" />
             <span>Bu hesap askıya alındı</span>
           </div>
+        ) : isOtherUserInEmailReview ? (
+          <div className="flex flex-col items-center justify-center p-3.5 sm:p-4 bg-amber-500/10 dark:bg-amber-950/40 border border-amber-500/30 dark:border-amber-800/60 rounded-2xl text-center select-none shadow-xs space-y-1">
+            <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 font-bold text-xs sm:text-sm">
+              <Mail className="w-4 h-4 shrink-0 text-amber-500" />
+              <span>Hesap incelemede</span>
+            </div>
+            <p className="text-[11px] sm:text-xs text-zinc-600 dark:text-zinc-300">
+              Bu kullanıcı e-posta incelemesine alındığı için şu anda sohbet kullanılamıyor.
+            </p>
+          </div>
         ) : currentUser.isBanned ? (
           <div className="flex items-center justify-center gap-2.5 p-3.5 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 rounded-2xl text-red-600 dark:text-red-400 text-xs font-semibold text-center">
             <Ban className="w-4 h-4 shrink-0 text-red-600" />
             <span>Hesabınız askıya alınmıştır (Banlandınız). Mesaj gönderemezsiniz.</span>
+          </div>
+        ) : currentUser.isEmailInReview ? (
+          <div className="flex flex-col items-center justify-center p-3.5 sm:p-4 bg-amber-500/10 dark:bg-amber-950/40 border border-amber-500/30 dark:border-amber-800/60 rounded-2xl text-center select-none shadow-xs space-y-1">
+            <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 font-bold text-xs sm:text-sm">
+              <Mail className="w-4 h-4 shrink-0 text-amber-500" />
+              <span>Hesabınız incelemeyle kısıtlandı</span>
+            </div>
+            <p className="text-[11px] sm:text-xs text-zinc-600 dark:text-zinc-300">
+              E-posta incelemesinde olduğunuz için mesaj gönderemezsiniz.
+            </p>
           </div>
         ) : currentUser.isMuted ? (
           <div className="flex items-center justify-center gap-2.5 p-3.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-2xl text-amber-600 dark:text-amber-400 text-xs font-semibold text-center">

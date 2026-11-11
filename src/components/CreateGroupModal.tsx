@@ -49,7 +49,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Giriş yapan kullanıcı hariç diğer gerçek kullanıcılar (Banlılar ve Engellenenler eklenemez)
+  // Giriş yapan kullanıcı hariç diğer gerçek kullanıcılar (Banlılar, E-Posta İncelemesindekiler ve Engellenenler eklenemez)
   const availableUsers = useMemo(() => {
     return (rawUsers || []).filter(
       (u) =>
@@ -57,9 +57,11 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
         u.uid &&
         u.uid !== currentUser.uid &&
         !u.isBanned &&
+        !u.isEmailInReview &&
         !blockedUserIds.includes(u.uid)
     );
   }, [rawUsers, currentUser?.uid, blockedUserIds]);
+
 
   // Arama filtresi
   const filteredUsers = useMemo(() => {

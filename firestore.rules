@@ -38,6 +38,14 @@ service cloud.firestore {
              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isMuted', false) == true;
     }
 
+    // Kullanıcı E-Posta İncelemesinde mi?
+    function isEmailInReview() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isEmailInReview', false) == true;
+    }
+
+
     // =========================================================================
     // 🛡️ DOĞRULAMA BAŞVURULARI (/verificationRequests/{requestId})
     // =========================================================================
@@ -83,7 +91,13 @@ service cloud.firestore {
       
       // Kullanıcı kendi profil bilgilerini (durum, bio, avatar, son görülme),
       // veya admin tüm kullanıcı alanlarını (doğrulama, ban vb.) güncelleyebilir
-      allow update: if isAuthenticated() && (isOwner(userId) || isAdmin());
+      allow update: if isAuthenticated() && (
+        isAdmin() || (
+          isOwner(userId) &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isEmailInReview', 'isBanned', 'role', 'isVerified'])
+        )
+      );
+
       
       // Hesap silme işlemi
       allow delete: if isAuthenticated() && (isOwner(userId) || isAdmin());
@@ -184,7 +198,8 @@ service cloud.firestore {
         // - RedChat AI tarafından üretilen yanıtlar (senderId: system_redchat_ai)
         // - Sonlandırılmış (terminated) sohbete normal kullanıcı mesaj yazamaz
         // - Engellenmiş birebir sohbetlere mesaj yazılamaz
-        allow create: if isAuthenticated() && (
+        allow create: if isAuthenticated() && (!isEmailInReview() || isAdmin()) && (
+
           (
             // Grup sohbeti veya engeli olmayan birebir sohbet
             get(/databases/$(database)/documents/conversations/$(conversationId)).data.get('isGroup', false) == true ||

@@ -231,6 +231,41 @@ export async function unbanUser(
 }
 
 /**
+ * Kullanıcıyı e-posta inceleme durumuna alır (isEmailInReview: true) veya çıkarır (isEmailInReview: false).
+ */
+export async function setUserEmailInReview(
+  adminUser: UserProfile,
+  targetUid: string,
+  isInReview: boolean
+): Promise<void> {
+  if (!db) throw new Error('Firestore bağlantısı hazır değil');
+  if (!targetUid) throw new Error('Geçersiz kullanıcı kimliği');
+  if (adminUser?.uid && targetUid === adminUser.uid) {
+    throw new Error('Kendi hesabınızı incelemeye alamazsınız');
+  }
+  if (!isUserAdmin(adminUser)) {
+    throw new Error('Bu işlemi gerçekleştirme yetkiniz yok (Yalnızca Admin)');
+  }
+
+  const userDocRef = doc(db, 'users', targetUid);
+  const updateData: any = {
+    isEmailInReview: isInReview,
+    emailInReviewAt: isInReview ? serverTimestamp() : null,
+    emailInReviewBy: isInReview ? adminUser.uid : null,
+    updatedAt: serverTimestamp(),
+  };
+
+  if (isInReview) {
+    updateData.isOnline = false;
+    updateData.lastSeen = serverTimestamp();
+  }
+
+  await setDoc(userDocRef, updateData, { merge: true });
+}
+
+
+
+/**
  * Kullanıcıyı susturur (isMuted: true).
  */
 export async function muteUser(

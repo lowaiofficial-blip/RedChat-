@@ -200,15 +200,17 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
     };
   }, []);
 
-  // Mevcut kullanıcı hariç diğer gerçek kullanıcılar (Banlı olanlar ve Engellenen kullanıcılar listede/aramada çıkmamalı)
+  // Mevcut kullanıcı hariç diğer gerçek kullanıcılar (Banlı olanlar, E-Posta incelemesinde olanlar ve Engellenen kullanıcılar rehberde/aramada çıkmamalı)
   const otherUsers = useMemo(() => {
     return users.filter(
       (u) =>
         u.uid !== currentUser.uid &&
         !u.isBanned &&
+        !u.isEmailInReview &&
         !blockedUserIds.includes(u.uid)
     );
   }, [users, currentUser.uid, blockedUserIds]);
+
 
   // Toplam okunmamış mesaj sayısı
   const totalUnreadCount = useMemo(() => {
@@ -660,7 +662,8 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
               const otherUserObj = users.find((u) => u.uid === otherParticipantId);
               const otherInfo = otherParticipantId ? conv.participants[otherParticipantId] : null;
               const isAi = isRedChatAI(otherUserObj || otherParticipantId);
-              const isOnline = isAi ? true : (otherUserObj?.isOnline ?? false);
+              const isOnline = isAi ? true : (otherUserObj?.isEmailInReview || otherUserObj?.isBanned ? false : (otherUserObj?.isOnline ?? false));
+
 
               const displayName = isAi
                 ? 'DeepRed AI'

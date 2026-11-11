@@ -45,6 +45,8 @@ import { ChannelView } from './components/ChannelView';
 import { AdminPanel } from './components/AdminPanel';
 import { BannedScreen } from './components/BannedScreen';
 import { HardwareBannedScreen } from './components/HardwareBannedScreen';
+import { EmailReviewScreen } from './components/EmailReviewScreen';
+
 import { subscribeToDeviceBanStatus, syncCurrentDeviceInfo, checkDeviceBanNow } from './services/deviceService';
 import { subscribeToBlockedUsers, unblockUser } from './services/blockService';
 import type { BannedDevice } from './types';
@@ -211,17 +213,32 @@ export default function App() {
   useEffect(() => {
     if (!currentUserAuth) return;
 
+    const userProfileRef = { current: currentUserProfile };
+    userProfileRef.current = currentUserProfile;
+
     const unsubscribeProfile = subscribeToUserProfile(
       currentUserAuth.uid,
       (profile) => {
         setCurrentUserProfile(profile);
+        if (profile?.isEmailInReview || profile?.isBanned) {
+          setUserOnlineStatus(currentUserAuth.uid, false);
+        }
       }
     );
 
-    // Kullanıcı online durumunu ayarla ve pencere olaylarını dinle
-    setUserOnlineStatus(currentUserAuth.uid, true);
+    // Kullanıcı online durumunu ayarla ve pencere olaylarını dinle (İncelemede veya banlı değilse)
+    if (!currentUserProfile?.isEmailInReview && !currentUserProfile?.isBanned) {
+      setUserOnlineStatus(currentUserAuth.uid, true);
+    } else {
+      setUserOnlineStatus(currentUserAuth.uid, false);
+    }
 
     const handleVisibilityChange = () => {
+      const p = userProfileRef.current;
+      if (p?.isEmailInReview || p?.isBanned) {
+        setUserOnlineStatus(currentUserAuth.uid, false);
+        return;
+      }
       if (document.visibilityState === 'visible') {
         setUserOnlineStatus(currentUserAuth.uid, true);
       } else {
@@ -234,6 +251,11 @@ export default function App() {
     };
 
     const heartbeatInterval = setInterval(() => {
+      const p = userProfileRef.current;
+      if (p?.isEmailInReview || p?.isBanned) {
+        setUserOnlineStatus(currentUserAuth.uid, false);
+        return;
+      }
       if (document.visibilityState === 'visible') {
         setUserOnlineStatus(currentUserAuth.uid, true);
       }
@@ -249,6 +271,7 @@ export default function App() {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [currentUserAuth]);
+
 
   // 3. Realtime Users List (All registered users in Firestore)
   useEffect(() => {
@@ -741,7 +764,7 @@ export default function App() {
     );
   }
 
-  // 🚫 Ban Ekranı (Hesap askıya alınmışsa ekteki WhatsApp benzeri tam ekran açılır)
+  // 🚫 Ban Ekranı (Hesap askıya alınmışsa tam ekran açılır)
   if (currentUserProfile.isBanned) {
     return (
       <BannedScreen
@@ -750,6 +773,17 @@ export default function App() {
       />
     );
   }
+
+  // ✉️ Manuel E-Posta İnceleme Ekranı (Hesap e-posta incelemesine alındıysa sohbet kilitlenir)
+  if (currentUserProfile.isEmailInReview) {
+    return (
+      <EmailReviewScreen
+        user={currentUserProfile}
+        onLogout={logoutUser}
+      />
+    );
+  }
+
 
   // 🛡️ Admin Panel Route (/#/admin)
   const isAdminRoute = currentHash === '#/admin' || currentHash.startsWith('#/admin');

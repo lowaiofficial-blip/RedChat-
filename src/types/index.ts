@@ -76,7 +76,12 @@ export interface UserProfile {
   isMuted?: boolean;
   muteReason?: string;
   mutedAt?: any;
+  // ✉️ Manuel E-Posta İnceleme Alanları
+  isEmailInReview?: boolean;
+  emailInReviewAt?: any;
+  emailInReviewBy?: string;
   isSystemAI?: boolean;
+
   // 🏢 İşletme Hesabı Alanları
   accountType?: AccountType;
   businessProfile?: BusinessProfile;

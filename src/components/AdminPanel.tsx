@@ -11,7 +11,9 @@ import {
   updateVerifiedBadgeUrl,
   updateAIProfilePhotoUrl,
   setUserVerificationStatus,
+  setUserEmailInReview,
   banUser,
+
   unbanUser,
   muteUser,
   unmuteUser,
@@ -107,8 +109,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [activeTab, setActiveTab] = useState<'users' | 'ai_users' | 'ipbans' | 'password_resets' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
   const [hardwareBanModalOpen, setHardwareBanModalOpen] = useState(false);
   const [hardwareBanTargetUser, setHardwareBanTargetUser] = useState<UserProfile | null>(null);
+  const [emailReviewModalOpen, setEmailReviewModalOpen] = useState(false);
+  const [emailReviewTargetUser, setEmailReviewTargetUser] = useState<UserProfile | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [userFilter, setUserFilter] = useState<'all' | 'online' | 'banned' | 'muted' | 'verified'>('all');
+  const [userFilter, setUserFilter] = useState<'all' | 'online' | 'banned' | 'muted' | 'verified' | 'email_review'>('all');
+
 
   // 📢 Admin Kanallar Yönetim State'i
   const [adminChannels, setAdminChannels] = useState<Channel[]>([]);
@@ -354,6 +359,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (userFilter === 'banned' && !u.isBanned) return false;
       if (userFilter === 'muted' && !u.isMuted) return false;
       if (userFilter === 'verified' && !u.isVerified) return false;
+      if (userFilter === 'email_review' && !u.isEmailInReview) return false;
+
 
       // Metin Araması
       if (!q) return true;
@@ -688,6 +695,61 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setProcessingUid(null);
     }
   };
+
+  // ✉️ Manuel E-Posta İnceleme İşlemi
+  const handleToggleUserEmailReview = async (targetUser: UserProfile) => {
+    if (!targetUser) return;
+    if (targetUser.uid === currentUser.uid) {
+      setUserActionError('Kendi hesabınızı e-posta incelemesine alamazsınız.');
+      return;
+    }
+    if (targetUser.isSystemAI) {
+      setUserActionError('DeepRed AI sistem asistanı incelemeye alınamaz.');
+      return;
+    }
+
+    setProcessingUid(targetUser.uid);
+    setUserActionError(null);
+    setUserActionSuccess(null);
+
+    const isCurrentlyInReview = Boolean(targetUser.isEmailInReview);
+    const name = targetUser.displayName || targetUser.username;
+    const newReviewStatus = !isCurrentlyInReview;
+
+    // Optimistik yerel güncelleme
+    setLocalUsers((prev) =>
+      prev.map((u) =>
+        u.uid === targetUser.uid ? { ...u, isEmailInReview: newReviewStatus } : u
+      )
+    );
+    if (inspectingUser && inspectingUser.uid === targetUser.uid) {
+      setInspectingUser((prev) => (prev ? { ...prev, isEmailInReview: newReviewStatus } : null));
+    }
+
+    try {
+      await setUserEmailInReview(currentUser, targetUser.uid, newReviewStatus);
+      setUserActionSuccess(
+        `✓ ${name} kullanıcısının hesabı e-posta incelemesine ${newReviewStatus ? 'alındı' : 'çıkarıldı'}.`
+      );
+    } catch (err: any) {
+      console.error('E-posta inceleme güncelleme hatası:', err);
+      // Geri al
+      setLocalUsers((prev) =>
+        prev.map((u) =>
+          u.uid === targetUser.uid ? { ...u, isEmailInReview: isCurrentlyInReview } : u
+        )
+      );
+      if (inspectingUser && inspectingUser.uid === targetUser.uid) {
+        setInspectingUser((prev) => (prev ? { ...prev, isEmailInReview: isCurrentlyInReview } : null));
+      }
+      setUserActionError(err?.message || 'E-posta inceleme durumu güncellenemedi.');
+    } finally {
+      setProcessingUid(null);
+      setEmailReviewModalOpen(false);
+      setEmailReviewTargetUser(null);
+    }
+  };
+
 
   // 📋 SOHBET LOGLARI MODALINI AÇMA
   const handleOpenChatLog = async (conv: Conversation) => {
@@ -1230,6 +1292,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     Susturulmuş ({localUsers.filter((u) => u.isMuted).length})
                   </button>
                   <button
+                    onClick={() => setUserFilter('email_review')}
+                    className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer whitespace-nowrap ${
+                      userFilter === 'email_review'
+                        ? 'bg-amber-500 text-white shadow-xs'
+                        : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900'
+                    }`}
+                  >
+                    İncelemede ({localUsers.filter((u) => u.isEmailInReview).length})
+                  </button>
+
+                  <button
                     onClick={() => setUserFilter('verified')}
                     className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer whitespace-nowrap ${
                       userFilter === 'verified'
@@ -1331,7 +1404,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             </button>
                           </div>
 
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {user.isEmailInReview && (
+                              <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[10px] font-bold flex items-center gap-1">
+                                <Mail className="w-3 h-3" /> İNCELEMEDE
+                              </span>
+                            )}
                             {isBanned && (
                               <span className="px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-950/60 text-red-600 text-[10px] font-bold">
                                 BANLI
@@ -1351,19 +1429,36 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </div>
 
                         {/* Alt: Butonlar */}
-                        <div className="grid grid-cols-4 gap-1.5 pt-1">
+                        <div className="grid grid-cols-5 gap-1.5 pt-1">
                           <button
                             onClick={() => setInspectingUser(user)}
-                            className="py-1.5 px-2 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 text-zinc-700 dark:text-zinc-300 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer"
+                            className="py-1.5 px-1.5 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 text-zinc-700 dark:text-zinc-300 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer"
                           >
                             <Eye className="w-3.5 h-3.5" />
                             <span>İncele</span>
                           </button>
 
                           <button
+                            onClick={() => {
+                              setEmailReviewTargetUser(user);
+                              setEmailReviewModalOpen(true);
+                            }}
+                            disabled={isProcessing}
+                            className={`py-1.5 px-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 ${
+                              user.isEmailInReview
+                                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                                : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
+                            }`}
+                            title={user.isEmailInReview ? 'E-Posta İncelemesini Kaldır' : 'E-Posta İncelemesine Al'}
+                          >
+                            <Mail className="w-3.5 h-3.5" />
+                            <span>Mail</span>
+                          </button>
+
+                          <button
                             onClick={() => handleToggleUserVerification(user)}
                             disabled={isProcessing}
-                            className={`py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 ${
+                            className={`py-1.5 px-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 ${
                               isVerified
                                 ? 'bg-blue-50 text-blue-600 border border-blue-200 dark:border-blue-900/40'
                                 : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
@@ -1376,7 +1471,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <button
                             onClick={() => handleToggleUserMute(user)}
                             disabled={isProcessing}
-                            className={`py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 ${
+                            className={`py-1.5 px-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 ${
                               isMuted
                                 ? 'bg-amber-100 text-amber-700 border border-amber-300'
                                 : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
@@ -1385,6 +1480,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             {isMuted ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
                             <span>{isMuted ? 'Aç' : 'Sustur'}</span>
                           </button>
+
 
                           <button
                             onClick={() => handleToggleUserBan(user)}
@@ -1534,61 +1630,85 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                               {/* Moderasyon Etiketleri & Mavi Tik */}
                               <td className="py-3 px-4">
-                                <div className="flex flex-wrap items-center gap-1.5">
-                                  {isBanned && (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 dark:bg-red-950/50 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-900/60 font-black text-[10px]">
-                                      <Ban className="w-3 h-3" />
-                                      <span>BANLI</span>
-                                    </span>
-                                  )}
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    {user.isEmailInReview && (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 border border-amber-500/30 font-bold text-[10px]">
+                                        <Mail className="w-3 h-3" />
+                                        <span>İNCELEMEDE</span>
+                                      </span>
+                                    )}
 
-                                  {isMuted && (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-900/60 font-bold text-[10px]">
-                                      <VolumeX className="w-3 h-3" />
-                                      <span>SUSTURULDU</span>
-                                    </span>
-                                  )}
+                                    {isBanned && (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 dark:bg-red-950/50 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-900/60 font-black text-[10px]">
+                                        <Ban className="w-3 h-3" />
+                                        <span>BANLI</span>
+                                      </span>
+                                    )}
 
-                                  {isVerified ? (
-                                    <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-900/50 font-bold text-[10px]">
-                                      <VerifiedBadge
-                                        isVerified={true}
-                                        badgeUrl={currentBadgeUrl}
-                                        size="xs"
-                                      />
-                                      <span>Mavi Tik</span>
-                                    </div>
-                                  ) : !isBanned && !isMuted ? (
-                                    <span className="text-zinc-400 text-[11px] font-medium">
-                                      Normal
-                                    </span>
-                                  ) : null}
-                                </div>
-                              </td>
+                                    {isMuted && (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-900/60 font-bold text-[10px]">
+                                        <VolumeX className="w-3 h-3" />
+                                        <span>SUSTURULDU</span>
+                                      </span>
+                                    )}
 
-                              {/* İşlem Butonları */}
-                              <td className="py-3 px-4 text-right">
-                                <div className="flex items-center justify-end gap-1.5">
-                                  <button
-                                    onClick={() => setInspectingUser(user)}
-                                    className="p-1.5 text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
-                                    title="Profili & Moderasyonu İncele"
-                                  >
-                                    <Eye className="w-4 h-4" />
-                                  </button>
+                                    {isVerified ? (
+                                      <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-900/50 font-bold text-[10px]">
+                                        <VerifiedBadge
+                                          isVerified={true}
+                                          badgeUrl={currentBadgeUrl}
+                                          size="xs"
+                                        />
+                                        <span>Mavi Tik</span>
+                                      </div>
+                                    ) : !isBanned && !isMuted && !user.isEmailInReview ? (
+                                      <span className="text-zinc-400 text-[11px] font-medium">
+                                        Normal
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                </td>
 
-                                  <button
-                                    onClick={() => handleToggleUserVerification(user)}
-                                    disabled={isProcessing}
-                                    className={`p-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 ${
-                                      isVerified
-                                        ? 'text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40'
-                                        : 'text-zinc-400 hover:text-blue-600 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                                    }`}
-                                    title={isVerified ? 'Mavi Tiki Kaldır' : 'Mavi Tik Ver'}
-                                  >
-                                    <BadgeCheck className="w-4 h-4" />
-                                  </button>
+                                {/* İşlem Butonları */}
+                                <td className="py-3 px-4 text-right">
+                                  <div className="flex items-center justify-end gap-1.5">
+                                    <button
+                                      onClick={() => setInspectingUser(user)}
+                                      className="p-1.5 text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
+                                      title="Profili & Moderasyonu İncele"
+                                    >
+                                      <Eye className="w-4 h-4" />
+                                    </button>
+
+                                    <button
+                                      onClick={() => {
+                                        setEmailReviewTargetUser(user);
+                                        setEmailReviewModalOpen(true);
+                                      }}
+                                      disabled={isProcessing}
+                                      className={`p-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 ${
+                                        user.isEmailInReview
+                                          ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800'
+                                          : 'text-zinc-400 hover:text-amber-600 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                                      }`}
+                                      title={user.isEmailInReview ? 'E-Posta İncelesini Kaldır' : 'E-Posta İncelemesine Al'}
+                                    >
+                                      <Mail className="w-4 h-4" />
+                                    </button>
+
+                                    <button
+                                      onClick={() => handleToggleUserVerification(user)}
+                                      disabled={isProcessing}
+                                      className={`p-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 ${
+                                        isVerified
+                                          ? 'text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40'
+                                          : 'text-zinc-400 hover:text-blue-600 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                                      }`}
+                                      title={isVerified ? 'Mavi Tiki Kaldır' : 'Mavi Tik Ver'}
+                                    >
+                                      <BadgeCheck className="w-4 h-4" />
+                                    </button>
+
 
                                   <button
                                     onClick={() => handleToggleUserMute(user)}
@@ -3140,6 +3260,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <span className="text-red-600">🚫 Banlı</span>
                   ) : inspectingUser.isMuted ? (
                     <span className="text-amber-600">🔇 Susturulmuş</span>
+                  ) : inspectingUser.isEmailInReview ? (
+                    <span className="text-amber-500">✉️ E-Posta İncelemesinde</span>
                   ) : (
                     <span className="text-emerald-600">Aktif</span>
                   )}
@@ -3150,6 +3272,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             {/* Moderasyon Aksiyon Butonları */}
             <div className="space-y-2 pt-1">
               <button
+                onClick={() => {
+                  setEmailReviewTargetUser(inspectingUser);
+                  setEmailReviewModalOpen(true);
+                }}
+                disabled={processingUid === inspectingUser.uid}
+                className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 ${
+                  inspectingUser.isEmailInReview
+                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 hover:bg-amber-500/30'
+                    : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700'
+                }`}
+              >
+                <Mail className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>
+                  {inspectingUser.isEmailInReview ? 'E-Posta İncelemesini Kaldır' : 'E-Posta İncelemesine Al'}
+                </span>
+              </button>
+
+              <button
                 onClick={() => handleToggleUserBan(inspectingUser)}
                 disabled={processingUid === inspectingUser.uid}
                 className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 ${
@@ -3158,6 +3298,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     : 'bg-red-600 hover:bg-red-700 text-white shadow-xs'
                 }`}
               >
+
                 {processingUid === inspectingUser.uid ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : inspectingUser.isBanned ? (
@@ -3382,6 +3523,73 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           setTimeout(() => setUserActionSuccess(null), 4000);
         }}
       />
+
+      {/* ✉️ E-Posta İnceleme Onay Modalı */}
+      {emailReviewModalOpen && emailReviewTargetUser && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in"
+          onClick={() => {
+            setEmailReviewModalOpen(false);
+            setEmailReviewTargetUser(null);
+          }}
+        >
+          <div
+            className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-4 animate-in zoom-in-95"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center shrink-0">
+                <Mail className="w-5 h-5 text-amber-500" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-zinc-900 dark:text-zinc-100">
+                  {emailReviewTargetUser.isEmailInReview ? 'İncelemeyi Kaldır' : 'E-Posta İncelemesine Al'}
+                </h3>
+                <p className="text-xs text-zinc-400">
+                  @{emailReviewTargetUser.username} • {emailReviewTargetUser.email || 'E-posta tanımlanmamış'}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-zinc-600 dark:text-zinc-300 leading-relaxed bg-zinc-50 dark:bg-zinc-800/50 p-3.5 rounded-2xl border border-zinc-100 dark:border-zinc-800">
+              {emailReviewTargetUser.isEmailInReview
+                ? `Bu kullanıcının hesabındaki e-posta inceleme durumunu kaldırmak istediğinize emin misiniz? Kullanıcı tekrar uygulamayı ve sohbetleri normal şekilde kullanabilecektir.`
+                : `Bu kullanıcıyı manuel e-posta inceleme durumuna almak istediğinize emin misiniz? Kullanıcı inceleme kaldırılana kadar mesaj gönderemeyecek, sohbet ekranlarına ve kanallara erişemeyecektir.`}
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                onClick={() => {
+                  setEmailReviewModalOpen(false);
+                  setEmailReviewTargetUser(null);
+                }}
+                className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors cursor-pointer"
+              >
+                İptal
+              </button>
+              <button
+                onClick={() => handleToggleUserEmailReview(emailReviewTargetUser)}
+                disabled={processingUid === emailReviewTargetUser.uid}
+                className={`px-4 py-2.5 rounded-xl text-xs font-bold text-white transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 ${
+                  emailReviewTargetUser.isEmailInReview
+                    ? 'bg-emerald-600 hover:bg-emerald-700'
+                    : 'bg-amber-600 hover:bg-amber-700'
+                }`}
+              >
+                {processingUid === emailReviewTargetUser.uid ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Mail className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {emailReviewTargetUser.isEmailInReview ? 'İncelemeyi Kaldır' : 'İncelemeye Al'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {/* 🎬 Video Lightbox Preview Modalı */}
       {videoLightboxData && (
