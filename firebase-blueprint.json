@@ -156,6 +156,70 @@
         "videoDuration": { "type": "number", "description": "Video duration in seconds if video" },
         "updatedAt": { "type": "timestamp", "description": "Last update timestamp" }
       }
+    },
+    "SecuritySession": {
+      "path": "securitySessions/{sessionId}",
+      "fields": {
+        "id": { "type": "string", "description": "Session document ID" },
+        "sessionId": { "type": "string", "description": "Cryptographic session ID" },
+        "userId": { "type": "string", "description": "Owner user UID" },
+        "username": { "type": "string", "description": "Owner username" },
+        "displayName": { "type": "string", "description": "Owner display name" },
+        "deviceId": { "type": "string", "description": "Device hardware ID" },
+        "deviceType": { "type": "string", "description": "desktop | tablet | mobile | unknown" },
+        "browserName": { "type": "string", "description": "Parsed browser name" },
+        "osName": { "type": "string", "description": "Parsed operating system name" },
+        "countryCode": { "type": "string", "description": "ISO 3166-1 alpha-2 country code" },
+        "countryName": { "type": "string", "description": "Localized Turkish country name" },
+        "flagEmoji": { "type": "string", "description": "Country flag emoji" },
+        "previousCountryName": { "type": "string", "description": "Previous known country name" },
+        "isSuspicious": { "type": "boolean", "description": "Flagged for new country + new device check" },
+        "trusted": { "type": "boolean", "description": "Whether session is trusted/approved" },
+        "status": { "type": "string", "description": "active | pending_verification | awaiting_admin_approval | revoked" },
+        "userResponse": { "type": "string", "description": "pending | confirmed_me | denied_not_me | not_required" },
+        "adminDecision": { "type": "string", "description": "pending | approved | revoked | auto_trusted" },
+        "createdAt": { "type": "timestamp", "description": "Login timestamp" },
+        "lastActiveAt": { "type": "timestamp", "description": "Last active timestamp" }
+      }
+    },
+    "SecuritySessionNetwork": {
+      "path": "securitySessionNetwork/{sessionId}",
+      "fields": {
+        "sessionId": { "type": "string", "description": "Session ID" },
+        "userId": { "type": "string", "description": "Owner UID" },
+        "ip": { "type": "string", "description": "Admin-only client IP address" },
+        "city": { "type": "string", "description": "Detected city" },
+        "region": { "type": "string", "description": "Detected region" },
+        "isp": { "type": "string", "description": "Detected ISP" },
+        "countryCode": { "type": "string", "description": "Detected country code" },
+        "proofHash": { "type": "string", "description": "SHA-256 hash of server-issued session proof" },
+        "createdAt": { "type": "timestamp", "description": "Record timestamp" }
+      }
+    },
+    "UserSecurityProfile": {
+      "path": "userSecurityProfiles/{uid}",
+      "fields": {
+        "uid": { "type": "string", "description": "User UID" },
+        "knownCountryCodes": { "type": "array", "description": "Approved ISO country codes" },
+        "knownDeviceIds": { "type": "array", "description": "Approved hardware device IDs" },
+        "lastKnownCountryCode": { "type": "string", "description": "Last approved country code" },
+        "lastKnownCountryName": { "type": "string", "description": "Last approved country name" },
+        "updatedAt": { "type": "timestamp", "description": "Last update timestamp" }
+      }
+    },
+    "AdminLog": {
+      "path": "adminLogs/{logId}",
+      "fields": {
+        "id": { "type": "string", "description": "Log entry ID" },
+        "category": { "type": "string", "description": "security_session | email_review | moderation | system" },
+        "action": { "type": "string", "description": "Action identifier" },
+        "severity": { "type": "string", "description": "info | warning | critical" },
+        "actorUid": { "type": "string", "description": "Actor UID" },
+        "targetUid": { "type": "string", "description": "Target user UID" },
+        "sessionId": { "type": "string", "description": "Related session ID" },
+        "details": { "type": "string", "description": "Human-readable audit summary" },
+        "createdAt": { "type": "timestamp", "description": "Event timestamp" }
+      }
     }
   }
 }

@@ -280,5 +280,98 @@ service cloud.firestore {
         }
       }
     }
+
+    // =========================================================================
+    // 🌍 YENİ ÜLKE & OTURUM GÜVENLİĞİ (/securitySessions, /securitySessionNetwork)
+    // =========================================================================
+    match /securitySessions/{sessionId} {
+      allow get: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow list: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+
+      allow create: if isAdmin() || (
+        isAuthenticated() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.sessionId == sessionId &&
+        request.resource.data.status in ['active', 'pending_verification'] &&
+        request.resource.data.trusted == (request.resource.data.status == 'active') &&
+        request.resource.data.adminDecision in ['pending', 'auto_trusted'] &&
+        (
+          request.resource.data.status == 'pending_verification' ||
+          !exists(/databases/$(database)/documents/userSecurityProfiles/$(request.auth.uid)) ||
+          request.resource.data.countryCode in get(/databases/$(database)/documents/userSecurityProfiles/$(request.auth.uid)).data.knownCountryCodes ||
+          request.resource.data.deviceId in get(/databases/$(database)/documents/userSecurityProfiles/$(request.auth.uid)).data.knownDeviceIds
+        )
+      );
+
+      allow update: if isAdmin() || (
+        isAuthenticated() &&
+        resource.data.userId == request.auth.uid &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.sessionId == resource.data.sessionId &&
+        (
+          // 1. Aktif oturum son görülme kalp atışı
+          (
+            resource.data.status == 'active' &&
+            request.resource.data.status == 'active' &&
+            request.resource.data.trusted == true &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastActiveAt'])
+          ) ||
+          // 2. Kullanıcı "Bu Benim" dedi (oturum kilidi açılmaz, admin onayı bekler)
+          (
+            resource.data.status == 'pending_verification' &&
+            request.resource.data.status == 'awaiting_admin_approval' &&
+            request.resource.data.userResponse == 'confirmed_me' &&
+            request.resource.data.trusted == false &&
+            request.resource.data.adminDecision == 'pending'
+          ) ||
+          // 3. Kullanıcı "Ben Değilim" dedi veya kendi oturumunu iptal etti
+          (
+            resource.data.status != 'revoked' &&
+            request.resource.data.status == 'revoked' &&
+            request.resource.data.trusted == false &&
+            request.resource.data.adminDecision == 'revoked'
+          )
+        )
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // IP adresleri & ağ metadatası YALNIZCA yetkili adminlere açıktır (PII izolasyonu)
+    match /securitySessionNetwork/{sessionId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() || (
+        isAuthenticated() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.sessionId == sessionId
+      );
+      allow update, delete: if isAdmin();
+    }
+
+    match /userSecurityProfiles/{userId} {
+      allow read: if isAdmin() || isOwner(userId);
+      allow create: if isAdmin() || (
+        isOwner(userId) &&
+        request.resource.data.uid == userId
+      );
+      // Normal kullanıcı kendi bilinen ülke listesini istemciden genişletemez
+      allow update: if isAdmin() || (
+        isOwner(userId) &&
+        request.resource.data.uid == userId &&
+        request.resource.data.knownCountryCodes == resource.data.knownCountryCodes
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Değiştirilemez Admin & Güvenlik Denetim Logları
+    match /adminLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() || (
+        isAuthenticated() &&
+        request.resource.data.actorUid == request.auth.uid &&
+        request.resource.data.category == 'security_session'
+      );
+      allow update, delete: if false;
+    }
   }
 }

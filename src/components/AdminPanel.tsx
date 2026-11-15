@@ -2,8 +2,10 @@ import { AdminVerificationTab } from './AdminVerificationTab';
 import { AdminIpBanTab } from './AdminIpBanTab';
 import { AdminAiUsersTab } from './AdminAiUsersTab';
 import { AdminPasswordResetTab } from './AdminPasswordResetTab';
+import { AdminSuspiciousSessionsTab } from './AdminSuspiciousSessionsTab';
 import { BanHardwareModal } from './BanHardwareModal';
 import { VideoLightboxModal } from './VideoLightboxModal';
+import { subscribeToAdminSecuritySessions } from '../services/sessionSecurityService';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { UserProfile, AppSettings, Conversation, ChatMessage, Channel, ChannelPost } from '../types';
 import {
@@ -73,6 +75,7 @@ import {
   Layers,
   MapPin,
   Radio,
+  Globe,
 } from 'lucide-react';
 
 interface AdminPanelProps {
@@ -106,7 +109,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     return map;
   }, [localUsers]);
 
-  const [activeTab, setActiveTab] = useState<'users' | 'ai_users' | 'ipbans' | 'password_resets' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'ai_users' | 'ipbans' | 'suspicious_sessions' | 'password_resets' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
+  const [pendingSuspiciousCount, setPendingSuspiciousCount] = useState(0);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    const unsub = subscribeToAdminSecuritySessions((list) => {
+      const count = list.filter(
+        (s) => s.status === 'pending_verification' || s.status === 'awaiting_admin_approval'
+      ).length;
+      setPendingSuspiciousCount(count);
+    });
+    return () => unsub();
+  }, [isAdmin]);
   const [hardwareBanModalOpen, setHardwareBanModalOpen] = useState(false);
   const [hardwareBanTargetUser, setHardwareBanTargetUser] = useState<UserProfile | null>(null);
   const [emailReviewModalOpen, setEmailReviewModalOpen] = useState(false);
@@ -1113,6 +1128,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <span>IP & Donanım Banları</span>
             </button>
             <button
+              id="admin-tab-suspicious-sessions"
+              onClick={() => setActiveTab('suspicious_sessions')}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                activeTab === 'suspicious_sessions'
+                  ? 'bg-red-600 text-white shadow-xs'
+                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+              }`}
+            >
+              <Globe className="w-3.5 h-3.5" />
+              <span>
+                Şüpheli Oturumlar{pendingSuspiciousCount > 0 ? ` (${pendingSuspiciousCount})` : ''}
+              </span>
+            </button>
+            <button
               onClick={() => setActiveTab('verifications')}
               className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                 activeTab === 'verifications'
@@ -1200,6 +1229,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           {/* TAB: IP & DONANIM (HARDWARE) BANLARI */}
           {activeTab === 'ipbans' && (
             <AdminIpBanTab
+              currentUser={currentUser}
+              allUsers={localUsers}
+            />
+          )}
+
+          {/* TAB: ŞÜPHELİ OTURUMLAR & YENİ ÜLKE GÜVENLİĞİ */}
+          {activeTab === 'suspicious_sessions' && (
+            <AdminSuspiciousSessionsTab
               currentUser={currentUser}
               allUsers={localUsers}
             />

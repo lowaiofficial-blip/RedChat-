@@ -10,6 +10,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { GoogleGenAI } from "@google/genai";
 import { Client } from "@gradio/client";
+import { registerSessionSecurityRoutes } from "./serverSecurity";
 
 
 dotenv.config();
@@ -46,6 +47,9 @@ async function startServer() {
 
   // JSON gövdeleri için middleware (görseller için 20mb limit)
   app.use(express.json({ limit: "20mb" }));
+
+  // 🌍 Yeni Ülke Girişi ve Oturum Güvenliği Rotaları
+  registerSessionSecurityRoutes(app);
 
   // 🌐 İstemci IP ve Cihaz Bilgisi Endpoint'i (IP & Hardware Ban Tespiti için)
   app.get("/api/client-info", (req, res) => {

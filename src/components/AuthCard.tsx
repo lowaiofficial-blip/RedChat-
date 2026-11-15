@@ -22,9 +22,10 @@ import {
 
 interface AuthCardProps {
   onAuthSuccess: () => void;
+  securityNotice?: string | null;
 }
 
-export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess }) => {
+export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess, securityNotice }) => {
   const [isLogin, setIsLogin] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -136,6 +137,14 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess }) => {
           {isLogin ? 'Sohbetlerine kaldığın yerden devam et.' : 'Arkadaşlarınla sohbet etmeye başla.'}
         </p>
       </div>
+
+      {/* Security Session Termination Alert */}
+      {securityNotice && (
+        <div className="mb-4 p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 rounded-xl flex items-start gap-2.5 text-xs text-amber-800 dark:text-amber-300">
+          <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-500" />
+          <span>{securityNotice}</span>
+        </div>
+      )}
 
       {/* Feedback Alert */}
       {error && (

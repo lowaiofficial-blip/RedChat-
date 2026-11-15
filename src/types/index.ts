@@ -339,3 +339,102 @@ export interface VerificationRequest {
   createdAt: any;
   updatedAt?: any;
 }
+
+// ==========================================
+// 🌍 YENİ ÜLKE & OTURUM GÜVENLİĞİ VERİ MODELLERİ
+// ==========================================
+
+export type SecuritySessionStatus =
+  | 'active'
+  | 'pending_verification'
+  | 'awaiting_admin_approval'
+  | 'revoked';
+
+export type SecuritySessionUserResponse =
+  | 'pending'
+  | 'confirmed_me'
+  | 'denied_not_me'
+  | 'not_required';
+
+export type SecuritySessionAdminDecision =
+  | 'pending'
+  | 'approved'
+  | 'revoked'
+  | 'auto_trusted';
+
+export interface SecuritySession {
+  id: string;
+  sessionId: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  photoURL: string | null;
+  deviceId: string;
+  deviceType: 'desktop' | 'tablet' | 'mobile' | 'unknown';
+  browserName: string;
+  osName: string;
+  countryCode: string;
+  countryName: string;
+  flagEmoji: string;
+  previousCountryCode?: string | null;
+  previousCountryName?: string | null;
+  isSuspicious: boolean;
+  trusted: boolean;
+  status: SecuritySessionStatus;
+  userResponse: SecuritySessionUserResponse;
+  adminDecision: SecuritySessionAdminDecision;
+  emailSent?: boolean;
+  emailStatus?: 'sent' | 'failed' | 'not_configured' | 'skipped';
+  emailError?: string | null;
+  createdAt: any;
+  lastActiveAt: any;
+  userRespondedAt?: any;
+  adminReviewedAt?: any;
+  adminReviewedBy?: string | null;
+  revokedAt?: any;
+  revokedBy?: string | null;
+  revokedReason?: string | null;
+}
+
+export interface SecuritySessionNetwork {
+  id: string;
+  sessionId: string;
+  userId: string;
+  ip: string;
+  city?: string | null;
+  region?: string | null;
+  isp?: string | null;
+  countryCode: string;
+  countryName: string;
+  userAgentRaw?: string;
+  proofHash?: string;
+  createdAt: any;
+  updatedAt?: any;
+}
+
+export interface UserSecurityProfile {
+  uid: string;
+  knownCountryCodes: string[];
+  knownDeviceIds: string[];
+  lastKnownCountryCode?: string | null;
+  lastKnownCountryName?: string | null;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export interface AdminLogEntry {
+  id: string;
+  category: 'security_session' | 'email_review' | 'moderation' | 'system';
+  action: string;
+  severity: 'info' | 'warning' | 'critical';
+  actorUid: string;
+  actorEmail?: string | null;
+  actorName?: string | null;
+  targetUid?: string | null;
+  targetUsername?: string | null;
+  sessionId?: string | null;
+  details: string;
+  metadata?: Record<string, any>;
+  createdAt: any;
+}
+

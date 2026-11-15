@@ -21,6 +21,10 @@ import {
 } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import type { UserProfile, BusinessProfile } from '../types';
+import {
+  markFreshLoginPending,
+  clearLocalSessionCredentials,
+} from './sessionSecurityService';
 
 export function validateUsername(username: string): { valid: boolean; error?: string } {
   const clean = username.trim();
@@ -73,6 +77,7 @@ export async function registerWithEmailAndUsername(params: {
   }
 
   // 3. Create user in Firebase Auth
+  markFreshLoginPending();
   const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
   const authUser = userCredential.user;
 
@@ -136,6 +141,7 @@ export async function loginWithEmail(email: string, password: string): Promise<U
     throw new Error('Firebase bağlantısı henüz hazır değil.');
   }
 
+  markFreshLoginPending();
   const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
   const user = userCredential.user;
 
@@ -157,6 +163,7 @@ export async function logoutUser(): Promise<void> {
   if (!auth) return;
 
   const currentUser = auth.currentUser;
+  clearLocalSessionCredentials(currentUser?.uid);
   if (currentUser && db) {
     try {
       const userDocRef = doc(db, 'users', currentUser.uid);

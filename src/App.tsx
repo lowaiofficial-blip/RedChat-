@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import type { User } from 'firebase/auth';
-import type { UserProfile, Conversation, AppSettings, GroupedNotificationData, GroupedNotificationMessage, Channel, ChannelNotification } from './types';
+import type { UserProfile, Conversation, AppSettings, GroupedNotificationData, GroupedNotificationMessage, Channel, ChannelNotification, SecuritySession } from './types';
 import {
   subscribeToAuthState,
   subscribeToUserProfile,
@@ -46,7 +46,13 @@ import { AdminPanel } from './components/AdminPanel';
 import { BannedScreen } from './components/BannedScreen';
 import { HardwareBannedScreen } from './components/HardwareBannedScreen';
 import { EmailReviewScreen } from './components/EmailReviewScreen';
+import { NewCountrySecurityScreen } from './components/NewCountrySecurityScreen';
 
+import {
+  registerOrVerifyDeviceSession,
+  subscribeToSessionStatus,
+  clearLocalSessionCredentials,
+} from './services/sessionSecurityService';
 import { subscribeToDeviceBanStatus, syncCurrentDeviceInfo, checkDeviceBanNow } from './services/deviceService';
 import { subscribeToBlockedUsers, unblockUser } from './services/blockService';
 import type { BannedDevice } from './types';
@@ -105,6 +111,13 @@ export default function App() {
   const [clientIp, setClientIp] = useState<string | null>(null);
   const [clientHwid, setClientHwid] = useState<string | null>(null);
   const [clientDeviceType, setClientDeviceType] = useState<'desktop' | 'tablet' | 'mobile' | 'unknown'>('desktop');
+
+  // 🌍 Yeni Ülke Girişi & Sunucu Doğrulamalı Cihaz Oturumu State'i
+  const [currentSecuritySession, setCurrentSecuritySession] = useState<SecuritySession | null>(null);
+  const [sessionCheckLoading, setSessionCheckLoading] = useState<boolean>(false);
+  const [sessionRevokedNotice, setSessionRevokedNotice] = useState<string | null>(null);
+  const currentSecuritySessionRef = React.useRef<SecuritySession | null>(null);
+  currentSecuritySessionRef.current = currentSecuritySession;
 
   // 🚫 Kullanıcı Engelleme State'i (Gerçek Zamanlı & Cihazlar Arası Senkron)
   const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
@@ -203,11 +216,89 @@ export default function App() {
       if (!user) {
         setCurrentUserProfile(null);
         setActiveConversationId(null);
+        setCurrentSecuritySession(null);
+        setSessionCheckLoading(false);
       }
     });
 
     return () => unsubscribeAuth();
   }, []);
+
+  // 1b. 🌍 Yeni Ülke Girişi & Cihaz Oturum Kaydı + Gerçek Zamanlı İptal Dinleyicisi
+  useEffect(() => {
+    if (!currentUserAuth) {
+      setCurrentSecuritySession(null);
+      setSessionCheckLoading(false);
+      return;
+    }
+
+    let isMounted = true;
+    setSessionCheckLoading(true);
+
+    registerOrVerifyDeviceSession(currentUserAuth)
+      .then(async ({ session }) => {
+        if (!isMounted) return;
+        if (session.status === 'revoked' && session.userResponse !== 'denied_not_me') {
+          clearLocalSessionCredentials(currentUserAuth.uid);
+          setSessionRevokedNotice('Bu cihazdaki oturumunuz güvenlik nedeniyle sonlandırıldı.');
+          await setUserOnlineStatus(currentUserAuth.uid, false);
+          await logoutUser();
+          return;
+        }
+        setSessionRevokedNotice(null);
+        setCurrentSecuritySession(session);
+        if (session.status !== 'active') {
+          setUserOnlineStatus(currentUserAuth.uid, false);
+        }
+      })
+      .catch(async (err: any) => {
+        console.warn('Oturum güvenlik doğrulaması hatası:', err);
+        if (err?.code === 'TOKEN_REVOKED') {
+          clearLocalSessionCredentials(currentUserAuth.uid);
+          setSessionRevokedNotice('Oturumunuz güvenlik nedeniyle sonlandırıldı. Lütfen tekrar giriş yapın.');
+          await setUserOnlineStatus(currentUserAuth.uid, false);
+          await logoutUser();
+        }
+      })
+      .finally(() => {
+        if (isMounted) setSessionCheckLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUserAuth]);
+
+  useEffect(() => {
+    if (!currentUserAuth?.uid || !currentSecuritySession?.sessionId) return;
+
+    const unsubSession = subscribeToSessionStatus(
+      currentSecuritySession.sessionId,
+      async (updatedSession) => {
+        if (!updatedSession) return;
+        setCurrentSecuritySession(updatedSession);
+
+        if (updatedSession.status !== 'active') {
+          setUserOnlineStatus(currentUserAuth.uid, false);
+        } else {
+          setUserOnlineStatus(currentUserAuth.uid, true);
+        }
+
+        // Yönetici veya başka bir oturum tarafından tekil/toplu kapatıldıysa bu cihazı derhal düşür
+        if (
+          updatedSession.status === 'revoked' &&
+          updatedSession.userResponse !== 'denied_not_me'
+        ) {
+          clearLocalSessionCredentials(currentUserAuth.uid);
+          setSessionRevokedNotice('Bu cihazdaki oturumunuz güvenlik nedeniyle sonlandırıldı.');
+          await setUserOnlineStatus(currentUserAuth.uid, false);
+          await logoutUser();
+        }
+      }
+    );
+
+    return () => unsubSession();
+  }, [currentUserAuth?.uid, currentSecuritySession?.sessionId]);
 
   // 2. Logged-in User Profile Listener
   useEffect(() => {
@@ -216,26 +307,31 @@ export default function App() {
     const userProfileRef = { current: currentUserProfile };
     userProfileRef.current = currentUserProfile;
 
+    const isLocked = () => {
+      const p = userProfileRef.current;
+      const s = currentSecuritySessionRef.current;
+      return Boolean(p?.isEmailInReview || p?.isBanned || (s && s.status !== 'active'));
+    };
+
     const unsubscribeProfile = subscribeToUserProfile(
       currentUserAuth.uid,
       (profile) => {
         setCurrentUserProfile(profile);
-        if (profile?.isEmailInReview || profile?.isBanned) {
+        if (profile?.isEmailInReview || profile?.isBanned || (currentSecuritySessionRef.current && currentSecuritySessionRef.current.status !== 'active')) {
           setUserOnlineStatus(currentUserAuth.uid, false);
         }
       }
     );
 
-    // Kullanıcı online durumunu ayarla ve pencere olaylarını dinle (İncelemede veya banlı değilse)
-    if (!currentUserProfile?.isEmailInReview && !currentUserProfile?.isBanned) {
+    // Kullanıcı online durumunu ayarla ve pencere olaylarını dinle (İncelemede/banlı/güvenlik kontrolünde değilse)
+    if (!isLocked()) {
       setUserOnlineStatus(currentUserAuth.uid, true);
     } else {
       setUserOnlineStatus(currentUserAuth.uid, false);
     }
 
     const handleVisibilityChange = () => {
-      const p = userProfileRef.current;
-      if (p?.isEmailInReview || p?.isBanned) {
+      if (isLocked()) {
         setUserOnlineStatus(currentUserAuth.uid, false);
         return;
       }
@@ -251,8 +347,7 @@ export default function App() {
     };
 
     const heartbeatInterval = setInterval(() => {
-      const p = userProfileRef.current;
-      if (p?.isEmailInReview || p?.isBanned) {
+      if (isLocked()) {
         setUserOnlineStatus(currentUserAuth.uid, false);
         return;
       }
@@ -759,7 +854,10 @@ export default function App() {
   if (!currentUserAuth || !currentUserProfile) {
     return (
       <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950 flex flex-col items-center justify-center p-4">
-        <AuthCard onAuthSuccess={() => {}} />
+        <AuthCard
+          securityNotice={sessionRevokedNotice}
+          onAuthSuccess={() => setSessionRevokedNotice(null)}
+        />
       </div>
     );
   }
@@ -779,6 +877,28 @@ export default function App() {
     return (
       <EmailReviewScreen
         user={currentUserProfile}
+        onLogout={logoutUser}
+      />
+    );
+  }
+
+  // 🌍 Oturum Güvenlik Kontrolü Yükleniyor
+  if (sessionCheckLoading && !currentSecuritySession) {
+    return (
+      <div className="min-h-screen bg-[#0c1317] text-zinc-200 flex flex-col items-center justify-center gap-3 p-4">
+        <Loader2 className="w-7 h-7 animate-spin text-red-500" />
+        <p className="text-xs font-medium text-zinc-400">Oturum güvenliği doğrulanıyor...</p>
+      </div>
+    );
+  }
+
+  // 🌍 Yeni Ülke / Şüpheli Oturum Güvenlik Ekranı (Karar verilmeden / onaylanmadan sohbet kilitlenir)
+  if (currentSecuritySession && currentSecuritySession.status !== 'active') {
+    return (
+      <NewCountrySecurityScreen
+        user={currentUserProfile}
+        session={currentSecuritySession}
+        onSessionUpdated={(updated) => setCurrentSecuritySession(updated)}
         onLogout={logoutUser}
       />
     );
