@@ -2,6 +2,7 @@ import React, { useState, useRef, useMemo } from 'react';
 import type { UserProfile } from '../types';
 import { createGroupConversation } from '../services/chatService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
+import { isUserEffectivelyBanned } from '../services/moderationService';
 import { UserAvatar } from './UserAvatar';
 import {
   X,
@@ -56,7 +57,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
         u &&
         u.uid &&
         u.uid !== currentUser.uid &&
-        !u.isBanned &&
+        !isUserEffectivelyBanned(u) &&
         !u.isEmailInReview &&
         !blockedUserIds.includes(u.uid)
     );
@@ -117,7 +118,7 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({
   const handleCreateGroup = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (currentUser.isBanned) {
+    if (isUserEffectivelyBanned(currentUser)) {
       setError('Hesabınız askıya alınmıştır (Banlandınız). Grup oluşturamazsınız.');
       return;
     }

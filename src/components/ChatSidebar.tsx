@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import type { UserProfile, Conversation, Channel } from '../types';
 import { formatLastSeen } from '../services/chatService';
-import { isUserAdmin } from '../services/adminService';
+import { isUserAdmin, isUserModerator } from '../services/adminService';
+import { isUserEffectivelyBanned } from '../services/moderationService';
 import { fetchChannelsRecentActivity } from '../services/channelService';
 import { UserAvatar } from './UserAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
@@ -20,6 +21,7 @@ import {
   ChevronUp,
   Image as ImageIcon,
   ShieldAlert,
+  ShieldCheck,
   Bot,
   Sparkles,
   Radio,
@@ -205,7 +207,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
     return users.filter(
       (u) =>
         u.uid !== currentUser.uid &&
-        !u.isBanned &&
+        !isUserEffectivelyBanned(u) &&
         !u.isEmailInReview &&
         !blockedUserIds.includes(u.uid)
     );
@@ -238,7 +240,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
       if (c.isGroup) return true;
       const otherParticipantId = c.participantIds.find((id) => id !== currentUser.uid);
       const userFromList = users.find((u) => u.uid === otherParticipantId);
-      if (userFromList?.isBanned) {
+      if (isUserEffectivelyBanned(userFromList)) {
         return c.id === activeConversationId;
       }
       return true;
@@ -1194,7 +1196,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
       <div className="relative border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900 p-2" ref={userMenuRef}>
         {userMenuOpen && (
           <div className="absolute bottom-full left-2 right-2 mb-2 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-2xl shadow-xl p-1.5 animate-in fade-in slide-in-from-bottom-2 z-30">
-            {isUserAdmin(currentUser) && (
+            {(isUserAdmin(currentUser) || isUserModerator(currentUser)) && (
               <button
                 onClick={() => {
                   setUserMenuOpen(false);
@@ -1204,10 +1206,23 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                     window.location.hash = '#/admin';
                   }
                 }}
-                className="w-full px-3 py-2 text-xs font-bold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer mb-1 border border-red-200/60 dark:border-red-900/40"
+                className={`w-full px-3 py-2 text-xs font-bold rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer mb-1 border ${
+                  isUserAdmin(currentUser)
+                    ? 'text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 border-red-200/60 dark:border-red-900/40'
+                    : 'text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/40 border-amber-200/60 dark:border-amber-900/40'
+                }`}
               >
-                <ShieldAlert className="w-4 h-4 text-red-600 dark:text-red-400" />
-                <span>Admin Paneli</span>
+                {isUserAdmin(currentUser) ? (
+                  <>
+                    <ShieldAlert className="w-4 h-4 text-red-600 dark:text-red-400" />
+                    <span>Admin Paneli</span>
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheck className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                    <span>Moderatör Paneli</span>
+                  </>
+                )}
               </button>
             )}
             <button

@@ -9,6 +9,7 @@ import {
   toggleChannelPostReaction,
   clearChannelPostReactions,
 } from '../services/channelService';
+import { isUserEffectivelyMuted, formatRemainingTime } from '../services/moderationService';
 import { uploadImageToImgBB } from '../services/imageUploadService';
 import {
   saveDraft,
@@ -1042,14 +1043,19 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
 
       {/* 4. ALT ÇUBUK: GÖNDERİ PAYLAŞMA (YALNIZCA KURUCU VEYA ADMİN) */}
       {(isOwner || isAdmin) ? (
-        currentUser.isMuted ? (
+        isUserEffectivelyMuted(currentUser) ? (
           <div className="p-3.5 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 shrink-0 z-20 shadow-sm">
             <div className="max-w-2xl mx-auto">
-              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 flex flex-col items-center justify-center text-center gap-2">
+              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 flex flex-col items-center justify-center text-center gap-1.5">
                 <AlertCircle className="w-5 h-5 text-red-500" />
                 <div className="text-xs text-red-600 dark:text-red-400 font-medium">
                   Hesabınız susturulduğu için şu anda kanalınızda paylaşım yapamazsınız.
                 </div>
+                {currentUser.muteType === 'temporary' && currentUser.muteExpiresAt && (
+                  <div className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+                    Kalan süre: {formatRemainingTime(currentUser.muteExpiresAt)}
+                  </div>
+                )}
               </div>
             </div>
           </div>

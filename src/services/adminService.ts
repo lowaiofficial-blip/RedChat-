@@ -25,6 +25,9 @@ export const ADMIN_EMAILS = [
   'gg00cat73@gmail.com',
 ];
 
+export const MUSE_MODERATOR_UID = 'GnQk5MbPQdS4GDl4cohFzRlKNw22';
+export const MUSE_MODERATOR_EMAIL = 'muse@gmail.com';
+
 /**
  * Kullanıcının yetkili bir admin olup olmadığını doğrular.
  * Kontrol email listesi (robloxenes930@gmail.com, gg00cat73@gmail.com),
@@ -53,6 +56,30 @@ export function isUserAdmin(
   }
 
   return false;
+}
+
+/**
+ * Muse hesabının UID + e-posta + Firestore rolü üzerinden doğrulanmış moderatör kontrolü.
+ * Yalnızca e-posta string kontrolüne asla güvenilmez.
+ */
+export function isUserModerator(
+  user?: UserProfile | { uid?: string | null; email?: string | null; role?: string | null } | null
+): boolean {
+  if (!user || isUserAdmin(user)) return false;
+
+  const uid = (user as any).uid || auth?.currentUser?.uid;
+  const authEmail = auth?.currentUser?.email?.trim().toLowerCase();
+  const profileEmail = user.email?.trim().toLowerCase();
+
+  return (
+    uid === MUSE_MODERATOR_UID &&
+    (authEmail === MUSE_MODERATOR_EMAIL || profileEmail === MUSE_MODERATOR_EMAIL) &&
+    user.role === 'moderator'
+  );
+}
+
+export function canAccessModerationPanel(user?: UserProfile | null): boolean {
+  return isUserAdmin(user) || isUserModerator(user);
 }
 
 /**
@@ -222,8 +249,11 @@ export async function unbanUser(
     userDocRef,
     {
       isBanned: false,
+      banType: null,
       banReason: null,
       bannedAt: null,
+      banExpiresAt: null,
+      bannedByUid: null,
       updatedAt: serverTimestamp(),
     },
     { merge: true }
@@ -302,8 +332,11 @@ export async function unmuteUser(
   const userDocRef = doc(db, 'users', targetUid);
   await updateDoc(userDocRef, {
     isMuted: false,
+    muteType: null,
     muteReason: null,
     mutedAt: null,
+    muteExpiresAt: null,
+    mutedByUid: null,
     updatedAt: serverTimestamp(),
   });
 }

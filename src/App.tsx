@@ -25,7 +25,15 @@ import {
   markAllChannelNotificationsAsRead,
   clearAllChannelNotifications,
 } from './services/channelService';
-import { subscribeToAppSettings, ADMIN_EMAILS } from './services/adminService';
+import { subscribeToAppSettings, ADMIN_EMAILS, isUserAdmin, isUserModerator } from './services/adminService';
+import {
+  verifyModeratorAuthority,
+  subscribeToModeratorGrant,
+  checkModerationExpiry,
+  isUserEffectivelyBanned,
+  toTimestampMs,
+  MUSE_MODERATOR_UID,
+} from './services/moderationService';
 import { subscribeUserDrafts, type DraftData } from './services/draftService';
 import { setupForegroundListener, requestNotificationPermissionAndToken } from './services/messagingService';
 import { db } from './services/firebase';
@@ -118,6 +126,10 @@ export default function App() {
   const [sessionRevokedNotice, setSessionRevokedNotice] = useState<string | null>(null);
   const currentSecuritySessionRef = React.useRef<SecuritySession | null>(null);
   currentSecuritySessionRef.current = currentSecuritySession;
+
+  // 🛡️ Sunucu Doğrulamalı Moderatör Yetkisi (Muse)
+  const [serverVerifiedModerator, setServerVerifiedModerator] = useState<boolean>(false);
+  const [moderatorGrantActive, setModeratorGrantActive] = useState<boolean | null>(null);
 
   // 🚫 Kullanıcı Engelleme State'i (Gerçek Zamanlı & Cihazlar Arası Senkron)
   const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
@@ -310,14 +322,14 @@ export default function App() {
     const isLocked = () => {
       const p = userProfileRef.current;
       const s = currentSecuritySessionRef.current;
-      return Boolean(p?.isEmailInReview || p?.isBanned || (s && s.status !== 'active'));
+      return Boolean(p?.isEmailInReview || isUserEffectivelyBanned(p) || (s && s.status !== 'active'));
     };
 
     const unsubscribeProfile = subscribeToUserProfile(
       currentUserAuth.uid,
       (profile) => {
         setCurrentUserProfile(profile);
-        if (profile?.isEmailInReview || profile?.isBanned || (currentSecuritySessionRef.current && currentSecuritySessionRef.current.status !== 'active')) {
+        if (profile?.isEmailInReview || isUserEffectivelyBanned(profile) || (currentSecuritySessionRef.current && currentSecuritySessionRef.current.status !== 'active')) {
           setUserOnlineStatus(currentUserAuth.uid, false);
         }
       }
@@ -638,6 +650,99 @@ export default function App() {
     }
   }, [currentUserAuth, currentUserProfile]);
 
+  // 🛡️ Muse Moderatör Yetkisi Gerçek Zamanlı Dinleme & Sunucu Doğrulaması
+  useEffect(() => {
+    if (!currentUserAuth?.uid || currentUserAuth.uid !== MUSE_MODERATOR_UID) {
+      setModeratorGrantActive(null);
+      setServerVerifiedModerator(false);
+      return;
+    }
+
+    const unsubGrant = subscribeToModeratorGrant(currentUserAuth.uid, (grant) => {
+      setModeratorGrantActive(Boolean(grant?.active));
+    });
+
+    return () => unsubGrant();
+  }, [currentUserAuth?.uid]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!currentUserAuth?.uid) {
+      setServerVerifiedModerator(false);
+      return;
+    }
+    if (currentUserAuth.uid !== MUSE_MODERATOR_UID && currentUserProfile?.role !== 'moderator') {
+      setServerVerifiedModerator(false);
+      return;
+    }
+
+    verifyModeratorAuthority()
+      .then((res) => {
+        if (!cancelled) {
+          setServerVerifiedModerator(Boolean(res.isModerator));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setServerVerifiedModerator(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserAuth?.uid, currentUserProfile?.role, moderatorGrantActive]);
+
+  // Yetkisi kaldırılan moderatör #/admin ekranındaysa anında sohbete döndür
+  useEffect(() => {
+    if (!currentUserProfile) return;
+    const onAdminHash = currentHash === '#/admin' || currentHash.startsWith('#/admin');
+    if (onAdminHash && !isUserAdmin(currentUserProfile) && !(isUserModerator(currentUserProfile) && serverVerifiedModerator)) {
+      // İlk doğrulama henüz tamamlanmadıysa hemen yönlendirme yapma (yalnızca grant kesin kapalıysa veya rolü user'a düştüyse)
+      if (currentUserProfile.role !== 'moderator' || moderatorGrantActive === false) {
+        window.location.hash = '#/';
+      }
+    }
+  }, [currentHash, currentUserProfile, serverVerifiedModerator, moderatorGrantActive]);
+
+  // ⏱️ Geçici Ban & Susturma Süresi Dolduğunda Otomatik Sunucu Senkronizasyonu
+  useEffect(() => {
+    if (!currentUserAuth?.uid || !currentUserProfile) return;
+
+    const banExpMs =
+      currentUserProfile.isBanned && currentUserProfile.banType === 'temporary'
+        ? toTimestampMs(currentUserProfile.banExpiresAt)
+        : 0;
+    const muteExpMs =
+      currentUserProfile.isMuted && currentUserProfile.muteType === 'temporary'
+        ? toTimestampMs(currentUserProfile.muteExpiresAt)
+        : 0;
+
+    const candidates = [banExpMs, muteExpMs].filter((ms) => ms > 0);
+    if (candidates.length === 0) return;
+
+    const nowMs = Date.now();
+    const earliestMs = Math.min(...candidates);
+
+    if (earliestMs <= nowMs) {
+      checkModerationExpiry().catch(() => {});
+      return;
+    }
+
+    const delayMs = Math.min(earliestMs - nowMs + 1000, 2147483000);
+    const timer = setTimeout(() => {
+      checkModerationExpiry().catch(() => {});
+    }, delayMs);
+
+    return () => clearTimeout(timer);
+  }, [
+    currentUserAuth?.uid,
+    currentUserProfile?.isBanned,
+    currentUserProfile?.banType,
+    currentUserProfile?.banExpiresAt,
+    currentUserProfile?.isMuted,
+    currentUserProfile?.muteType,
+    currentUserProfile?.muteExpiresAt,
+  ]);
+
   // Foreground Push Notification Listener (WhatsApp Tarzı Gruplama Destekli)
   useEffect(() => {
     if (!currentUserAuth) return;
@@ -862,11 +967,14 @@ export default function App() {
     );
   }
 
-  // 🚫 Ban Ekranı (Hesap askıya alınmışsa tam ekran açılır)
-  if (currentUserProfile.isBanned) {
+  // 🚫 Ban Ekranı (Hesap süreli veya kalıcı askıya alınmışsa tam ekran açılır)
+  if (isUserEffectivelyBanned(currentUserProfile)) {
     return (
       <BannedScreen
         user={currentUserProfile}
+        onCheckExpiry={async () => {
+          await checkModerationExpiry();
+        }}
         onLogout={logoutUser}
       />
     );
@@ -905,7 +1013,7 @@ export default function App() {
   }
 
 
-  // 🛡️ Admin Panel Route (/#/admin)
+  // 🛡️ Admin & Moderatör Panel Route (/#/admin)
   const isAdminRoute = currentHash === '#/admin' || currentHash.startsWith('#/admin');
   if (isAdminRoute) {
     return (
@@ -913,6 +1021,7 @@ export default function App() {
         currentUser={currentUserProfile}
         allUsers={displayedUsers}
         appSettings={appSettings}
+        isVerifiedModerator={serverVerifiedModerator && isUserModerator(currentUserProfile)}
         onNavigateHome={() => {
           window.location.hash = '#/';
         }}

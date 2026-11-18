@@ -14,13 +14,21 @@
         "updatedAt": { "type": "timestamp", "description": "Last update timestamp" },
         "isOnline": { "type": "boolean", "description": "Realtime online status" },
         "lastSeen": { "type": "timestamp", "description": "Last active timestamp" },
+        "role": { "type": "string", "description": "Account role: 'user' | 'moderator' | 'admin'" },
         "isVerified": { "type": "boolean", "description": "RedChat Verified badge status" },
+        "isEmailInReview": { "type": "boolean", "description": "Whether account is held for manual email verification review" },
         "isBanned": { "type": "boolean", "description": "Account ban status" },
+        "banType": { "type": "string", "description": "Ban type: 'temporary' | 'permanent' | null" },
         "banReason": { "type": "string", "description": "Account ban reason" },
         "bannedAt": { "type": "timestamp", "description": "Ban timestamp" },
+        "banExpiresAt": { "type": "timestamp", "description": "Temporary ban expiration timestamp" },
+        "bannedByUid": { "type": "string", "description": "Actor UID who applied ban" },
         "isMuted": { "type": "boolean", "description": "Account mute status" },
+        "muteType": { "type": "string", "description": "Mute type: 'temporary' | 'permanent' | null" },
         "muteReason": { "type": "string", "description": "Account mute reason" },
         "mutedAt": { "type": "timestamp", "description": "Mute timestamp" },
+        "muteExpiresAt": { "type": "timestamp", "description": "Temporary mute expiration timestamp" },
+        "mutedByUid": { "type": "string", "description": "Actor UID who applied mute" },
         "allowDirectMessages": { "type": "string", "description": "DM privacy preference: 'everyone' | 'none'" },
         "allowGroupAdditions": { "type": "string", "description": "Group addition preference: 'everyone' | 'none'" }
       }
@@ -219,6 +227,80 @@
         "sessionId": { "type": "string", "description": "Related session ID" },
         "details": { "type": "string", "description": "Human-readable audit summary" },
         "createdAt": { "type": "timestamp", "description": "Event timestamp" }
+      }
+    },
+    "ModeratorGrant": {
+      "path": "moderatorGrants/{uid}",
+      "fields": {
+        "id": { "type": "string", "description": "Target moderator UID" },
+        "uid": { "type": "string", "description": "Firebase Auth UID of moderator" },
+        "email": { "type": "string", "description": "Verified moderator email" },
+        "role": { "type": "string", "description": "Assigned role ('moderator')" },
+        "active": { "type": "boolean", "description": "Whether moderator grant is currently active" },
+        "grantedByUid": { "type": "string", "description": "Main admin UID who granted role" },
+        "grantedByEmail": { "type": "string", "description": "Main admin email" },
+        "grantedAt": { "type": "timestamp", "description": "Grant timestamp" },
+        "revokedAt": { "type": "timestamp", "description": "Revocation timestamp or null" },
+        "revokedByUid": { "type": "string", "description": "Main admin UID who revoked role" },
+        "updatedAt": { "type": "timestamp", "description": "Last update timestamp" }
+      }
+    },
+    "ModerationLogEntry": {
+      "path": "moderationLogs/{logId}",
+      "fields": {
+        "id": { "type": "string", "description": "Immutable log document ID" },
+        "actorUid": { "type": "string", "description": "Actor UID (admin, moderator, or system)" },
+        "actorEmail": { "type": "string", "description": "Actor email" },
+        "actorUsername": { "type": "string", "description": "Actor username" },
+        "actorRole": { "type": "string", "description": "admin | moderator | system" },
+        "targetUid": { "type": "string", "description": "Affected user UID" },
+        "targetUsername": { "type": "string", "description": "Affected username" },
+        "actionType": { "type": "string", "description": "temp_mute | unmute | temp_ban | unban | perm_ban | auto_mute_expired | auto_ban_expired | moderator_role_granted | moderator_role_revoked | report_reviewed" },
+        "reason": { "type": "string", "description": "Action reason" },
+        "startsAt": { "type": "timestamp", "description": "Action start timestamp" },
+        "endsAt": { "type": "timestamp", "description": "Temporary penalty expiration timestamp or null" },
+        "durationMinutes": { "type": "number", "description": "Penalty duration in minutes or null" },
+        "reportId": { "type": "string", "description": "Linked moderation report ID or null" },
+        "createdAt": { "type": "timestamp", "description": "Creation timestamp" }
+      }
+    },
+    "UserReport": {
+      "path": "userReports/{reportId}",
+      "fields": {
+        "id": { "type": "string", "description": "Complaint ID" },
+        "reporterUid": { "type": "string", "description": "UID of complainant" },
+        "reporterUsername": { "type": "string", "description": "Username of complainant" },
+        "reportedUid": { "type": "string", "description": "Reported user UID" },
+        "reportedUsername": { "type": "string", "description": "Reported username" },
+        "conversationId": { "type": "string", "description": "Related conversation ID or null" },
+        "messageId": { "type": "string", "description": "Related message ID or null" },
+        "messagePreview": { "type": "string", "description": "Short excerpt of reported message" },
+        "category": { "type": "string", "description": "spam | harassment | hate_speech | scam | inappropriate | other" },
+        "reason": { "type": "string", "description": "User-submitted complaint details" },
+        "status": { "type": "string", "description": "pending | reviewing | resolved | dismissed" },
+        "reviewedByUid": { "type": "string", "description": "Moderator or admin reviewer UID" },
+        "resolutionNote": { "type": "string", "description": "Optional moderation review note" },
+        "createdAt": { "type": "timestamp", "description": "Submission timestamp" },
+        "updatedAt": { "type": "timestamp", "description": "Last status update timestamp" }
+      }
+    },
+    "ModerationReport": {
+      "path": "moderationReports/{reportId}",
+      "fields": {
+        "id": { "type": "string", "description": "Moderation escalation report ID" },
+        "authorUid": { "type": "string", "description": "Author moderator or admin UID" },
+        "authorUsername": { "type": "string", "description": "Author username" },
+        "authorRole": { "type": "string", "description": "admin | moderator" },
+        "targetUid": { "type": "string", "description": "Reported target user UID" },
+        "targetUsername": { "type": "string", "description": "Reported target username" },
+        "conversationId": { "type": "string", "description": "Scoped conversation ID or null" },
+        "userReportId": { "type": "string", "description": "Linked userReport ID or null" },
+        "title": { "type": "string", "description": "Report title" },
+        "summary": { "type": "string", "description": "Inspection summary and findings" },
+        "riskLevel": { "type": "string", "description": "low | medium | high | critical" },
+        "recommendedAction": { "type": "string", "description": "Recommended escalation action" },
+        "messageCountReviewed": { "type": "number", "description": "Count of inspected messages" },
+        "createdAt": { "type": "timestamp", "description": "Creation timestamp" }
       }
     }
   }

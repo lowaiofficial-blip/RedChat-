@@ -68,14 +68,20 @@ export interface UserProfile {
   updatedAt: any;
   isOnline: boolean;
   lastSeen: any;
-  role?: 'admin' | 'user';
+  role?: 'admin' | 'moderator' | 'user';
   isVerified?: boolean;
   isBanned?: boolean;
-  banReason?: string;
+  banType?: 'permanent' | 'temporary' | null;
+  banReason?: string | null;
   bannedAt?: any;
+  banExpiresAt?: any;
+  bannedByUid?: string | null;
   isMuted?: boolean;
-  muteReason?: string;
+  muteType?: 'permanent' | 'temporary' | null;
+  muteReason?: string | null;
   mutedAt?: any;
+  muteExpiresAt?: any;
+  mutedByUid?: string | null;
   // ✉️ Manuel E-Posta İnceleme Alanları
   isEmailInReview?: boolean;
   emailInReviewAt?: any;
@@ -437,4 +443,96 @@ export interface AdminLogEntry {
   metadata?: Record<string, any>;
   createdAt: any;
 }
+
+// ==========================================
+// 🛡️ MODERASYON & YETKİLENDİRME VERİ MODELLERİ
+// ==========================================
+
+export interface ModeratorGrant {
+  id: string;
+  uid: string;
+  email: string;
+  role: 'moderator';
+  active: boolean;
+  grantedByUid: string;
+  grantedByEmail?: string | null;
+  grantedAt: any;
+  revokedAt?: any;
+  revokedByUid?: string | null;
+  updatedAt: any;
+}
+
+export type ModerationActionType =
+  | 'temp_mute'
+  | 'unmute'
+  | 'temp_ban'
+  | 'unban'
+  | 'perm_ban'
+  | 'auto_mute_expired'
+  | 'auto_ban_expired'
+  | 'moderator_role_granted'
+  | 'moderator_role_revoked'
+  | 'report_reviewed';
+
+export interface ModerationLogEntry {
+  id: string;
+  actorUid: string;
+  actorEmail?: string | null;
+  actorUsername?: string | null;
+  actorRole: 'admin' | 'moderator' | 'system';
+  targetUid: string;
+  targetUsername?: string | null;
+  actionType: ModerationActionType;
+  reason: string;
+  startsAt: any;
+  endsAt: any | null;
+  durationMinutes?: number | null;
+  reportId?: string | null;
+  createdAt: any;
+}
+
+export type UserReportCategory =
+  | 'spam'
+  | 'harassment'
+  | 'hate_speech'
+  | 'inappropriate'
+  | 'impersonation'
+  | 'other';
+
+export interface UserReport {
+  id: string;
+  reporterUid: string;
+  reporterUsername: string;
+  reportedUid: string;
+  reportedUsername: string;
+  conversationId?: string | null;
+  messageId?: string | null;
+  messageExcerpt?: string | null;
+  category: UserReportCategory;
+  reason: string;
+  status: 'pending' | 'reviewing' | 'resolved' | 'dismissed';
+  assignedModeratorUid?: string | null;
+  resolutionNote?: string | null;
+  reviewedByUid?: string | null;
+  createdAt: any;
+  updatedAt?: any;
+}
+
+export interface ModerationReport {
+  id: string;
+  authorUid: string;
+  authorUsername: string;
+  authorRole: 'admin' | 'moderator';
+  targetUid: string;
+  targetUsername?: string | null;
+  conversationId?: string | null;
+  userReportId?: string | null;
+  title: string;
+  summary: string;
+  riskLevel: 'low' | 'medium' | 'high' | 'critical';
+  recommendedAction?: string | null;
+  messageCountReviewed?: number;
+  createdAt: any;
+}
+
 

@@ -5,26 +5,33 @@ import { AdminPasswordResetTab } from './AdminPasswordResetTab';
 import { AdminSuspiciousSessionsTab } from './AdminSuspiciousSessionsTab';
 import { BanHardwareModal } from './BanHardwareModal';
 import { VideoLightboxModal } from './VideoLightboxModal';
+import { ModerationActionModal } from './ModerationActionModal';
+import { AdminModerationReportsTab, AdminModerationLogsTab } from './AdminModerationTabs';
 import { subscribeToAdminSecuritySessions } from '../services/sessionSecurityService';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type { UserProfile, AppSettings, Conversation, ChatMessage, Channel, ChannelPost } from '../types';
 import {
   isUserAdmin,
+  isUserModerator,
   updateVerifiedBadgeUrl,
   updateAIProfilePhotoUrl,
   setUserVerificationStatus,
   setUserEmailInReview,
-  banUser,
-
-  unbanUser,
-  muteUser,
-  unmuteUser,
   fetchRealAdminStats,
   fetchAllConversationsForAdmin,
   fetchAllMessagesForConversationAdmin,
   formatChatLogText,
   type AdminStats,
 } from '../services/adminService';
+import {
+  verifyModeratorAuthority,
+  fetchScopedConversationsForModeration,
+  fetchScopedMessagesForModeration,
+  submitModerationReport,
+  isUserEffectivelyBanned,
+  isUserEffectivelyMuted,
+  formatRemainingTime,
+} from '../services/moderationService';
 import {
   fetchAllChannelsForAdmin,
   setChannelVerification,
@@ -76,12 +83,17 @@ import {
   MapPin,
   Radio,
   Globe,
+  Flag,
+  History,
+  Clock,
+  Lock,
 } from 'lucide-react';
 
 interface AdminPanelProps {
   currentUser: UserProfile;
   allUsers: UserProfile[];
   appSettings: AppSettings | null;
+  isVerifiedModerator?: boolean;
   onNavigateHome: () => void;
 }
 
@@ -89,9 +101,49 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   currentUser,
   allUsers: initialAllUsers,
   appSettings,
+  isVerifiedModerator = false,
   onNavigateHome,
 }) => {
   const isAdmin = isUserAdmin(currentUser);
+  const [verifiedMod, setVerifiedMod] = useState<boolean>(isVerifiedModerator);
+  const [verifyingMod, setVerifyingMod] = useState<boolean>(false);
+
+  useEffect(() => {
+    setVerifiedMod(Boolean(isVerifiedModerator));
+  }, [isVerifiedModerator]);
+
+  useEffect(() => {
+    if (isAdmin) {
+      setVerifiedMod(false);
+      setVerifyingMod(false);
+      return;
+    }
+    if (!isUserModerator(currentUser)) {
+      setVerifiedMod(false);
+      setVerifyingMod(false);
+      return;
+    }
+
+    let cancelled = false;
+    setVerifyingMod(true);
+    verifyModeratorAuthority()
+      .then((res) => {
+        if (!cancelled) setVerifiedMod(Boolean(res.isModerator));
+      })
+      .catch(() => {
+        if (!cancelled) setVerifiedMod(false);
+      })
+      .finally(() => {
+        if (!cancelled) setVerifyingMod(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin, currentUser?.uid, currentUser?.role]);
+
+  const isModerator = !isAdmin && verifiedMod && isUserModerator(currentUser);
+  const hasPanelAccess = isAdmin || isModerator;
 
   // Yerel kullanıcı listesi (optimistik güncelleme desteğiyle)
   const [localUsers, setLocalUsers] = useState<UserProfile[]>(initialAllUsers);
@@ -109,8 +161,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     return map;
   }, [localUsers]);
 
-  const [activeTab, setActiveTab] = useState<'users' | 'ai_users' | 'ipbans' | 'suspicious_sessions' | 'password_resets' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'reports' | 'modlogs' | 'ai_users' | 'ipbans' | 'suspicious_sessions' | 'password_resets' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
   const [pendingSuspiciousCount, setPendingSuspiciousCount] = useState(0);
+
+  // Moderatör yalnızca izinli sekmelere erişebilir
+  useEffect(() => {
+    if (isModerator && !['users', 'reports', 'chatlogs', 'modlogs'].includes(activeTab)) {
+      setActiveTab('users');
+    }
+  }, [isModerator, activeTab]);
+
+  // Moderasyon Süreli Ban/Susturma Modalı
+  const [modActionModal, setModActionModal] = useState<{
+    user: UserProfile;
+    mode: 'mute' | 'unmute' | 'ban' | 'unban';
+  } | null>(null);
+
+  // Hızlı Sohbet Özet Raporlama Modalı (ChatLog Modal içinden)
+  const [quickSummaryOpen, setQuickSummaryOpen] = useState(false);
+  const [quickSummaryText, setQuickSummaryText] = useState('');
+  const [quickSummaryRisk, setQuickSummaryRisk] = useState<'low' | 'medium' | 'high' | 'critical'>('medium');
+  const [sendingQuickSummary, setSendingQuickSummary] = useState(false);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -332,13 +403,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // Sohbetleri çekme fonksiyonu (Admin Sohbet Logları)
+  // Sohbetleri çekme fonksiyonu (Admin: tümü, Moderatör: yalnızca yetkili kapsam)
   const loadConversations = async () => {
-    if (!isAdmin) return;
+    if (!hasPanelAccess) return;
     setLoadingConversations(true);
     try {
-      const convs = await fetchAllConversationsForAdmin(currentUser);
-      setAllConversations(convs);
+      if (isAdmin) {
+        const convs = await fetchAllConversationsForAdmin(currentUser);
+        setAllConversations(convs);
+      } else if (isModerator) {
+        const res = await fetchScopedConversationsForModeration();
+        setAllConversations(res.conversations as Conversation[]);
+      }
     } catch (err) {
       console.error('Sohbetler yüklenemedi:', err);
     } finally {
@@ -350,8 +426,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (isAdmin) {
       loadStats();
       loadConversations();
+    } else if (isModerator) {
+      loadConversations();
     }
-  }, [isAdmin]);
+  }, [isAdmin, isModerator]);
 
   // ObjectURL bellek temizliği
   useEffect(() => {
@@ -369,24 +447,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const filteredUsers = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return localUsers.filter((u) => {
+      const effBanned = isUserEffectivelyBanned(u);
+      const effMuted = isUserEffectivelyMuted(u);
       // Durum Filtresi
       if (userFilter === 'online' && !u.isOnline) return false;
-      if (userFilter === 'banned' && !u.isBanned) return false;
-      if (userFilter === 'muted' && !u.isMuted) return false;
+      if (userFilter === 'banned' && !effBanned) return false;
+      if (userFilter === 'muted' && !effMuted) return false;
       if (userFilter === 'verified' && !u.isVerified) return false;
       if (userFilter === 'email_review' && !u.isEmailInReview) return false;
 
-
-      // Metin Araması
+      // Metin Araması (Moderatör e-posta araması yapamaz — PII izolasyonu)
       if (!q) return true;
       return (
         u.username?.toLowerCase().includes(q) ||
         u.displayName?.toLowerCase().includes(q) ||
-        u.email?.toLowerCase().includes(q) ||
+        (isAdmin && u.email?.toLowerCase().includes(q)) ||
         u.uid.toLowerCase().includes(q)
       );
     });
-  }, [localUsers, searchQuery, userFilter]);
+  }, [localUsers, searchQuery, userFilter, isAdmin]);
 
   // UID Kopyalama
   const handleCopy = (text: string, uid: string) => {
@@ -610,8 +689,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // 🔨 Kullanıcı Banla / Ban Kaldır
-  const handleToggleUserBan = async (targetUser: UserProfile) => {
+  // 🔨 Kullanıcı Banla / Ban Kaldır (Sunucu Doğrulamalı Modal Üzerinden)
+  const handleToggleUserBan = (targetUser: UserProfile) => {
     if (processingUid) return;
     if (targetUser.uid === currentUser.uid) {
       setUserActionError('Kendi hesabınızı banlayamazsınız.');
@@ -621,94 +700,45 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setUserActionError('DeepRed AI sistem asistanı banlanamaz.');
       return;
     }
-
-    setProcessingUid(targetUser.uid);
+    const isCurrentlyBanned = isUserEffectivelyBanned(targetUser);
+    if (!isAdmin) {
+      if (targetUser.role === 'admin' || targetUser.role === 'moderator') {
+        setUserActionError('Yönetici veya moderatör hesaplarına işlem yapamazsınız.');
+        return;
+      }
+      if (isCurrentlyBanned && (targetUser.banType !== 'temporary' || !targetUser.banExpiresAt)) {
+        setUserActionError('Kalıcı banı yalnızca Ana Yönetici kaldırabilir.');
+        return;
+      }
+    }
     setUserActionError(null);
-    setUserActionSuccess(null);
-
-    const isCurrentlyBanned = Boolean(targetUser.isBanned);
-    const name = targetUser.displayName || targetUser.username;
-    const newBanStatus = !isCurrentlyBanned;
-
-    // Optimistik yerel güncelleme
-    setLocalUsers((prev) =>
-      prev.map((u) =>
-        u.uid === targetUser.uid ? { ...u, isBanned: newBanStatus } : u
-      )
-    );
-    if (inspectingUser && inspectingUser.uid === targetUser.uid) {
-      setInspectingUser((prev) => (prev ? { ...prev, isBanned: newBanStatus } : null));
-    }
-
-    try {
-      if (isCurrentlyBanned) {
-        await unbanUser(currentUser, targetUser.uid);
-        setUserActionSuccess(`✓ ${name} kullanıcısının banı kaldırıldı.`);
-      } else {
-        await banUser(currentUser, targetUser.uid, 'Admin tarafından askıya alındı');
-        setUserActionSuccess(`✓ ${name} kullanıcısı başarıyla banlandı.`);
-      }
-    } catch (err: any) {
-      console.error('Ban işlemi hatası:', err);
-      // Geri al
-      setLocalUsers((prev) =>
-        prev.map((u) =>
-          u.uid === targetUser.uid ? { ...u, isBanned: isCurrentlyBanned } : u
-        )
-      );
-      if (inspectingUser && inspectingUser.uid === targetUser.uid) {
-        setInspectingUser((prev) => (prev ? { ...prev, isBanned: isCurrentlyBanned } : null));
-      }
-      setUserActionError(err?.message || 'Ban işlemi gerçekleştirilemedi.');
-    } finally {
-      setProcessingUid(null);
-    }
+    setModActionModal({
+      user: targetUser,
+      mode: isCurrentlyBanned ? 'unban' : 'ban',
+    });
   };
 
-  // 🔇 Kullanıcı Sustur / Susturmayı Kaldır
-  const handleToggleUserMute = async (targetUser: UserProfile) => {
+  // 🔇 Kullanıcı Sustur / Susturmayı Kaldır (Sunucu Doğrulamalı Modal Üzerinden)
+  const handleToggleUserMute = (targetUser: UserProfile) => {
     if (processingUid) return;
-    setProcessingUid(targetUser.uid);
+    if (targetUser.uid === currentUser.uid) {
+      setUserActionError('Kendi hesabınızı susturamazsınız.');
+      return;
+    }
+    if (targetUser.isSystemAI) {
+      setUserActionError('DeepRed AI susturulamaz.');
+      return;
+    }
+    if (!isAdmin && (targetUser.role === 'admin' || targetUser.role === 'moderator')) {
+      setUserActionError('Yönetici veya moderatör hesaplarına işlem yapamazsınız.');
+      return;
+    }
+    const isCurrentlyMuted = isUserEffectivelyMuted(targetUser);
     setUserActionError(null);
-    setUserActionSuccess(null);
-
-    const isCurrentlyMuted = Boolean(targetUser.isMuted);
-    const name = targetUser.displayName || targetUser.username;
-    const newMuteStatus = !isCurrentlyMuted;
-
-    // Optimistik yerel güncelleme
-    setLocalUsers((prev) =>
-      prev.map((u) =>
-        u.uid === targetUser.uid ? { ...u, isMuted: newMuteStatus } : u
-      )
-    );
-    if (inspectingUser && inspectingUser.uid === targetUser.uid) {
-      setInspectingUser((prev) => (prev ? { ...prev, isMuted: newMuteStatus } : null));
-    }
-
-    try {
-      if (isCurrentlyMuted) {
-        await unmuteUser(currentUser, targetUser.uid);
-        setUserActionSuccess(`✓ ${name} kullanıcısının susturması kaldırıldı.`);
-      } else {
-        await muteUser(currentUser, targetUser.uid, 'Uygunsuz mesaj davranışı');
-        setUserActionSuccess(`✓ ${name} kullanıcısı susturuldu.`);
-      }
-    } catch (err: any) {
-      console.error('Susturma işlemi hatası:', err);
-      // Geri al
-      setLocalUsers((prev) =>
-        prev.map((u) =>
-          u.uid === targetUser.uid ? { ...u, isMuted: isCurrentlyMuted } : u
-        )
-      );
-      if (inspectingUser && inspectingUser.uid === targetUser.uid) {
-        setInspectingUser((prev) => (prev ? { ...prev, isMuted: isCurrentlyMuted } : null));
-      }
-      setUserActionError(err?.message || 'Susturma işlemi gerçekleştirilemedi.');
-    } finally {
-      setProcessingUid(null);
-    }
+    setModActionModal({
+      user: targetUser,
+      mode: isCurrentlyMuted ? 'unmute' : 'mute',
+    });
   };
 
   // ✉️ Manuel E-Posta İnceleme İşlemi
@@ -772,15 +802,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setLogMessages([]);
     setLogMessageSearch('');
     setSelectedStartMsgId(null);
+    setQuickSummaryOpen(false);
+    setQuickSummaryText('');
     setLoadingLogMessages(true);
     setCopiedLogSuccess(false);
     setCopiedLogError(null);
 
     try {
-      const messages = await fetchAllMessagesForConversationAdmin(currentUser, conv.id);
-      setLogMessages(messages);
-    } catch (err) {
+      const messages = isAdmin
+        ? await fetchAllMessagesForConversationAdmin(currentUser, conv.id)
+        : (await fetchScopedMessagesForModeration(conv.id)).messages;
+      setLogMessages(messages as ChatMessage[]);
+    } catch (err: any) {
       console.error('Mesaj logları yüklenemedi:', err);
+      setCopiedLogError(err?.message || 'Bu sohbet loguna erişim yetkiniz yok.');
     } finally {
       setLoadingLogMessages(false);
     }
@@ -1026,8 +1061,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const currentBadgeUrl = appSettings?.verifiedBadgeUrl || null;
 
-  // Yetkisiz Giriş Koruması
-  if (!isAdmin) {
+  // Yetkisiz Giriş & Doğrulama Koruması
+  if (!hasPanelAccess) {
+    if (verifyingMod) {
+      return (
+        <div className="w-full h-full min-h-[100dvh] flex flex-col items-center justify-center gap-3 p-6 bg-zinc-50 dark:bg-zinc-950 text-center">
+          <Loader2 className="w-7 h-7 animate-spin text-amber-500" />
+          <p className="text-xs font-semibold text-zinc-500">Moderatör yetkisi sunucu üzerinden doğrulanıyor...</p>
+        </div>
+      );
+    }
+
     return (
       <div className="w-full h-full min-h-[100dvh] flex flex-col items-center justify-center p-6 bg-zinc-50 dark:bg-zinc-950 text-center">
         <div className="w-16 h-16 rounded-3xl bg-rose-50 dark:bg-rose-950/40 text-rose-600 flex items-center justify-center mb-4 shadow-sm border border-rose-200 dark:border-rose-900/50">
@@ -1037,7 +1081,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           Yetkisiz Erişim
         </h2>
         <p className="text-xs text-zinc-500 max-w-sm mb-6 leading-relaxed">
-          Admin Paneline yalnızca sistem yöneticileri erişebilir.
+          Bu panele yalnızca sistem yöneticileri ve yetkili moderatörler erişebilir.
         </p>
         <button
           onClick={onNavigateHome}
@@ -1051,10 +1095,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   return (
     <div className="w-full h-full min-h-[100dvh] max-h-[100dvh] flex flex-col bg-zinc-50 dark:bg-zinc-950 overflow-hidden antialiased text-zinc-900 dark:text-zinc-100">
-      {/* 🔴 ADMIN PANELİ ÜST BAŞLIK & NAVİGASYON BAR (TAM RESPONSIVE) */}
+      {/* 🔴 ADMIN / MODERATÖR PANELİ ÜST BAŞLIK & NAVİGASYON BAR */}
       <header className="shrink-0 border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-xs z-10">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 py-2.5 sm:py-3 flex flex-col md:flex-row md:items-center justify-between gap-3">
-          {/* Sol: Logo + Başlık + Giriş Yapan Admin */}
+          {/* Sol: Logo + Başlık + Giriş Yapan Yetkili */}
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
               <button
@@ -1064,25 +1108,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               >
                 <ArrowLeft className="w-5 h-5" />
               </button>
-              <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-red-600 text-white flex items-center justify-center font-black shadow-xs shrink-0">
-                <Shield className="w-4 h-4 sm:w-5 sm:h-5" />
+              <div className={`w-8 h-8 sm:w-9 sm:h-9 rounded-xl text-white flex items-center justify-center font-black shadow-xs shrink-0 ${isAdmin ? 'bg-red-600' : 'bg-amber-600'}`}>
+                {isAdmin ? <Shield className="w-4 h-4 sm:w-5 sm:h-5" /> : <ShieldCheck className="w-4 h-4 sm:w-5 sm:h-5" />}
               </div>
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <h1 className="text-sm sm:text-base font-black text-zinc-900 dark:text-zinc-100 tracking-tight">
-                    RedChat Admin
+                    {isAdmin ? 'RedChat Admin' : 'RedChat Moderasyon'}
                   </h1>
-                  <span className="px-1.5 py-0.5 rounded-md bg-red-100 dark:bg-red-950/80 text-red-600 dark:text-red-400 text-[10px] font-extrabold uppercase">
-                    4C Moderasyon
+                  <span
+                    className={`px-1.5 py-0.5 rounded-md text-[10px] font-extrabold uppercase ${
+                      isAdmin
+                        ? 'bg-red-100 dark:bg-red-950/80 text-red-600 dark:text-red-400'
+                        : 'bg-amber-100 dark:bg-amber-950/80 text-amber-600 dark:text-amber-400'
+                    }`}
+                  >
+                    {isAdmin ? 'Ana Yönetici' : 'Moderatör (Sınırlı Yetki)'}
                   </span>
                 </div>
                 <p className="text-[11px] text-zinc-400 truncate max-w-[240px] sm:max-w-xs">
-                  {currentUser.displayName || currentUser.username} ({currentUser.email})
+                  {currentUser.displayName || currentUser.username} (@{currentUser.username})
                 </p>
               </div>
             </div>
 
-            {/* Mobil Geri Dön Butonu (Hızlı Buton) */}
             <button
               onClick={onNavigateHome}
               className="md:hidden px-2.5 py-1.5 text-[11px] font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-200 rounded-lg hover:bg-zinc-200 transition-colors cursor-pointer"
@@ -1091,7 +1140,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </button>
           </div>
 
-          {/* Sağ: Sekmeler (Yatay Kaydırılabilir) */}
+          {/* Sağ: Sekmeler */}
           <nav className="flex items-center gap-1 bg-zinc-100/90 dark:bg-zinc-800/90 p-1 rounded-xl overflow-x-auto no-scrollbar max-w-full">
             <button
               onClick={() => setActiveTab('users')}
@@ -1104,53 +1153,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <Users className="w-3.5 h-3.5" />
               <span>Kullanıcılar ({localUsers.length})</span>
             </button>
+
             <button
-              id="admin-tab-ai-users"
-              onClick={() => setActiveTab('ai_users')}
+              id="admin-tab-reports"
+              onClick={() => {
+                setActiveTab('reports');
+                loadConversations();
+              }}
               className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-                activeTab === 'ai_users'
-                  ? 'bg-white dark:bg-zinc-900 text-rose-600 dark:text-rose-400 shadow-xs'
+                activeTab === 'reports'
+                  ? 'bg-white dark:bg-zinc-900 text-amber-600 dark:text-amber-400 shadow-xs'
                   : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
               }`}
             >
-              <Bot className="w-3.5 h-3.5" />
-              <span>AI Kullanıcı Durumları</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('ipbans')}
-              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-                activeTab === 'ipbans'
-                  ? 'bg-red-600 text-white shadow-xs'
-                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
-              }`}
-            >
-              <ShieldAlert className="w-3.5 h-3.5" />
-              <span>IP & Donanım Banları</span>
-            </button>
-            <button
-              id="admin-tab-suspicious-sessions"
-              onClick={() => setActiveTab('suspicious_sessions')}
-              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-                activeTab === 'suspicious_sessions'
-                  ? 'bg-red-600 text-white shadow-xs'
-                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
-              }`}
-            >
-              <Globe className="w-3.5 h-3.5" />
-              <span>
-                Şüpheli Oturumlar{pendingSuspiciousCount > 0 ? ` (${pendingSuspiciousCount})` : ''}
-              </span>
-            </button>
-            <button
-              onClick={() => setActiveTab('verifications')}
-              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-                activeTab === 'verifications'
-                  ? 'bg-white dark:bg-zinc-900 text-red-600 dark:text-red-400 shadow-xs'
-                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
-              }`}
-            >
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Doğrulamalar</span>
+              <Flag className="w-3.5 h-3.5" />
+              <span>Şikâyetler & Raporlar</span>
             </button>
 
             <button
@@ -1165,85 +1182,167 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               }`}
             >
               <FileText className="w-3.5 h-3.5" />
-              <span>Sohbet Logları ({allConversations.length})</span>
+              <span>{isAdmin ? `Sohbet Logları (${allConversations.length})` : `Sohbet İnceleme (${allConversations.length})`}</span>
             </button>
 
             <button
-              id="admin-tab-channels"
-              onClick={() => {
-                setActiveTab('channels');
-                loadAdminChannels();
-              }}
+              id="admin-tab-modlogs"
+              onClick={() => setActiveTab('modlogs')}
               className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-                activeTab === 'channels'
-                  ? 'bg-white dark:bg-zinc-900 text-red-600 dark:text-red-400 shadow-xs'
+                activeTab === 'modlogs'
+                  ? 'bg-white dark:bg-zinc-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
                   : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
               }`}
             >
-              <Radio className="w-3.5 h-3.5" />
-              <span>Kanallar ({adminChannels.length})</span>
+              <History className="w-3.5 h-3.5" />
+              <span>Moderasyon Kayıtları</span>
             </button>
 
-            <button
-              onClick={() => setActiveTab('badge')}
-              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-                activeTab === 'badge'
-                  ? 'bg-white dark:bg-zinc-900 text-blue-600 dark:text-blue-400 shadow-xs'
-                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
-              }`}
-            >
-              <BadgeCheck className="w-3.5 h-3.5" />
-              <span>Mavi Tik PNG</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('ai')}
-              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-                activeTab === 'ai'
-                  ? 'bg-white dark:bg-zinc-900 text-fuchsia-600 dark:text-fuchsia-400 shadow-xs'
-                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
-              }`}
-            >
-              <Bot className="w-3.5 h-3.5" />
-              <span>DeepRed AI Profil</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('overview')}
-              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-                activeTab === 'overview'
-                  ? 'bg-white dark:bg-zinc-900 text-emerald-600 dark:text-emerald-400 shadow-xs'
-                  : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
-              }`}
-            >
-              <Activity className="w-3.5 h-3.5" />
-              <span>İstatistikler</span>
-            </button>
+            {isAdmin && (
+              <>
+                <button
+                  id="admin-tab-ai-users"
+                  onClick={() => setActiveTab('ai_users')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                    activeTab === 'ai_users'
+                      ? 'bg-white dark:bg-zinc-900 text-rose-600 dark:text-rose-400 shadow-xs'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                  }`}
+                >
+                  <Bot className="w-3.5 h-3.5" />
+                  <span>AI Kullanıcı Durumları</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('ipbans')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                    activeTab === 'ipbans'
+                      ? 'bg-red-600 text-white shadow-xs'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                  }`}
+                >
+                  <ShieldAlert className="w-3.5 h-3.5" />
+                  <span>IP & Donanım Banları</span>
+                </button>
+                <button
+                  id="admin-tab-suspicious-sessions"
+                  onClick={() => setActiveTab('suspicious_sessions')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                    activeTab === 'suspicious_sessions'
+                      ? 'bg-red-600 text-white shadow-xs'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                  }`}
+                >
+                  <Globe className="w-3.5 h-3.5" />
+                  <span>
+                    Şüpheli Oturumlar{pendingSuspiciousCount > 0 ? ` (${pendingSuspiciousCount})` : ''}
+                  </span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('verifications')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                    activeTab === 'verifications'
+                      ? 'bg-white dark:bg-zinc-900 text-red-600 dark:text-red-400 shadow-xs'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                  }`}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>Doğrulamalar</span>
+                </button>
+                <button
+                  id="admin-tab-channels"
+                  onClick={() => {
+                    setActiveTab('channels');
+                    loadAdminChannels();
+                  }}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                    activeTab === 'channels'
+                      ? 'bg-white dark:bg-zinc-900 text-red-600 dark:text-red-400 shadow-xs'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                  }`}
+                >
+                  <Radio className="w-3.5 h-3.5" />
+                  <span>Kanallar ({adminChannels.length})</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('badge')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                    activeTab === 'badge'
+                      ? 'bg-white dark:bg-zinc-900 text-blue-600 dark:text-blue-400 shadow-xs'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                  }`}
+                >
+                  <BadgeCheck className="w-3.5 h-3.5" />
+                  <span>Mavi Tik PNG</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('ai')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                    activeTab === 'ai'
+                      ? 'bg-white dark:bg-zinc-900 text-fuchsia-600 dark:text-fuchsia-400 shadow-xs'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                  }`}
+                >
+                  <Bot className="w-3.5 h-3.5" />
+                  <span>DeepRed AI Profil</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('overview')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                    activeTab === 'overview'
+                      ? 'bg-white dark:bg-zinc-900 text-emerald-600 dark:text-emerald-400 shadow-xs'
+                      : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                  }`}
+                >
+                  <Activity className="w-3.5 h-3.5" />
+                  <span>İstatistikler</span>
+                </button>
+              </>
+            )}
           </nav>
         </div>
       </header>
 
-      {/* 📱💻 ANA İÇERİK ALANI (TÜM BOYUTLARDA EKRANI DOLDURUR, BOŞLUK BIRAKMAZ) */}
+      {/* 📱💻 ANA İÇERİK ALANI */}
       <main className="flex-1 w-full overflow-y-auto overflow-x-hidden p-3 sm:p-5 md:p-8">
         <div className="max-w-7xl mx-auto space-y-6">
-          {/* TAB: IP & DONANIM (HARDWARE) BANLARI */}
-          {activeTab === 'ipbans' && (
+          {/* TAB: ŞİKÂYETLER & ŞÜPHELİ DAVRANIŞ RAPORLAMA */}
+          {activeTab === 'reports' && (
+            <AdminModerationReportsTab
+              currentUser={currentUser}
+              allUsers={localUsers}
+              scopedConversations={allConversations}
+              onInspectConversation={(conv) => handleOpenChatLog(conv)}
+              onInspectUser={(u) => setInspectingUser(u)}
+            />
+          )}
+
+          {/* TAB: MODERASYON KAYITLARI & MUSE YETKİ YÖNETİMİ */}
+          {activeTab === 'modlogs' && (
+            <AdminModerationLogsTab
+              currentUser={currentUser}
+              allUsers={localUsers}
+              isMainAdmin={isAdmin}
+            />
+          )}
+
+          {/* TAB: IP & DONANIM BANLARI (Yalnızca Ana Yönetici) */}
+          {isAdmin && activeTab === 'ipbans' && (
             <AdminIpBanTab
               currentUser={currentUser}
               allUsers={localUsers}
             />
           )}
 
-          {/* TAB: ŞÜPHELİ OTURUMLAR & YENİ ÜLKE GÜVENLİĞİ */}
-          {activeTab === 'suspicious_sessions' && (
+          {/* TAB: ŞÜPHELİ OTURUMLAR (Yalnızca Ana Yönetici) */}
+          {isAdmin && activeTab === 'suspicious_sessions' && (
             <AdminSuspiciousSessionsTab
               currentUser={currentUser}
               allUsers={localUsers}
             />
           )}
 
-          {/* TAB: AI KULLANICI DURUMLARI */}
-          {activeTab === 'ai_users' && (
+          {/* TAB: AI KULLANICI DURUMLARI (Yalnızca Ana Yönetici) */}
+          {isAdmin && activeTab === 'ai_users' && (
             <AdminAiUsersTab
               currentUser={currentUser}
               allUsers={localUsers}
@@ -1256,7 +1355,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           )}
 
           {/* TAB 1: KULLANICI YÖNETİMİ & MODERASYON */}
-          {activeTab === 'verifications' && <AdminVerificationTab />}
+          {isAdmin && activeTab === 'verifications' && <AdminVerificationTab />}
 
           {activeTab === 'users' && (
             <div className="space-y-5">
@@ -1282,7 +1381,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Kullanıcı adı, isim, e-posta veya UID ile ara..."
+                    placeholder={isAdmin ? 'Kullanıcı adı, isim, e-posta veya UID ile ara...' : 'Kullanıcı adı, isim veya UID ile ara...'}
                     className="w-full pl-9 pr-4 py-2 bg-zinc-50 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700/80 rounded-xl text-xs text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500"
                   />
                 </div>
@@ -1316,7 +1415,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900'
                     }`}
                   >
-                    Banlı ({localUsers.filter((u) => u.isBanned).length})
+                    Banlı ({localUsers.filter((u) => isUserEffectivelyBanned(u)).length})
                   </button>
                   <button
                     onClick={() => setUserFilter('muted')}
@@ -1326,7 +1425,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900'
                     }`}
                   >
-                    Susturulmuş ({localUsers.filter((u) => u.isMuted).length})
+                    Susturulmuş ({localUsers.filter((u) => isUserEffectivelyMuted(u)).length})
                   </button>
                   <button
                     onClick={() => setUserFilter('email_review')}
@@ -1466,88 +1565,100 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </div>
 
                         {/* Alt: Butonlar */}
-                        <div className="grid grid-cols-5 gap-1.5 pt-1">
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
                           <button
                             onClick={() => setInspectingUser(user)}
-                            className="py-1.5 px-1.5 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 text-zinc-700 dark:text-zinc-300 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer"
+                            className="flex-1 min-w-[70px] py-1.5 px-2 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 text-zinc-700 dark:text-zinc-300 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer"
                           >
                             <Eye className="w-3.5 h-3.5" />
                             <span>İncele</span>
                           </button>
 
-                          <button
-                            onClick={() => {
-                              setEmailReviewTargetUser(user);
-                              setEmailReviewModalOpen(true);
-                            }}
-                            disabled={isProcessing}
-                            className={`py-1.5 px-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 ${
-                              user.isEmailInReview
-                                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
-                                : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
-                            }`}
-                            title={user.isEmailInReview ? 'E-Posta İncelemesini Kaldır' : 'E-Posta İncelemesine Al'}
-                          >
-                            <Mail className="w-3.5 h-3.5" />
-                            <span>Mail</span>
-                          </button>
+                          {isAdmin && (
+                            <>
+                              <button
+                                onClick={() => {
+                                  setEmailReviewTargetUser(user);
+                                  setEmailReviewModalOpen(true);
+                                }}
+                                disabled={isProcessing}
+                                className={`py-1.5 px-2 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 ${
+                                  user.isEmailInReview
+                                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                                    : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
+                                }`}
+                                title={user.isEmailInReview ? 'E-Posta İncelemesini Kaldır' : 'E-Posta İncelemesine Al'}
+                              >
+                                <Mail className="w-3.5 h-3.5" />
+                                <span>Mail</span>
+                              </button>
 
-                          <button
-                            onClick={() => handleToggleUserVerification(user)}
-                            disabled={isProcessing}
-                            className={`py-1.5 px-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 ${
-                              isVerified
-                                ? 'bg-blue-50 text-blue-600 border border-blue-200 dark:border-blue-900/40'
-                                : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
-                            }`}
-                          >
-                            <BadgeCheck className="w-3.5 h-3.5" />
-                            <span>Tik</span>
-                          </button>
+                              <button
+                                onClick={() => handleToggleUserVerification(user)}
+                                disabled={isProcessing}
+                                className={`py-1.5 px-2 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 ${
+                                  isVerified
+                                    ? 'bg-blue-50 text-blue-600 border border-blue-200 dark:border-blue-900/40'
+                                    : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
+                                }`}
+                              >
+                                <BadgeCheck className="w-3.5 h-3.5" />
+                                <span>Tik</span>
+                              </button>
+                            </>
+                          )}
 
                           <button
                             onClick={() => handleToggleUserMute(user)}
-                            disabled={isProcessing}
-                            className={`py-1.5 px-1.5 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 ${
-                              isMuted
+                            disabled={isProcessing || (!isAdmin && (user.role === 'admin' || user.role === 'moderator' || Boolean(user.isSystemAI)))}
+                            className={`flex-1 min-w-[70px] py-1.5 px-2 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 ${
+                              isUserEffectivelyMuted(user)
                                 ? 'bg-amber-100 text-amber-700 border border-amber-300'
                                 : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'
                             }`}
                           >
-                            {isMuted ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
-                            <span>{isMuted ? 'Aç' : 'Sustur'}</span>
+                            {isUserEffectivelyMuted(user) ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+                            <span>{isUserEffectivelyMuted(user) ? 'Aç' : 'Sustur'}</span>
                           </button>
-
 
                           <button
                             onClick={() => handleToggleUserBan(user)}
-                            disabled={isProcessing}
-                            className={`py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-50 ${
-                              isBanned
+                            disabled={
+                              isProcessing ||
+                              (!isAdmin &&
+                                (user.role === 'admin' ||
+                                  user.role === 'moderator' ||
+                                  Boolean(user.isSystemAI) ||
+                                  (isUserEffectivelyBanned(user) && (user.banType !== 'temporary' || !user.banExpiresAt))))
+                            }
+                            className={`flex-1 min-w-[70px] py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 cursor-pointer disabled:opacity-40 ${
+                              isUserEffectivelyBanned(user)
                                 ? 'bg-emerald-600 text-white shadow-xs'
                                 : 'bg-red-600 text-white shadow-xs'
                             }`}
                           >
                             {isProcessing ? (
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            ) : isBanned ? (
+                            ) : isUserEffectivelyBanned(user) ? (
                               <span>Aç</span>
                             ) : (
-                              <span>Banla</span>
+                              <span>{isAdmin ? 'Banla' : 'Geçici Ban'}</span>
                             )}
                           </button>
 
-                          <button
-                            onClick={() => {
-                              setHardwareBanTargetUser(user);
-                              setHardwareBanModalOpen(true);
-                            }}
-                            className="py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 cursor-pointer bg-red-950/70 hover:bg-red-900 text-red-400 border border-red-800/60"
-                            title="Cihaz & IP Banı Uygula"
-                          >
-                            <ShieldAlert className="w-3.5 h-3.5" />
-                            <span>Cihaz/IP</span>
-                          </button>
+                          {isAdmin && (
+                            <button
+                              onClick={() => {
+                                setHardwareBanTargetUser(user);
+                                setHardwareBanModalOpen(true);
+                              }}
+                              className="py-1.5 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 cursor-pointer bg-red-950/70 hover:bg-red-900 text-red-400 border border-red-800/60"
+                              title="Cihaz & IP Banı Uygula"
+                            >
+                              <ShieldAlert className="w-3.5 h-3.5" />
+                              <span>Cihaz/IP</span>
+                            </button>
+                          )}
                         </div>
                       </div>
                     );
@@ -1628,7 +1739,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               <td className="py-3 px-4">
                                 <div className="space-y-0.5">
                                   <div className="text-zinc-700 dark:text-zinc-300 font-medium truncate max-w-[180px]">
-                                    {user.email || '—'}
+                                    {isAdmin ? (user.email || '—') : 'Gizli (Moderatör)'}
                                   </div>
                                   <div className="flex items-center gap-1 text-[10px] font-mono text-zinc-400">
                                     <span className="truncate max-w-[120px]">{user.uid}</span>
@@ -1668,6 +1779,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               {/* Moderasyon Etiketleri & Mavi Tik */}
                               <td className="py-3 px-4">
                                   <div className="flex flex-wrap items-center gap-1.5">
+                                    {user.role === 'moderator' && (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border border-indigo-500/30 font-bold text-[10px]">
+                                        <ShieldCheck className="w-3 h-3" />
+                                        <span>MODERATÖR</span>
+                                      </span>
+                                    )}
+
                                     {user.isEmailInReview && (
                                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 border border-amber-500/30 font-bold text-[10px]">
                                         <Mail className="w-3 h-3" />
@@ -1675,17 +1793,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                       </span>
                                     )}
 
-                                    {isBanned && (
+                                    {isUserEffectivelyBanned(user) && (
                                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 dark:bg-red-950/50 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-900/60 font-black text-[10px]">
                                         <Ban className="w-3 h-3" />
-                                        <span>BANLI</span>
+                                        <span>
+                                          {user.banType === 'temporary' && user.banExpiresAt
+                                            ? `GEÇİCİ BAN (${formatRemainingTime(user.banExpiresAt)})`
+                                            : 'KALICI BAN'}
+                                        </span>
                                       </span>
                                     )}
 
-                                    {isMuted && (
+                                    {isUserEffectivelyMuted(user) && (
                                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-900/60 font-bold text-[10px]">
                                         <VolumeX className="w-3 h-3" />
-                                        <span>SUSTURULDU</span>
+                                        <span>
+                                          {user.muteType === 'temporary' && user.muteExpiresAt
+                                            ? `SUSTURULDU (${formatRemainingTime(user.muteExpiresAt)})`
+                                            : 'SUSTURULDU'}
+                                        </span>
                                       </span>
                                     )}
 
@@ -1698,7 +1824,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                         />
                                         <span>Mavi Tik</span>
                                       </div>
-                                    ) : !isBanned && !isMuted && !user.isEmailInReview ? (
+                                    ) : !isUserEffectivelyBanned(user) && !isUserEffectivelyMuted(user) && !user.isEmailInReview && user.role !== 'moderator' ? (
                                       <span className="text-zinc-400 text-[11px] font-medium">
                                         Normal
                                       </span>
@@ -1717,89 +1843,112 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                       <Eye className="w-4 h-4" />
                                     </button>
 
-                                    <button
-                                      onClick={() => {
-                                        setEmailReviewTargetUser(user);
-                                        setEmailReviewModalOpen(true);
-                                      }}
-                                      disabled={isProcessing}
-                                      className={`p-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 ${
-                                        user.isEmailInReview
-                                          ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800'
-                                          : 'text-zinc-400 hover:text-amber-600 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                                      }`}
-                                      title={user.isEmailInReview ? 'E-Posta İncelesini Kaldır' : 'E-Posta İncelemesine Al'}
-                                    >
-                                      <Mail className="w-4 h-4" />
-                                    </button>
-
-                                    <button
-                                      onClick={() => handleToggleUserVerification(user)}
-                                      disabled={isProcessing}
-                                      className={`p-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 ${
-                                        isVerified
-                                          ? 'text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40'
-                                          : 'text-zinc-400 hover:text-blue-600 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                                      }`}
-                                      title={isVerified ? 'Mavi Tiki Kaldır' : 'Mavi Tik Ver'}
-                                    >
-                                      <BadgeCheck className="w-4 h-4" />
-                                    </button>
-
-
-                                  <button
-                                    onClick={() => handleToggleUserMute(user)}
-                                    disabled={isProcessing}
-                                    className={`p-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 ${
-                                      isMuted
-                                        ? 'text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40'
-                                        : 'text-zinc-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/40'
-                                    }`}
-                                    title={isMuted ? 'Susturmayı Kaldır' : 'Kullanıcıyı Sustur'}
-                                  >
-                                    {isMuted ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-                                  </button>
-
-                                  <button
-                                    onClick={() => handleToggleUserBan(user)}
-                                    disabled={isProcessing}
-                                    className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 ${
-                                      isBanned
-                                        ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-600 border border-emerald-200 dark:border-emerald-900/50'
-                                        : 'bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 dark:border-red-900/50'
-                                    }`}
-                                    title={isBanned ? 'Banı Kaldır' : 'Kullanıcıyı Banla'}
-                                  >
-                                    {isProcessing ? (
-                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                    ) : isBanned ? (
+                                    {isAdmin && (
                                       <>
-                                        <ShieldCheck className="w-3.5 h-3.5" />
-                                        <span>Banı Kaldır</span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Ban className="w-3.5 h-3.5" />
-                                        <span>Banla</span>
+                                        <button
+                                          onClick={() => {
+                                            setEmailReviewTargetUser(user);
+                                            setEmailReviewModalOpen(true);
+                                          }}
+                                          disabled={isProcessing}
+                                          className={`p-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 ${
+                                            user.isEmailInReview
+                                              ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800'
+                                              : 'text-zinc-400 hover:text-amber-600 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                                          }`}
+                                          title={user.isEmailInReview ? 'E-Posta İncelesini Kaldır' : 'E-Posta İncelemesine Al'}
+                                        >
+                                          <Mail className="w-4 h-4" />
+                                        </button>
+
+                                        <button
+                                          onClick={() => handleToggleUserVerification(user)}
+                                          disabled={isProcessing}
+                                          className={`p-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 ${
+                                            isVerified
+                                              ? 'text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40'
+                                              : 'text-zinc-400 hover:text-blue-600 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+                                          }`}
+                                          title={isVerified ? 'Mavi Tiki Kaldır' : 'Mavi Tik Ver'}
+                                        >
+                                          <BadgeCheck className="w-4 h-4" />
+                                        </button>
                                       </>
                                     )}
-                                  </button>
 
-                                  <button
-                                    onClick={() => {
-                                      setHardwareBanTargetUser(user);
-                                      setHardwareBanModalOpen(true);
-                                    }}
-                                    className="px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer bg-red-950/50 hover:bg-red-900/70 text-red-400 border border-red-800/60"
-                                    title="IP & Donanım Banı Uygula"
-                                  >
-                                    <ShieldAlert className="w-3.5 h-3.5 text-red-500" />
-                                    <span>Cihaz/IP Ban</span>
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
+                                    <button
+                                      onClick={() => handleToggleUserMute(user)}
+                                      disabled={
+                                        isProcessing ||
+                                        (!isAdmin && (user.role === 'admin' || user.role === 'moderator' || Boolean(user.isSystemAI)))
+                                      }
+                                      className={`p-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer disabled:opacity-40 ${
+                                        isUserEffectivelyMuted(user)
+                                          ? 'text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40'
+                                          : 'text-zinc-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/40'
+                                      }`}
+                                      title={isUserEffectivelyMuted(user) ? 'Susturmayı Kaldır' : 'Kullanıcıyı Sustur'}
+                                    >
+                                      {isUserEffectivelyMuted(user) ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                                    </button>
+
+                                    <button
+                                      onClick={() => handleToggleUserBan(user)}
+                                      disabled={
+                                        isProcessing ||
+                                        (!isAdmin &&
+                                          (user.role === 'admin' ||
+                                            user.role === 'moderator' ||
+                                            Boolean(user.isSystemAI) ||
+                                            (isUserEffectivelyBanned(user) && (user.banType !== 'temporary' || !user.banExpiresAt))))
+                                      }
+                                      className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer disabled:opacity-40 ${
+                                        isUserEffectivelyBanned(user)
+                                          ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-600 border border-emerald-200 dark:border-emerald-900/50'
+                                          : 'bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 dark:border-red-900/50'
+                                      }`}
+                                      title={
+                                        !isAdmin && isUserEffectivelyBanned(user) && (user.banType !== 'temporary' || !user.banExpiresAt)
+                                          ? 'Kalıcı banı yalnızca Ana Yönetici kaldırabilir'
+                                          : isUserEffectivelyBanned(user)
+                                          ? 'Banı Kaldır'
+                                          : isAdmin
+                                          ? 'Kullanıcıyı Banla'
+                                          : 'Geçici Ban Uygula'
+                                      }
+                                    >
+                                      {isProcessing ? (
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      ) : isUserEffectivelyBanned(user) ? (
+                                        <>
+                                          <ShieldCheck className="w-3.5 h-3.5" />
+                                          <span>Banı Kaldır</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Ban className="w-3.5 h-3.5" />
+                                          <span>{isAdmin ? 'Banla' : 'Geçici Ban'}</span>
+                                        </>
+                                      )}
+                                    </button>
+
+                                    {isAdmin && (
+                                      <button
+                                        onClick={() => {
+                                          setHardwareBanTargetUser(user);
+                                          setHardwareBanModalOpen(true);
+                                        }}
+                                        className="px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 cursor-pointer bg-red-950/50 hover:bg-red-900/70 text-red-400 border border-red-800/60"
+                                        title="IP & Donanım Banı Uygula"
+                                      >
+                                        <ShieldAlert className="w-3.5 h-3.5 text-red-500" />
+                                        <span>Cihaz/IP Ban</span>
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
                         })
                       )}
                     </tbody>
@@ -2841,53 +2990,70 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               </div>
 
-              {/* İşlem Butonları: 📥 TXT İndir, 📑 Parçalı Kopyala, 📋 Kopyala & Kapat */}
+              {/* İşlem Butonları */}
               <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
                 <button
-                  onClick={handleDownloadChatLog}
-                  disabled={copyingLog}
-                  className="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer shadow-xs"
-                  title="Tüm Logu .TXT Dosyası Olarak İndir"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">TXT İndir</span>
-                </button>
-
-                <button
-                  onClick={handleChunkCopyChatLog}
-                  disabled={copyingLog}
-                  className="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white cursor-pointer shadow-xs"
-                  title="Logu Parçalara Bölerek Kopyala"
-                >
-                  <Layers className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Parçalı Kopyala</span>
-                </button>
-
-                <button
-                  onClick={handleCopyFullChatLog}
-                  disabled={copyingLog}
+                  onClick={() => setQuickSummaryOpen((prev) => !prev)}
                   className={`px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs ${
-                    copiedLogSuccess
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-red-600 hover:bg-red-700 text-white'
+                    quickSummaryOpen
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 border border-indigo-500/30'
                   }`}
-                  title="Tüm Mesaj Geçmişini Doğrudan Panoya Kopyala"
+                  title="İnceleme Özeti Raporu Oluştur"
                 >
-                  {copyingLog ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : copiedLogSuccess ? (
-                    <>
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Kopyalandı!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Tümünü Kopyala</span>
-                      <span className="sm:hidden">Kopyala</span>
-                    </>
-                  )}
+                  <Flag className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Özet Raporu Yaz</span>
                 </button>
+
+                {isAdmin && (
+                  <>
+                    <button
+                      onClick={handleDownloadChatLog}
+                      disabled={copyingLog}
+                      className="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer shadow-xs"
+                      title="Tüm Logu .TXT Dosyası Olarak İndir"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">TXT İndir</span>
+                    </button>
+
+                    <button
+                      onClick={handleChunkCopyChatLog}
+                      disabled={copyingLog}
+                      className="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white cursor-pointer shadow-xs"
+                      title="Logu Parçalara Bölerek Kopyala"
+                    >
+                      <Layers className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Parçalı Kopyala</span>
+                    </button>
+
+                    <button
+                      onClick={handleCopyFullChatLog}
+                      disabled={copyingLog}
+                      className={`px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs ${
+                        copiedLogSuccess
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-red-600 hover:bg-red-700 text-white'
+                      }`}
+                      title="Tüm Mesaj Geçmişini Doğrudan Panoya Kopyala"
+                    >
+                      {copyingLog ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : copiedLogSuccess ? (
+                        <>
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Kopyalandı!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Tümünü Kopyala</span>
+                          <span className="sm:hidden">Kopyala</span>
+                        </>
+                      )}
+                    </button>
+                  </>
+                )}
 
                 <button
                   onClick={() => setActiveLogConversation(null)}
@@ -2940,8 +3106,70 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               )}
             </div>
 
-            {/* 📍 SEÇİLEN MESAJ DAHİL BUNDAN SONRASINI KOPYALA BARI */}
-            {selectedStartMsgId && startMsgIndex !== -1 && (
+            {/* 📝 Hızlı İnceleme Özeti Raporu Formu */}
+            {quickSummaryOpen && activeLogConversation && (
+              <div className="px-4 py-3 bg-indigo-50/90 dark:bg-indigo-950/30 border-b border-indigo-200 dark:border-indigo-900/60 space-y-2 text-xs shrink-0">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-indigo-700 dark:text-indigo-300">
+                    Sohbet İnceleme Özeti Oluştur
+                  </span>
+                  <select
+                    value={quickSummaryRisk}
+                    onChange={(e) => setQuickSummaryRisk(e.target.value as any)}
+                    className="px-2.5 py-1 rounded-lg border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-200 text-[11px]"
+                  >
+                    <option value="low">Düşük Risk</option>
+                    <option value="medium">Orta Risk</option>
+                    <option value="high">Yüksek Risk</option>
+                    <option value="critical">Kritik</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={quickSummaryText}
+                    onChange={(e) => setQuickSummaryText(e.target.value)}
+                    placeholder="İnceleme bulgusu ve önerilen aksiyon özeti..."
+                    className="flex-1 px-3 py-1.5 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100"
+                  />
+                  <button
+                    type="button"
+                    disabled={sendingQuickSummary || quickSummaryText.trim().length < 5}
+                    onClick={async () => {
+                      const targetUid =
+                        activeLogConversation.participantIds.find((id) => id !== currentUser.uid) ||
+                        activeLogConversation.participantIds[0] ||
+                        '';
+                      if (!targetUid) return;
+                      setSendingQuickSummary(true);
+                      try {
+                        await submitModerationReport({
+                          targetUid,
+                          conversationId: activeLogConversation.id,
+                          riskLevel: quickSummaryRisk,
+                          title: `Sohbet İnceleme Özeti (${activeLogConversation.id.slice(0, 8)})`,
+                          summary: quickSummaryText.trim(),
+                          recommendedAction: quickSummaryRisk === 'critical' ? 'perm_ban_review' : 'monitor',
+                        });
+                        setQuickSummaryOpen(false);
+                        setQuickSummaryText('');
+                        setUserActionSuccess('✓ Sohbet inceleme özeti raporu kaydedildi.');
+                      } catch (err: any) {
+                        setCopiedLogError(err?.message || 'Rapor kaydedilemedi.');
+                      } finally {
+                        setSendingQuickSummary(false);
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold cursor-pointer shrink-0"
+                  >
+                    {sendingQuickSummary ? 'Kaydediliyor...' : 'Raporla'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 📍 SEÇİLEN MESAJ DAHİL BUNDAN SONRASINI KOPYALA BARI (Yalnızca Ana Yönetici) */}
+            {isAdmin && selectedStartMsgId && startMsgIndex !== -1 && (
               <div className="px-3 sm:px-4 py-2.5 bg-red-600 text-white border-b border-red-700 flex flex-wrap items-center justify-between gap-2.5 shrink-0 shadow-sm animate-in slide-in-from-top-2">
                 <div className="flex items-center gap-2 text-xs font-semibold min-w-0">
                   <MapPin className="w-4 h-4 text-white shrink-0 animate-bounce" />
@@ -3091,18 +3319,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0 ml-2">
-                          <button
-                            onClick={() => setSelectedStartMsgId(isSelectedStart ? null : msg.id)}
-                            className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer ${
-                              isSelectedStart
-                                ? 'bg-red-600 text-white shadow-xs'
-                                : 'bg-zinc-100 hover:bg-red-100 dark:bg-zinc-800 dark:hover:bg-red-950/60 text-zinc-600 hover:text-red-600 dark:text-zinc-400 dark:hover:text-red-400'
-                            }`}
-                            title={isSelectedStart ? 'Başlangıç işaretini kaldır' : 'Bu mesajı kopyalama başlangıç noktası olarak seç'}
-                          >
-                            <MapPin className="w-3 h-3" />
-                            <span>{isSelectedStart ? 'Başlangıç Seçildi' : 'Buradan Başlat'}</span>
-                          </button>
+                          {isAdmin && (
+                            <button
+                              onClick={() => setSelectedStartMsgId(isSelectedStart ? null : msg.id)}
+                              className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 cursor-pointer ${
+                                isSelectedStart
+                                  ? 'bg-red-600 text-white shadow-xs'
+                                  : 'bg-zinc-100 hover:bg-red-100 dark:bg-zinc-800 dark:hover:bg-red-950/60 text-zinc-600 hover:text-red-600 dark:text-zinc-400 dark:hover:text-red-400'
+                              }`}
+                              title={isSelectedStart ? 'Başlangıç işaretini kaldır' : 'Bu mesajı kopyalama başlangıç noktası olarak seç'}
+                            >
+                              <MapPin className="w-3 h-3" />
+                              <span>{isSelectedStart ? 'Başlangıç Seçildi' : 'Buradan Başlat'}</span>
+                            </button>
+                          )}
                           <span className="text-[10px] font-mono text-zinc-400 shrink-0">
                             {timeFormatted}
                           </span>
@@ -3269,7 +3499,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <Mail className="w-3.5 h-3.5" /> E-posta
                 </span>
                 <span className="font-semibold text-zinc-800 dark:text-zinc-200 truncate max-w-[160px]">
-                  {inspectingUser.email || '—'}
+                  {isAdmin ? (inspectingUser.email || '—') : 'Gizli (Moderatör)'}
                 </span>
               </div>
 
@@ -3292,11 +3522,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
               <div className="p-2.5 bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border border-zinc-100 dark:border-zinc-800 flex items-center justify-between">
                 <span className="text-zinc-400">Hesap Durumu</span>
-                <div className="flex items-center gap-1 font-bold">
-                  {inspectingUser.isBanned ? (
-                    <span className="text-red-600">🚫 Banlı</span>
-                  ) : inspectingUser.isMuted ? (
-                    <span className="text-amber-600">🔇 Susturulmuş</span>
+                <div className="flex items-center gap-1 font-bold text-right">
+                  {isUserEffectivelyBanned(inspectingUser) ? (
+                    <span className="text-red-600">
+                      {inspectingUser.banType === 'temporary' && inspectingUser.banExpiresAt
+                        ? `⏳ Geçici Ban (${formatRemainingTime(inspectingUser.banExpiresAt)})`
+                        : '🚫 Kalıcı Banlı'}
+                    </span>
+                  ) : isUserEffectivelyMuted(inspectingUser) ? (
+                    <span className="text-amber-600">
+                      {inspectingUser.muteType === 'temporary' && inspectingUser.muteExpiresAt
+                        ? `⏳ Susturulmuş (${formatRemainingTime(inspectingUser.muteExpiresAt)})`
+                        : '🔇 Susturulmuş'}
+                    </span>
                   ) : inspectingUser.isEmailInReview ? (
                     <span className="text-amber-500">✉️ E-Posta İncelemesinde</span>
                   ) : (
@@ -3308,70 +3546,91 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
             {/* Moderasyon Aksiyon Butonları */}
             <div className="space-y-2 pt-1">
-              <button
-                onClick={() => {
-                  setEmailReviewTargetUser(inspectingUser);
-                  setEmailReviewModalOpen(true);
-                }}
-                disabled={processingUid === inspectingUser.uid}
-                className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 ${
-                  inspectingUser.isEmailInReview
-                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 hover:bg-amber-500/30'
-                    : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700'
-                }`}
-              >
-                <Mail className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>
-                  {inspectingUser.isEmailInReview ? 'E-Posta İncelemesini Kaldır' : 'E-Posta İncelemesine Al'}
-                </span>
-              </button>
+              {isAdmin && (
+                <button
+                  onClick={() => {
+                    setEmailReviewTargetUser(inspectingUser);
+                    setEmailReviewModalOpen(true);
+                  }}
+                  disabled={processingUid === inspectingUser.uid}
+                  className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 ${
+                    inspectingUser.isEmailInReview
+                      ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40 hover:bg-amber-500/30'
+                      : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700'
+                  }`}
+                >
+                  <Mail className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>
+                    {inspectingUser.isEmailInReview ? 'E-Posta İncelemesini Kaldır' : 'E-Posta İncelemesine Al'}
+                  </span>
+                </button>
+              )}
 
               <button
                 onClick={() => handleToggleUserBan(inspectingUser)}
-                disabled={processingUid === inspectingUser.uid}
-                className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 ${
-                  inspectingUser.isBanned
+                disabled={
+                  processingUid === inspectingUser.uid ||
+                  (!isAdmin &&
+                    (inspectingUser.role === 'admin' ||
+                      inspectingUser.role === 'moderator' ||
+                      Boolean(inspectingUser.isSystemAI) ||
+                      (isUserEffectivelyBanned(inspectingUser) &&
+                        (inspectingUser.banType !== 'temporary' || !inspectingUser.banExpiresAt))))
+                }
+                className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40 ${
+                  isUserEffectivelyBanned(inspectingUser)
                     ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs'
                     : 'bg-red-600 hover:bg-red-700 text-white shadow-xs'
                 }`}
               >
-
                 {processingUid === inspectingUser.uid ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
-                ) : inspectingUser.isBanned ? (
+                ) : isUserEffectivelyBanned(inspectingUser) ? (
                   <>
                     <ShieldCheck className="w-4 h-4" />
-                    <span>Banı Kaldır</span>
+                    <span>
+                      {!isAdmin && (inspectingUser.banType !== 'temporary' || !inspectingUser.banExpiresAt)
+                        ? 'Kalıcı Ban (Ana Yönetici Yetkisi)'
+                        : 'Banı Kaldır'}
+                    </span>
                   </>
                 ) : (
                   <>
                     <Ban className="w-4 h-4" />
-                    <span>Kullanıcıyı Banla</span>
+                    <span>{isAdmin ? 'Kullanıcıyı Banla' : 'Geçici Ban Uygula'}</span>
                   </>
                 )}
               </button>
 
-              <button
-                onClick={() => {
-                  setHardwareBanTargetUser(inspectingUser);
-                  setHardwareBanModalOpen(true);
-                }}
-                className="w-full py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800/80 shadow-xs"
-              >
-                <ShieldAlert className="w-4 h-4 text-red-400" />
-                <span>Cihaz & IP Banı Uygula (Donanım Kilidi)</span>
-              </button>
+              {isAdmin && (
+                <button
+                  onClick={() => {
+                    setHardwareBanTargetUser(inspectingUser);
+                    setHardwareBanModalOpen(true);
+                  }}
+                  className="w-full py-2.5 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer bg-red-950/80 hover:bg-red-900 text-red-300 border border-red-800/80 shadow-xs"
+                >
+                  <ShieldAlert className="w-4 h-4 text-red-400" />
+                  <span>Cihaz & IP Banı Uygula (Donanım Kilidi)</span>
+                </button>
+              )}
 
               <button
                 onClick={() => handleToggleUserMute(inspectingUser)}
-                disabled={processingUid === inspectingUser.uid}
-                className={`w-full py-2 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 ${
-                  inspectingUser.isMuted
+                disabled={
+                  processingUid === inspectingUser.uid ||
+                  (!isAdmin &&
+                    (inspectingUser.role === 'admin' ||
+                      inspectingUser.role === 'moderator' ||
+                      Boolean(inspectingUser.isSystemAI)))
+                }
+                className={`w-full py-2 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-40 ${
+                  isUserEffectivelyMuted(inspectingUser)
                     ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-300'
                     : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200'
                 }`}
               >
-                {inspectingUser.isMuted ? (
+                {isUserEffectivelyMuted(inspectingUser) ? (
                   <>
                     <Volume2 className="w-4 h-4" />
                     <span>Susturmayı Kaldır</span>
@@ -3379,7 +3638,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 ) : (
                   <>
                     <VolumeX className="w-4 h-4" />
-                    <span>Kullanıcıyı Sustur</span>
+                    <span>{isAdmin ? 'Kullanıcıyı Sustur' : 'Geçici Sustur'}</span>
                   </>
                 )}
               </button>
@@ -3627,6 +3886,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         </div>
       )}
 
+
+      {/* 🛡️ Süreli / Kalıcı Moderasyon İşlem Modalı */}
+      <ModerationActionModal
+        isOpen={Boolean(modActionModal)}
+        onClose={() => setModActionModal(null)}
+        targetUser={modActionModal?.user || null}
+        mode={modActionModal?.mode || 'mute'}
+        isMainAdmin={isAdmin}
+        onSuccess={(updatedFields, msg) => {
+          if (modActionModal?.user) {
+            const targetUid = modActionModal.user.uid;
+            setLocalUsers((prev) =>
+              prev.map((u) => (u.uid === targetUid ? { ...u, ...updatedFields } : u))
+            );
+            if (inspectingUser && inspectingUser.uid === targetUid) {
+              setInspectingUser((prev) => (prev ? { ...prev, ...updatedFields } : null));
+            }
+          }
+          setUserActionSuccess(msg);
+          setTimeout(() => setUserActionSuccess(null), 4000);
+        }}
+      />
 
       {/* 🎬 Video Lightbox Preview Modalı */}
       {videoLightboxData && (

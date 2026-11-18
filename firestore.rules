@@ -31,18 +31,140 @@ service cloud.firestore {
       );
     }
 
-    // Kullanıcı Susturuldu mu? (Muted)
+    // Doğrulanmış Muse Moderatörü kontrolü (UID + E-posta + Grant + User rolü)
+    function isModerator() {
+      return isAuthenticated() &&
+        request.auth.uid == 'GnQk5MbPQdS4GDl4cohFzRlKNw22' &&
+        request.auth.token.email == 'muse@gmail.com' &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'user') == 'moderator' &&
+        exists(/databases/$(database)/documents/moderatorGrants/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/moderatorGrants/$(request.auth.uid)).data.get('active', false) == true &&
+        get(/databases/$(database)/documents/moderatorGrants/$(request.auth.uid)).data.get('role', '') == 'moderator';
+    }
+
+    // Kullanıcı aktif olarak Banlı mı? (Süresi dolmamış geçici veya kalıcı ban)
+    function isUserBanned() {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isBanned', false) == true && (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banType', 'permanent') != 'temporary' ||
+          (
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banExpiresAt', null) is timestamp &&
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banExpiresAt', null) > request.time
+          )
+        );
+    }
+
+    // Kullanıcı aktif olarak Susturuldu mu? (Süresi dolmamış geçici veya süresiz susturma)
     function isUserMuted() {
-      return isAuthenticated() && 
-             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isMuted', false) == true;
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isMuted', false) == true && (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('muteType', 'permanent') != 'temporary' ||
+          (
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('muteExpiresAt', null) is timestamp &&
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('muteExpiresAt', null) > request.time
+          )
+        );
     }
 
     // Kullanıcı E-Posta İncelemesinde mi?
     function isEmailInReview() {
-      return isAuthenticated() && 
-             exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isEmailInReview', false) == true;
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isEmailInReview', false) == true;
+    }
+
+    // Moderatörün işlem yapabileceği hedef kullanıcı kontrolü (admin/moderatör/AI korunur)
+    function moderatorTargetSafe(userId) {
+      return userId != request.auth.uid &&
+        userId != 'system_redchat_ai' &&
+        resource.data.get('role', 'user') == 'user' &&
+        resource.data.get('isSystemAI', false) == false &&
+        !(resource.data.get('email', '') in ['robloxenes930@gmail.com', 'gg00cat73@gmail.com']);
+    }
+
+    // Moderatör için yalnızca geçici ban uygulama / geçici ban kaldırma izni
+    function moderatorBanUpdateValid(userId) {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return isModerator() && moderatorTargetSafe(userId) && (
+        (
+          changed.hasOnly(['isBanned', 'banType', 'banReason', 'bannedAt', 'banExpiresAt', 'bannedByUid', 'isOnline', 'updatedAt']) &&
+          request.resource.data.isBanned == true &&
+          request.resource.data.banType == 'temporary' &&
+          request.resource.data.banExpiresAt is timestamp &&
+          request.resource.data.banExpiresAt > request.time &&
+          request.resource.data.bannedByUid == request.auth.uid &&
+          request.resource.data.isOnline == false
+        ) ||
+        (
+          resource.data.get('isBanned', false) == true &&
+          resource.data.get('banType', '') == 'temporary' &&
+          resource.data.get('banExpiresAt', null) is timestamp &&
+          changed.hasOnly(['isBanned', 'banType', 'banReason', 'bannedAt', 'banExpiresAt', 'bannedByUid', 'updatedAt']) &&
+          request.resource.data.isBanned == false &&
+          request.resource.data.banType == null &&
+          request.resource.data.banExpiresAt == null
+        )
+      );
+    }
+
+    // Moderatör için yalnızca geçici susturma uygulama / susturma kaldırma izni
+    function moderatorMuteUpdateValid(userId) {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return isModerator() && moderatorTargetSafe(userId) && (
+        (
+          changed.hasOnly(['isMuted', 'muteType', 'muteReason', 'mutedAt', 'muteExpiresAt', 'mutedByUid', 'updatedAt']) &&
+          request.resource.data.isMuted == true &&
+          request.resource.data.muteType == 'temporary' &&
+          request.resource.data.muteExpiresAt is timestamp &&
+          request.resource.data.muteExpiresAt > request.time &&
+          request.resource.data.mutedByUid == request.auth.uid
+        ) ||
+        (
+          resource.data.get('isMuted', false) == true &&
+          changed.hasOnly(['isMuted', 'muteType', 'muteReason', 'mutedAt', 'muteExpiresAt', 'mutedByUid', 'updatedAt']) &&
+          request.resource.data.isMuted == false &&
+          request.resource.data.muteType == null &&
+          request.resource.data.muteExpiresAt == null
+        )
+      );
+    }
+
+    // Süresi dolmuş geçici cezaların otomatik temizlenmesi (sadece request.time >= expiresAt iken)
+    function ownerExpiredPenaltyClear(userId) {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      let banExpired = resource.data.get('isBanned', false) == true &&
+        resource.data.get('banType', '') == 'temporary' &&
+        resource.data.get('banExpiresAt', null) is timestamp &&
+        resource.data.get('banExpiresAt', null) <= request.time;
+      let muteExpired = resource.data.get('isMuted', false) == true &&
+        resource.data.get('muteType', '') == 'temporary' &&
+        resource.data.get('muteExpiresAt', null) is timestamp &&
+        resource.data.get('muteExpiresAt', null) <= request.time;
+      return isOwner(userId) && (
+        (
+          banExpired &&
+          changed.hasOnly(['isBanned', 'banType', 'banReason', 'bannedAt', 'banExpiresAt', 'bannedByUid', 'updatedAt']) &&
+          request.resource.data.isBanned == false &&
+          request.resource.data.banType == null &&
+          request.resource.data.banExpiresAt == null
+        ) ||
+        (
+          muteExpired &&
+          changed.hasOnly(['isMuted', 'muteType', 'muteReason', 'mutedAt', 'muteExpiresAt', 'mutedByUid', 'updatedAt']) &&
+          request.resource.data.isMuted == false &&
+          request.resource.data.muteType == null &&
+          request.resource.data.muteExpiresAt == null
+        ) ||
+        (
+          banExpired && muteExpired &&
+          changed.hasOnly(['isBanned', 'banType', 'banReason', 'bannedAt', 'banExpiresAt', 'bannedByUid', 'isMuted', 'muteType', 'muteReason', 'mutedAt', 'muteExpiresAt', 'mutedByUid', 'updatedAt']) &&
+          request.resource.data.isBanned == false &&
+          request.resource.data.isMuted == false
+        )
+      );
     }
 
 
@@ -50,24 +172,32 @@ service cloud.firestore {
     // 🛡️ DOĞRULAMA BAŞVURULARI (/verificationRequests/{requestId})
     // =========================================================================
     match /verificationRequests/{requestId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() &&
+        request.resource.data.status == 'pending' &&
+        (
+          (request.resource.data.type == 'user' && request.resource.data.userId == request.auth.uid) ||
+          (request.resource.data.type == 'channel' && isChannelOwner(request.resource.data.channelId))
+        );
+      allow update, delete: if isAdmin();
     }
 
     // =========================================================================
     // 🔐 ŞİFRE SIFIRLAMA TALEPLERİ (/passwordResetRequests/{requestId})
     // =========================================================================
     match /passwordResetRequests/{requestId} {
-      // Adminler tüm talepleri okuyup yönetebilir, kullanıcılar talep oluşturabilir
-      allow read, write: if true;
+      // Talepler sunucu tarafında Firebase Admin SDK ile oluşturulur; yalnızca Adminler okuyup yönetebilir
+      allow read, write: if isAdmin();
     }
 
     // =========================================================================
     // 🚫 DONANIM VE IP BANLARI (/banned_devices/{banId})
     // =========================================================================
-    // Oturum açmamış cihazlar dahi ban durumunu sorgulayabilmelidir (allow read: if true)
+    // Oturum açmamış cihazlar ban durumunu sorgulayabilmelidir (allow read: if true)
+    // Ancak ban ekleme, kaldırma ve düzenleme yalnızca Admin yetkisindedir
     match /banned_devices/{banId} {
       allow read: if true;
-      allow write: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     // =========================================================================
@@ -76,7 +206,7 @@ service cloud.firestore {
     // Mavi tik rozet görseli, yapay zeka profil resmi ve sistem ayarları
     match /settings/{settingId} {
       allow read: if true;
-      allow write: if isAuthenticated();
+      allow write: if isAdmin();
     }
 
     // =========================================================================
@@ -90,17 +220,25 @@ service cloud.firestore {
       allow create: if isAuthenticated() && (isOwner(userId) || isAdmin());
       
       // Kullanıcı kendi profil bilgilerini (durum, bio, avatar, son görülme),
-      // veya admin tüm kullanıcı alanlarını (doğrulama, ban vb.) güncelleyebilir
+      // süresi dolmuş kendi geçici cezasının temizlenmesini,
+      // moderatör yalnızca geçici ban/susturma alanlarını,
+      // admin ise tüm kullanıcı alanlarını güncelleyebilir
       allow update: if isAuthenticated() && (
-        isAdmin() || (
+        isAdmin() ||
+        moderatorBanUpdateValid(userId) ||
+        moderatorMuteUpdateValid(userId) ||
+        ownerExpiredPenaltyClear(userId) || (
           isOwner(userId) &&
-          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isEmailInReview', 'isBanned', 'role', 'isVerified'])
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            'isEmailInReview', 'isBanned', 'banType', 'banReason', 'bannedAt', 'banExpiresAt', 'bannedByUid',
+            'isMuted', 'muteType', 'muteReason', 'mutedAt', 'muteExpiresAt', 'mutedByUid',
+            'role', 'isVerified', 'aiAccess'
+          ])
         )
       );
 
-      
-      // Hesap silme işlemi
-      allow delete: if isAuthenticated() && (isOwner(userId) || isAdmin());
+      // Hesap silme işlemi (Moderatör asla kullanıcı silemez)
+      allow delete: if isAuthenticated() && !isModerator() && (isOwner(userId) || isAdmin());
       
       // 🪪 PUSH NOTIFICATION TOKENLARI (fcmTokens)
       match /fcmTokens/{tokenId} {
@@ -182,8 +320,8 @@ service cloud.firestore {
         isAdmin()
       );
       
-      // Grubu silme veya sohbetten ayrılma
-      allow delete: if isAuthenticated();
+      // Grubu silme veya sohbetten ayrılma (Moderatör sohbet silemez)
+      allow delete: if isAuthenticated() && !isModerator();
       
       // =======================================================================
       // 📨 SOHBET İÇİ MESAJLAR (/conversations/{conversationId}/messages/{messageId})
@@ -192,14 +330,9 @@ service cloud.firestore {
         // Sohbetteki tüm mesajları gerçek zamanlı dinleme ve okuma
         allow read: if isAuthenticated();
         
-        // Yeni mesaj gönderme:
-        // - Normal kullanıcı mesajları
-        // - Sistem mesajları (gruba katıldı, ayrıldı, grup adı değişti vb.)
-        // - RedChat AI tarafından üretilen yanıtlar (senderId: system_redchat_ai)
-        // - Sonlandırılmış (terminated) sohbete normal kullanıcı mesaj yazamaz
-        // - Engellenmiş birebir sohbetlere mesaj yazılamaz
-        allow create: if isAuthenticated() && (!isEmailInReview() || isAdmin()) && (
-
+        // Yeni mesaj gönderme (Banlı, susturulmuş veya e-posta incelemesindeki kullanıcı mesaj atamaz)
+        allow create: if isAuthenticated() &&
+          (isAdmin() || (!isEmailInReview() && !isUserBanned() && !isUserMuted())) && (
           (
             // Grup sohbeti veya engeli olmayan birebir sohbet
             get(/databases/$(database)/documents/conversations/$(conversationId)).data.get('isGroup', false) == true ||
@@ -214,10 +347,10 @@ service cloud.firestore {
         );
         
         // Mesaj düzenleme (isEdited: true) ve emoji reaksiyonları ekleme/kaldırma
-        allow update: if isAuthenticated();
+        allow update: if isAuthenticated() && (!isModerator() || resource.data.senderId == request.auth.uid);
         
-        // Mesaj silme işlemi (benden sil / herkesten sil)
-        allow delete: if isAuthenticated();
+        // Mesaj silme işlemi (Moderatör mesaj silemez)
+        allow delete: if isAuthenticated() && !isModerator();
       }
     }
 
@@ -269,10 +402,11 @@ service cloud.firestore {
       // 📝 GÖNDERİLER (/channels/{channelId}/posts/{postId})
       match /posts/{postId} {
         allow read: if isAuthenticated();
-        // Create is blocked if the user is muted
-        allow create: if isAuthenticated() && !isUserMuted();
-        // Update/Delete are allowed for authenticated users (owner/admin logic applied in UI)
-        allow update, delete: if isAuthenticated();
+        // Create is blocked if the user is muted, banned, or in email review
+        allow create: if isAuthenticated() && (isAdmin() || (!isUserMuted() && !isUserBanned() && !isEmailInReview()));
+        // Update/Delete (Moderatör kanal gönderisi silemez)
+        allow update: if isAuthenticated() && !isModerator();
+        allow delete: if isAuthenticated() && !isModerator();
 
         // 👁️ BENZERSİZ GÖRÜNTÜLENME KAYITLARI (/channels/{channelId}/posts/{postId}/views/{viewerUid})
         match /views/{viewerUid} {
@@ -370,6 +504,81 @@ service cloud.firestore {
         isAuthenticated() &&
         request.resource.data.actorUid == request.auth.uid &&
         request.resource.data.category == 'security_session'
+      ) || (
+        isModerator() &&
+        request.resource.data.actorUid == request.auth.uid &&
+        request.resource.data.category == 'moderation'
+      ) || (
+        isAuthenticated() &&
+        request.resource.data.actorUid == request.auth.uid &&
+        request.resource.data.targetUid == request.auth.uid &&
+        request.resource.data.category == 'moderation' &&
+        request.resource.data.action in ['auto_mute_expired', 'auto_ban_expired']
+      );
+      allow update, delete: if false;
+    }
+
+    // =========================================================================
+    // 🛡️ MODERATÖR YETKİ KAYITLARI (/moderatorGrants/{grantId})
+    // =========================================================================
+    match /moderatorGrants/{grantId} {
+      allow read: if isAdmin() || (isAuthenticated() && grantId == request.auth.uid);
+      allow write: if isAdmin();
+    }
+
+    // =========================================================================
+    // 📋 DEĞİŞTİRİLEMEZ MODERASYON DENETİM KAYITLARI (/moderationLogs/{logId})
+    // =========================================================================
+    match /moderationLogs/{logId} {
+      allow read: if isAdmin() || isModerator();
+      allow create: if isAdmin() || (
+        isModerator() && (
+          (
+            request.resource.data.actorUid == request.auth.uid &&
+            request.resource.data.actorRole == 'moderator' &&
+            request.resource.data.actionType in ['temp_mute', 'unmute', 'temp_ban', 'unban', 'report_reviewed']
+          ) ||
+          (
+            request.resource.data.actorRole == 'system' &&
+            request.resource.data.actionType in ['auto_mute_expired', 'auto_ban_expired']
+          )
+        )
+      ) || (
+        isAuthenticated() &&
+        request.resource.data.actorUid == request.auth.uid &&
+        request.resource.data.targetUid == request.auth.uid &&
+        request.resource.data.actorRole == 'system' &&
+        request.resource.data.actionType in ['auto_mute_expired', 'auto_ban_expired']
+      );
+      allow update, delete: if false;
+    }
+
+    // =========================================================================
+    // 🚩 KULLANICI ŞİKÂYETLERİ (/userReports/{reportId})
+    // =========================================================================
+    match /userReports/{reportId} {
+      allow read: if isAdmin() || isModerator() || (isAuthenticated() && resource.data.reporterUid == request.auth.uid);
+      allow create: if isAuthenticated() &&
+        !isUserBanned() &&
+        !isEmailInReview() &&
+        request.resource.data.reporterUid == request.auth.uid &&
+        request.resource.data.reportedUid != request.auth.uid &&
+        request.resource.data.status == 'pending';
+      allow update: if (isAdmin() || isModerator()) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reviewedByUid', 'resolutionNote', 'updatedAt']) &&
+        request.resource.data.status in ['pending', 'reviewing', 'resolved', 'dismissed'];
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // 📑 MODERASYON & ŞÜPHELİ DAVRANIŞ RAPORLARI (/moderationReports/{reportId})
+    // =========================================================================
+    match /moderationReports/{reportId} {
+      allow read: if isAdmin() || isModerator();
+      allow create: if isAdmin() || (
+        isModerator() &&
+        request.resource.data.authorUid == request.auth.uid &&
+        request.resource.data.authorRole == 'moderator'
       );
       allow update, delete: if false;
     }

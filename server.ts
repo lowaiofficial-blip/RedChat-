@@ -11,6 +11,7 @@ import { getAuth } from 'firebase-admin/auth';
 import { GoogleGenAI } from "@google/genai";
 import { Client } from "@gradio/client";
 import { registerSessionSecurityRoutes } from "./serverSecurity";
+import { registerModerationRoutes, startModerationExpirySweep } from "./serverModeration";
 
 
 dotenv.config();
@@ -50,6 +51,10 @@ async function startServer() {
 
   // 🌍 Yeni Ülke Girişi ve Oturum Güvenliği Rotaları
   registerSessionSecurityRoutes(app);
+
+  // 🛡️ Muse Moderatör Yetkilendirme ve Süreli Ban/Susturma Rotaları
+  registerModerationRoutes(app);
+  startModerationExpirySweep();
 
   // 🌐 İstemci IP ve Cihaz Bilgisi Endpoint'i (IP & Hardware Ban Tespiti için)
   app.get("/api/client-info", (req, res) => {

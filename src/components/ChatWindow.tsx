@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import type { Conversation, ChatMessage, UserProfile } from '../types';
+import type { Conversation, ChatMessage, UserProfile, UserReportCategory } from '../types';
 import {
   subscribeToMessages,
   sendMessage,
@@ -48,7 +48,15 @@ import {
   fetchAiImageQuota,
   type ImageQuotaResponse,
 } from '../services/aiService';
-import { isAbusiveMessage } from '../services/moderationService';
+import {
+  isAbusiveMessage,
+  isUserEffectivelyBanned,
+  isUserEffectivelyMuted,
+  formatRemainingTime,
+  toTimestampMs,
+  checkModerationExpiry,
+  submitUserComplaint,
+} from '../services/moderationService';
 import { SecurityTerminationAlert, SECURITY_TERMINATION_MESSAGE_TEXT } from './SecurityTerminationAlert';
 import { updateAbusiveCount, terminateAIConversation } from '../services/chatService';
 import {
@@ -86,6 +94,7 @@ import {
   ChevronDown,
   Lock,
   Film,
+  Flag,
 } from 'lucide-react';
 
 interface ChatWindowProps {
@@ -190,6 +199,37 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
   // Kopyalandı bildirimi
   const [copiedNotification, setCopiedNotification] = useState(false);
+
+  // 🚩 Kullanıcı / Mesaj Şikâyet Etme Modal State'i
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [reportTargetUid, setReportTargetUid] = useState<string>('');
+  const [reportCategory, setReportCategory] = useState<UserReportCategory>('harassment');
+  const [reportReason, setReportReason] = useState('');
+  const [reportMessageId, setReportMessageId] = useState<string | null>(null);
+  const [reportExcerpt, setReportExcerpt] = useState<string | null>(null);
+  const [submittingReport, setSubmittingReport] = useState(false);
+  const [reportFeedback, setReportFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // ⏱️ Geçici Susturma Geri Sayım Sayacı
+  const [muteCountdownNow, setMuteCountdownNow] = useState<number>(() => Date.now());
+  const muteAutoExpiredRef = useRef(false);
+  useEffect(() => {
+    const isTempMuted = currentUser.isMuted && currentUser.muteType === 'temporary' && Boolean(currentUser.muteExpiresAt);
+    if (!isTempMuted) {
+      muteAutoExpiredRef.current = false;
+      return;
+    }
+    const expMs = toTimestampMs(currentUser.muteExpiresAt);
+    const interval = setInterval(() => {
+      const nowMs = Date.now();
+      setMuteCountdownNow(nowMs);
+      if (expMs > 0 && nowMs >= expMs && !muteAutoExpiredRef.current) {
+        muteAutoExpiredRef.current = true;
+        checkModerationExpiry().catch(() => {});
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [currentUser.isMuted, currentUser.muteType, currentUser.muteExpiresAt]);
 
   // 🤖 RedChat AI Düşünme & Canlı Akış Durumu
   const [activeAiStream, setActiveAiStream] = useState<{
@@ -351,13 +391,13 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const photoURL = otherUserObj?.photoURL || otherParticipantInfo?.photoURL || null;
   const isOnline = isDirectAIChat
     ? true
-    : (otherUserObj?.isEmailInReview || otherUserObj?.isBanned ? false : (otherUserObj?.isOnline ?? false));
+    : (otherUserObj?.isEmailInReview || isUserEffectivelyBanned(otherUserObj) ? false : (otherUserObj?.isOnline ?? false));
 
   // Karşı tarafın banlı olup olmadığı (Birebir sohbetlerde)
   const isOtherUserBanned = useMemo(() => {
     if (conversation?.isGroup || isDirectAIChat) return false;
-    return Boolean(otherUserObj?.isBanned);
-  }, [conversation?.isGroup, isDirectAIChat, otherUserObj?.isBanned]);
+    return isUserEffectivelyBanned(otherUserObj);
+  }, [conversation?.isGroup, isDirectAIChat, otherUserObj]);
 
   // Karşı tarafın e-posta incelemesinde olup olmadığı (Birebir sohbetlerde)
   const isOtherUserInEmailReview = useMemo(() => {
@@ -961,7 +1001,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     e.preventDefault();
     if (!conversation?.id || sending || isUploadingImage || isUploadingVideo || sendLockRef.current) return;
 
-    if (currentUser.isBanned) {
+    if (isUserEffectivelyBanned(currentUser)) {
       setImageUploadError('Hesabınız askıya alınmıştır (Banlandınız). Mesaj gönderemezsiniz.');
       return;
     }
@@ -996,7 +1036,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       return;
     }
 
-    if (currentUser.isMuted) {
+    if (isUserEffectivelyMuted(currentUser)) {
       setImageUploadError('Hesabınız susturulmuştur. Mesaj gönderemezsiniz.');
       return;
     }
@@ -1716,24 +1756,46 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           )}
         </div>
 
-        {/* Action Button (Group Info or Profile Info) */}
-        {conversation?.isGroup ? (
-          <button
-            onClick={() => setShowGroupInfoModal(true)}
-            className="p-2 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors cursor-pointer shrink-0"
-            title="Grup Bilgilerini Görüntüle"
-          >
-            <Users className="w-5 h-5" />
-          </button>
-        ) : otherUserObj ? (
-          <button
-            onClick={() => onOpenProfile(otherUserObj)}
-            className="p-2 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors cursor-pointer shrink-0"
-            title="Kullanıcı Profilini Görüntüle"
-          >
-            <Info className="w-5 h-5" />
-          </button>
-        ) : null}
+        {/* Action Buttons (Report + Group Info / Profile Info) */}
+        <div className="flex items-center gap-1 shrink-0">
+          {!isDirectAIChat && conversation && (
+            <button
+              onClick={() => {
+                const defaultTarget = conversation.isGroup
+                  ? conversation.participantIds.find((id) => id !== currentUser.uid) || ''
+                  : otherParticipantId || '';
+                setReportTargetUid(defaultTarget);
+                setReportCategory('harassment');
+                setReportReason('');
+                setReportMessageId(null);
+                setReportExcerpt(null);
+                setReportFeedback(null);
+                setReportModalOpen(true);
+              }}
+              className="p-2 text-zinc-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 rounded-xl transition-colors cursor-pointer shrink-0"
+              title="Kullanıcıyı / Sohbeti Şikâyet Et"
+            >
+              <Flag className="w-4 h-4" />
+            </button>
+          )}
+          {conversation?.isGroup ? (
+            <button
+              onClick={() => setShowGroupInfoModal(true)}
+              className="p-2 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors cursor-pointer shrink-0"
+              title="Grup Bilgilerini Görüntüle"
+            >
+              <Users className="w-5 h-5" />
+            </button>
+          ) : otherUserObj ? (
+            <button
+              onClick={() => onOpenProfile(otherUserObj)}
+              className="p-2 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl transition-colors cursor-pointer shrink-0"
+              title="Kullanıcı Profilini Görüntüle"
+            >
+              <Info className="w-5 h-5" />
+            </button>
+          ) : null}
+        </div>
       </div>
 
       {/* Messages Scroll Area */}
@@ -2065,6 +2127,29 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 </button>
               </>
             )}
+
+            {/* Başkasına Ait Mesajı Şikâyet Et */}
+            {selectedActionMessage.senderId !== currentUser.uid &&
+              selectedActionMessage.senderId !== REDCHAT_AI_UID &&
+              !isDirectAIChat && (
+                <button
+                  onClick={() => {
+                    const targetId = selectedActionMessage.senderId;
+                    setReportTargetUid(targetId);
+                    setReportCategory('harassment');
+                    setReportReason('');
+                    setReportMessageId(selectedActionMessage.id);
+                    setReportExcerpt(selectedActionMessage.text?.slice(0, 200) || '[Medya Mesajı]');
+                    setReportFeedback(null);
+                    setSelectedActionMessage(null);
+                    setReportModalOpen(true);
+                  }}
+                  className="w-full px-3 py-2.5 text-xs font-semibold text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/40 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer"
+                >
+                  <Flag className="w-4 h-4" />
+                  <span>Mesajı Şikâyet Et</span>
+                </button>
+              )}
 
             <button
               onClick={() => setSelectedActionMessage(null)}
@@ -2464,7 +2549,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               Bu kullanıcı e-posta incelemesine alındığı için şu anda sohbet kullanılamıyor.
             </p>
           </div>
-        ) : currentUser.isBanned ? (
+        ) : isUserEffectivelyBanned(currentUser) ? (
           <div className="flex items-center justify-center gap-2.5 p-3.5 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 rounded-2xl text-red-600 dark:text-red-400 text-xs font-semibold text-center">
             <Ban className="w-4 h-4 shrink-0 text-red-600" />
             <span>Hesabınız askıya alınmıştır (Banlandınız). Mesaj gönderemezsiniz.</span>
@@ -2479,10 +2564,17 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               E-posta incelemesinde olduğunuz için mesaj gönderemezsiniz.
             </p>
           </div>
-        ) : currentUser.isMuted ? (
-          <div className="flex items-center justify-center gap-2.5 p-3.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-2xl text-amber-600 dark:text-amber-400 text-xs font-semibold text-center">
-            <VolumeX className="w-4 h-4 shrink-0 text-amber-600" />
-            <span>Hesabınız susturulmuştur. Sohbetleri okuyabilirsiniz ancak mesaj gönderemezsiniz.</span>
+        ) : isUserEffectivelyMuted(currentUser) ? (
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-2 p-3.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 rounded-2xl text-amber-600 dark:text-amber-400 text-xs font-semibold text-center">
+            <div className="flex items-center gap-2">
+              <VolumeX className="w-4 h-4 shrink-0 text-amber-600" />
+              <span>Hesabınız susturulmuştur. Sohbetleri okuyabilirsiniz ancak mesaj gönderemezsiniz.</span>
+            </div>
+            {currentUser.muteType === 'temporary' && currentUser.muteExpiresAt && (
+              <span className="px-2 py-0.5 rounded-full bg-amber-200/70 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 text-[11px] font-bold shrink-0">
+                Kalan: {formatRemainingTime(currentUser.muteExpiresAt, muteCountdownNow)}
+              </span>
+            )}
           </div>
         ) : isSessionTerminated ? (
           <div
@@ -2870,6 +2962,179 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             onBack();
           }}
         />
+      )}
+
+      {/* 🚩 Şikâyet / İhlal Bildirim Modalı */}
+      {reportModalOpen && conversation && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in"
+          onClick={() => !submittingReport && setReportModalOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl w-full max-w-md p-5 sm:p-6 shadow-2xl space-y-4 animate-in zoom-in-95"
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-500">
+                  <Flag className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
+                    Moderasyona Şikâyet Et
+                  </h3>
+                  <p className="text-[11px] text-zinc-400">
+                    İlgili sohbet yalnızca moderasyon incelemesine açılır.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReportModalOpen(false)}
+                disabled={submittingReport}
+                className="p-1.5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {reportFeedback && (
+              <div
+                className={`p-3 rounded-xl text-xs font-semibold border ${
+                  reportFeedback.type === 'success'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900 text-emerald-600 dark:text-emerald-400'
+                    : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-900 text-rose-600 dark:text-rose-400'
+                }`}
+              >
+                {reportFeedback.text}
+              </div>
+            )}
+
+            <div className="space-y-3 text-xs">
+              {conversation.isGroup && (
+                <div>
+                  <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                    Şikâyet Edilen Üye
+                  </label>
+                  <select
+                    value={reportTargetUid}
+                    onChange={(e) => setReportTargetUid(e.target.value)}
+                    disabled={submittingReport}
+                    className="w-full px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-amber-500/30"
+                  >
+                    {conversation.participantIds
+                      .filter((id) => id !== currentUser.uid && id !== REDCHAT_AI_UID)
+                      .map((id) => {
+                        const u = allUsers.find((usr) => usr.uid === id);
+                        const p = conversation.participants?.[id];
+                        return (
+                          <option key={id} value={id}>
+                            {u?.displayName || p?.displayName || u?.username || p?.username || id} (@
+                            {u?.username || p?.username || id.slice(0, 6)})
+                          </option>
+                        );
+                      })}
+                  </select>
+                </div>
+              )}
+
+              <div>
+                <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                  İhlal Kategorisi
+                </label>
+                <select
+                  value={reportCategory}
+                  onChange={(e) => setReportCategory(e.target.value as UserReportCategory)}
+                  disabled={submittingReport}
+                  className="w-full px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-amber-500/30"
+                >
+                  <option value="harassment">Hakaret / Taciz</option>
+                  <option value="spam">Spam / Flood</option>
+                  <option value="scam">Dolandırıcılık / Sahtecilik</option>
+                  <option value="inappropriate">Uygunsuz İçerik</option>
+                  <option value="other">Diğer</option>
+                </select>
+              </div>
+
+              {reportExcerpt && (
+                <div className="p-2.5 rounded-xl bg-zinc-100 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700 text-[11px] text-zinc-600 dark:text-zinc-300">
+                  <span className="font-bold block text-zinc-500 mb-0.5">Alıntılanan Mesaj:</span>
+                  <span className="italic">"{reportExcerpt}"</span>
+                </div>
+              )}
+
+              <div>
+                <label className="block font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                  Açıklama <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  rows={3}
+                  maxLength={800}
+                  value={reportReason}
+                  onChange={(e) => setReportReason(e.target.value)}
+                  disabled={submittingReport}
+                  placeholder="Lütfen yaşadığınız durumu kısaca açıklayın (en az 5 karakter)..."
+                  className="w-full px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-amber-500/30 resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setReportModalOpen(false)}
+                disabled={submittingReport}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 cursor-pointer"
+              >
+                Vazgeç
+              </button>
+              <button
+                type="button"
+                disabled={submittingReport || !reportTargetUid || reportReason.trim().length < 5}
+                onClick={async () => {
+                  setSubmittingReport(true);
+                  setReportFeedback(null);
+                  try {
+                    const targetU = allUsers.find((u) => u.uid === reportTargetUid);
+                    const targetP = conversation.participants?.[reportTargetUid];
+                    await submitUserComplaint({
+                      reporter: currentUser,
+                      reportedUid: reportTargetUid,
+                      reportedUsername: targetU?.username || targetP?.username || '',
+                      conversationId: conversation.id,
+                      messageId: reportMessageId,
+                      messageExcerpt: reportExcerpt,
+                      category: reportCategory,
+                      reason: reportReason.trim(),
+                    });
+                    setReportFeedback({
+                      type: 'success',
+                      text: 'Şikâyetiniz moderasyon ekibine iletildi.',
+                    });
+                    setTimeout(() => {
+                      setReportModalOpen(false);
+                    }, 1200);
+                  } catch (err: any) {
+                    setReportFeedback({
+                      type: 'error',
+                      text: err?.message || 'Şikâyet gönderilemedi.',
+                    });
+                  } finally {
+                    setSubmittingReport(false);
+                  }
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white flex items-center gap-1.5 cursor-pointer"
+              >
+                {submittingReport ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Flag className="w-3.5 h-3.5" />
+                )}
+                <span>Şikâyeti Gönder</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -20,6 +20,7 @@ import {
 import { db } from './firebase';
 import type { Conversation, ChatMessage, UserProfile, ChatReplyReference, GroupRole } from '../types';
 import { sendPushNotification } from './messagingService';
+import { isUserEffectivelyBanned, isUserEffectivelyMuted } from './moderationService';
 
 /**
  * Kullanıcının grup içindeki güncel ve gerçek rolünü döner ('owner' | 'admin' | 'member').
@@ -69,7 +70,7 @@ export async function createGroupConversation(
 ): Promise<string> {
   if (!db) throw new Error('Firestore bağlantısı hazır değil');
 
-  if (currentUser.isBanned) {
+  if (isUserEffectivelyBanned(currentUser)) {
     throw new Error('Hesabınız askıya alınmıştır (Banlandınız). Grup oluşturamazsınız.');
   }
 
@@ -922,11 +923,11 @@ export async function sendMessage(
 ): Promise<string> {
   if (!db) throw new Error('Firestore hazır değil');
   
-  if (sender.isBanned) {
+  if (isUserEffectivelyBanned(sender)) {
     throw new Error('Hesabınız askıya alınmıştır (Banlandınız). Mesaj gönderemezsiniz.');
   }
 
-  if (sender.isMuted) {
+  if (isUserEffectivelyMuted(sender)) {
     throw new Error('Hesabınız susturulmuştur. Mesaj gönderemezsiniz.');
   }
 
