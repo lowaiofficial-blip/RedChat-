@@ -60,6 +60,8 @@ import {
   registerOrVerifyDeviceSession,
   subscribeToSessionStatus,
   clearLocalSessionCredentials,
+  verifyActiveSessionOnServer,
+  checkServerMainAdminStatus,
 } from './services/sessionSecurityService';
 import { subscribeToDeviceBanStatus, syncCurrentDeviceInfo, checkDeviceBanNow } from './services/deviceService';
 import { subscribeToBlockedUsers, unblockUser } from './services/blockService';
@@ -127,9 +129,11 @@ export default function App() {
   const currentSecuritySessionRef = React.useRef<SecuritySession | null>(null);
   currentSecuritySessionRef.current = currentSecuritySession;
 
-  // 🛡️ Sunucu Doğrulamalı Moderatör Yetkisi (Muse)
+  // 🛡️ Sunucu Doğrulamalı Yönetici & Moderatör Yetkisi
   const [serverVerifiedModerator, setServerVerifiedModerator] = useState<boolean>(false);
   const [moderatorGrantActive, setModeratorGrantActive] = useState<boolean | null>(null);
+  const [serverMainAdmin, setServerMainAdmin] = useState<boolean>(false);
+  const [adminSecurityReviewUnlocked, setAdminSecurityReviewUnlocked] = useState<boolean>(false);
 
   // 🚫 Kullanıcı Engelleme State'i (Gerçek Zamanlı & Cihazlar Arası Senkron)
   const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
@@ -230,6 +234,8 @@ export default function App() {
         setActiveConversationId(null);
         setCurrentSecuritySession(null);
         setSessionCheckLoading(false);
+        setServerMainAdmin(false);
+        setAdminSecurityReviewUnlocked(false);
       }
     });
 
@@ -302,15 +308,76 @@ export default function App() {
           updatedSession.userResponse !== 'denied_not_me'
         ) {
           clearLocalSessionCredentials(currentUserAuth.uid);
-          setSessionRevokedNotice('Bu cihazdaki oturumunuz güvenlik nedeniyle sonlandırıldı.');
+          setSessionRevokedNotice(
+            updatedSession.verificationStatus === 'expired'
+              ? 'Oturum süreniz dolduğu için güvenli çıkış yapıldı.'
+              : 'Bu cihazdaki oturumunuz güvenlik nedeniyle sonlandırıldı.'
+          );
           await setUserOnlineStatus(currentUserAuth.uid, false);
           await logoutUser();
         }
       }
     );
 
-    return () => unsubSession();
+    // Sunucu tarafında süre dolumu (expiresAt) ve iptal kontrolünü periyodik olarak çalıştır
+    const checkServerSession = async () => {
+      try {
+        const res = await verifyActiveSessionOnServer(currentUserAuth);
+        if (res.reason === 'SESSION_EXPIRED' || (res.status === 'revoked' && res.reason === 'SESSION_REVOKED')) {
+          if (currentSecuritySessionRef.current?.userResponse === 'denied_not_me') return;
+          clearLocalSessionCredentials(currentUserAuth.uid);
+          setSessionRevokedNotice(
+            res.reason === 'SESSION_EXPIRED'
+              ? 'Oturum süreniz dolduğu için güvenli çıkış yapıldı.'
+              : 'Bu cihazdaki oturumunuz güvenlik nedeniyle sonlandırıldı.'
+          );
+          await setUserOnlineStatus(currentUserAuth.uid, false);
+          await logoutUser();
+        }
+      } catch {
+        // Ağ hatasında mevcut yerel akışı bozma
+      }
+    };
+
+    const sessionCheckInterval = setInterval(checkServerSession, 45000);
+    const handleFocusSessionCheck = () => {
+      if (document.visibilityState === 'visible') {
+        checkServerSession();
+      }
+    };
+    window.addEventListener('focus', handleFocusSessionCheck);
+
+    return () => {
+      unsubSession();
+      clearInterval(sessionCheckInterval);
+      window.removeEventListener('focus', handleFocusSessionCheck);
+    };
   }, [currentUserAuth?.uid, currentSecuritySession?.sessionId]);
+
+  // 1c. Sunucu Taraflı Ana Yönetici Doğrulaması
+  useEffect(() => {
+    let active = true;
+    if (!currentUserAuth?.uid) {
+      setServerMainAdmin(false);
+      return;
+    }
+    checkServerMainAdminStatus()
+      .then((res) => {
+        if (active) setServerMainAdmin(Boolean(res.isMainAdmin));
+      })
+      .catch(() => {
+        if (active) setServerMainAdmin(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [currentUserAuth?.uid]);
+
+  useEffect(() => {
+    if (currentSecuritySession?.status === 'active' && adminSecurityReviewUnlocked) {
+      setAdminSecurityReviewUnlocked(false);
+    }
+  }, [currentSecuritySession?.status, adminSecurityReviewUnlocked]);
 
   // 2. Logged-in User Profile Listener
   useEffect(() => {
@@ -1000,6 +1067,37 @@ export default function App() {
     );
   }
 
+  // 🛡️ Admin & Moderatör Panel Route Kontrolü
+  const isAdminRoute = currentHash === '#/admin' || currentHash.startsWith('#/admin');
+
+  // 🛡️ Ana Yönetici Kısıtlı Güvenlik İnceleme Modu (Pending oturumda yalnızca Şüpheli Oturumlar açılabilir, sohbetler kilitlidir)
+  if (
+    currentSecuritySession &&
+    currentSecuritySession.status === 'pending_verification' &&
+    isUserAnAdmin &&
+    serverMainAdmin &&
+    isAdminRoute &&
+    adminSecurityReviewUnlocked
+  ) {
+    return (
+      <AdminPanel
+        currentUser={currentUserProfile}
+        allUsers={displayedUsers}
+        appSettings={appSettings}
+        isVerifiedModerator={false}
+        restrictedSecurityReviewOnly={true}
+        onReturnToSecurityScreen={() => {
+          setAdminSecurityReviewUnlocked(false);
+          window.location.hash = '#/';
+        }}
+        onNavigateHome={() => {
+          setAdminSecurityReviewUnlocked(false);
+          window.location.hash = '#/';
+        }}
+      />
+    );
+  }
+
   // 🌍 Yeni Ülke / Şüpheli Oturum Güvenlik Ekranı (Karar verilmeden / onaylanmadan sohbet kilitlenir)
   if (currentSecuritySession && currentSecuritySession.status !== 'active') {
     return (
@@ -1007,14 +1105,20 @@ export default function App() {
         user={currentUserProfile}
         session={currentSecuritySession}
         onSessionUpdated={(updated) => setCurrentSecuritySession(updated)}
+        onEnterAdminSecurityReview={
+          isUserAnAdmin && serverMainAdmin
+            ? () => {
+                setAdminSecurityReviewUnlocked(true);
+                window.location.hash = '#/admin';
+              }
+            : undefined
+        }
         onLogout={logoutUser}
       />
     );
   }
 
-
   // 🛡️ Admin & Moderatör Panel Route (/#/admin)
-  const isAdminRoute = currentHash === '#/admin' || currentHash.startsWith('#/admin');
   if (isAdminRoute) {
     return (
       <AdminPanel

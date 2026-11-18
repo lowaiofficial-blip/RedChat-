@@ -94,6 +94,8 @@ interface AdminPanelProps {
   allUsers: UserProfile[];
   appSettings: AppSettings | null;
   isVerifiedModerator?: boolean;
+  restrictedSecurityReviewOnly?: boolean;
+  onReturnToSecurityScreen?: () => void;
   onNavigateHome: () => void;
 }
 
@@ -102,9 +104,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   allUsers: initialAllUsers,
   appSettings,
   isVerifiedModerator = false,
+  restrictedSecurityReviewOnly = false,
+  onReturnToSecurityScreen,
   onNavigateHome,
 }) => {
   const isAdmin = isUserAdmin(currentUser);
+  const isRestrictedSecurityMode = isAdmin && Boolean(restrictedSecurityReviewOnly);
   const [verifiedMod, setVerifiedMod] = useState<boolean>(isVerifiedModerator);
   const [verifyingMod, setVerifyingMod] = useState<boolean>(false);
 
@@ -161,8 +166,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     return map;
   }, [localUsers]);
 
-  const [activeTab, setActiveTab] = useState<'users' | 'reports' | 'modlogs' | 'ai_users' | 'ipbans' | 'suspicious_sessions' | 'password_resets' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'reports' | 'modlogs' | 'ai_users' | 'ipbans' | 'suspicious_sessions' | 'password_resets' | 'verifications' | 'chatlogs' | 'channels' | 'badge' | 'ai' | 'overview'>(
+    isRestrictedSecurityMode ? 'suspicious_sessions' : 'users'
+  );
   const [pendingSuspiciousCount, setPendingSuspiciousCount] = useState(0);
+
+  // Kısıtlı Ana Yönetici Güvenlik İnceleme modunda yalnızca Şüpheli Oturumlar sekmesi açıktır
+  useEffect(() => {
+    if (isRestrictedSecurityMode && activeTab !== 'suspicious_sessions') {
+      setActiveTab('suspicious_sessions');
+    }
+  }, [isRestrictedSecurityMode, activeTab]);
 
   // Moderatör yalnızca izinli sekmelere erişebilir
   useEffect(() => {
@@ -1102,9 +1116,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
               <button
-                onClick={onNavigateHome}
+                onClick={isRestrictedSecurityMode ? (onReturnToSecurityScreen || onNavigateHome) : onNavigateHome}
                 className="p-2 -ml-1 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-xl text-zinc-600 dark:text-zinc-300 transition-colors cursor-pointer"
-                title="Sohbete Dön"
+                title={isRestrictedSecurityMode ? 'Güvenlik Ekranına Dön' : 'Sohbete Dön'}
               >
                 <ArrowLeft className="w-5 h-5" />
               </button>
@@ -1114,16 +1128,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <h1 className="text-sm sm:text-base font-black text-zinc-900 dark:text-zinc-100 tracking-tight">
-                    {isAdmin ? 'RedChat Admin' : 'RedChat Moderasyon'}
+                    {isRestrictedSecurityMode
+                      ? 'Ana Yönetici Güvenlik İncelemesi'
+                      : isAdmin
+                        ? 'RedChat Admin'
+                        : 'RedChat Moderasyon'}
                   </h1>
                   <span
                     className={`px-1.5 py-0.5 rounded-md text-[10px] font-extrabold uppercase ${
-                      isAdmin
-                        ? 'bg-red-100 dark:bg-red-950/80 text-red-600 dark:text-red-400'
-                        : 'bg-amber-100 dark:bg-amber-950/80 text-amber-600 dark:text-amber-400'
+                      isRestrictedSecurityMode
+                        ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-700 dark:text-amber-300'
+                        : isAdmin
+                          ? 'bg-red-100 dark:bg-red-950/80 text-red-600 dark:text-red-400'
+                          : 'bg-amber-100 dark:bg-amber-950/80 text-amber-600 dark:text-amber-400'
                     }`}
                   >
-                    {isAdmin ? 'Ana Yönetici' : 'Moderatör (Sınırlı Yetki)'}
+                    {isRestrictedSecurityMode
+                      ? 'Kısıtlı Kurtarma Modu'
+                      : isAdmin
+                        ? 'Ana Yönetici'
+                        : 'Moderatör (Sınırlı Yetki)'}
                   </span>
                 </div>
                 <p className="text-[11px] text-zinc-400 truncate max-w-[240px] sm:max-w-xs">
@@ -1133,14 +1157,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
 
             <button
-              onClick={onNavigateHome}
+              onClick={isRestrictedSecurityMode ? (onReturnToSecurityScreen || onNavigateHome) : onNavigateHome}
               className="md:hidden px-2.5 py-1.5 text-[11px] font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-200 rounded-lg hover:bg-zinc-200 transition-colors cursor-pointer"
             >
-              Çıkış
+              {isRestrictedSecurityMode ? 'Güvenlik Ekranı' : 'Çıkış'}
             </button>
           </div>
 
-          {/* Sağ: Sekmeler */}
+          {/* Sağ: Sekmeler (Kısıtlı güvenlik inceleme modunda yalnızca Şüpheli Oturumlar gösterilir) */}
+          {isRestrictedSecurityMode ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="px-3 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 text-[11px] font-bold text-amber-800 dark:text-amber-300 flex items-center gap-1.5">
+                <Lock className="w-3.5 h-3.5 shrink-0" />
+                <span>Oturum doğrulanana kadar diğer yönetici sekmeleri ve sohbetler kilitlidir.</span>
+              </div>
+              {onReturnToSecurityScreen && (
+                <button
+                  onClick={onReturnToSecurityScreen}
+                  className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Güvenlik Ekranına Dön
+                </button>
+              )}
+            </div>
+          ) : (
           <nav className="flex items-center gap-1 bg-zinc-100/90 dark:bg-zinc-800/90 p-1 rounded-xl overflow-x-auto no-scrollbar max-w-full">
             <button
               onClick={() => setActiveTab('users')}
@@ -1299,12 +1339,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </>
             )}
           </nav>
+          )}
         </div>
       </header>
 
       {/* 📱💻 ANA İÇERİK ALANI */}
       <main className="flex-1 w-full overflow-y-auto overflow-x-hidden p-3 sm:p-5 md:p-8">
         <div className="max-w-7xl mx-auto space-y-6">
+          {/* TAB: ŞÜPHELİ OTURUMLAR (Yalnızca Ana Yönetici) */}
+          {isAdmin && activeTab === 'suspicious_sessions' && (
+            <AdminSuspiciousSessionsTab
+              currentUser={currentUser}
+              allUsers={localUsers}
+            />
+          )}
+
+          {!isRestrictedSecurityMode && (
+            <>
           {/* TAB: ŞİKÂYETLER & ŞÜPHELİ DAVRANIŞ RAPORLAMA */}
           {activeTab === 'reports' && (
             <AdminModerationReportsTab
@@ -1328,14 +1379,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           {/* TAB: IP & DONANIM BANLARI (Yalnızca Ana Yönetici) */}
           {isAdmin && activeTab === 'ipbans' && (
             <AdminIpBanTab
-              currentUser={currentUser}
-              allUsers={localUsers}
-            />
-          )}
-
-          {/* TAB: ŞÜPHELİ OTURUMLAR (Yalnızca Ana Yönetici) */}
-          {isAdmin && activeTab === 'suspicious_sessions' && (
-            <AdminSuspiciousSessionsTab
               currentUser={currentUser}
               allUsers={localUsers}
             />
@@ -2951,6 +2994,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               </div>
             </div>
+          )}
+            </>
           )}
         </div>
       </main>

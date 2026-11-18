@@ -356,6 +356,12 @@ export type SecuritySessionStatus =
   | 'awaiting_admin_approval'
   | 'revoked';
 
+export type SecurityVerificationStatus =
+  | 'pending'
+  | 'verified'
+  | 'denied'
+  | 'expired';
+
 export type SecuritySessionUserResponse =
   | 'pending'
   | 'confirmed_me'
@@ -368,32 +374,52 @@ export type SecuritySessionAdminDecision =
   | 'revoked'
   | 'auto_trusted';
 
+export interface SecurityEmailDispatchInfo {
+  sent: boolean;
+  status: 'sent' | 'failed' | 'not_configured' | 'skipped';
+  recipient?: string | null;
+  subject?: string | null;
+  sentAt?: any;
+  error?: string | null;
+}
+
 export interface SecuritySession {
   id: string;
   sessionId: string;
+  uid?: string;
   userId: string;
   username: string;
   displayName: string;
   photoURL: string | null;
   deviceId: string;
+  deviceSignature?: string | null;
   deviceType: 'desktop' | 'tablet' | 'mobile' | 'unknown';
   browserName: string;
   osName: string;
   countryCode: string;
   countryName: string;
   flagEmoji: string;
+  city?: string | null;
   previousCountryCode?: string | null;
   previousCountryName?: string | null;
   isSuspicious: boolean;
   trusted: boolean;
   status: SecuritySessionStatus;
+  sessionStatus?: 'active' | 'pending_verification' | 'revoked';
+  verificationStatus?: SecurityVerificationStatus;
   userResponse: SecuritySessionUserResponse;
   adminDecision: SecuritySessionAdminDecision;
   emailSent?: boolean;
   emailStatus?: 'sent' | 'failed' | 'not_configured' | 'skipped';
   emailError?: string | null;
+  emailRecipient?: string | null;
+  emailDispatches?: Record<string, SecurityEmailDispatchInfo>;
   createdAt: any;
   lastActiveAt: any;
+  lastSeenAt?: any;
+  verifiedAt?: any;
+  expiresAt?: any;
+  challengeExpiresAt?: any;
   userRespondedAt?: any;
   adminReviewedAt?: any;
   adminReviewedBy?: string | null;
@@ -405,6 +431,7 @@ export interface SecuritySession {
 export interface SecuritySessionNetwork {
   id: string;
   sessionId: string;
+  uid?: string;
   userId: string;
   ip: string;
   city?: string | null;
@@ -414,6 +441,7 @@ export interface SecuritySessionNetwork {
   countryName: string;
   userAgentRaw?: string;
   proofHash?: string;
+  deviceSignature?: string | null;
   createdAt: any;
   updatedAt?: any;
 }

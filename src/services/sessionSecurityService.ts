@@ -8,7 +8,7 @@ import {
 } from 'firebase/firestore';
 import type { User } from 'firebase/auth';
 import { auth, db } from './firebase';
-import { getHardwareDeviceId, getClientIp } from './deviceService';
+import { getHardwareDeviceId, getDeviceSignals, getClientIp } from './deviceService';
 import type {
   SecuritySession,
   SecuritySessionNetwork,
@@ -101,6 +101,17 @@ export function getLocalSessionCredentials(uid: string): LocalSessionCredentials
   return null;
 }
 
+export function getActiveSessionHeaders(uid?: string): Record<string, string> {
+  const targetUid = uid || auth?.currentUser?.uid;
+  if (!targetUid) return {};
+  const creds = getLocalSessionCredentials(targetUid);
+  if (!creds) return {};
+  return {
+    'X-RedChat-Session-Id': creds.sessionId,
+    'X-RedChat-Session-Proof': creds.sessionProof,
+  };
+}
+
 function saveLocalSessionCredentials(uid: string, creds: LocalSessionCredentials): void {
   if (!uid || typeof window === 'undefined') return;
   try {
@@ -134,6 +145,7 @@ export async function registerOrVerifyDeviceSession(user: User): Promise<{
 }> {
   const idToken = await user.getIdToken();
   const deviceId = getHardwareDeviceId();
+  const deviceSignals = getDeviceSignals();
   const existing = getLocalSessionCredentials(user.uid);
 
   let isFreshLogin = false;
@@ -158,12 +170,14 @@ export async function registerOrVerifyDeviceSession(user: User): Promise<{
 
   const resp = await fetch('/api/security/sessions/register', {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${idToken}`,
     },
     body: JSON.stringify({
       deviceId,
+      deviceSignals,
       userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
       existingSessionId: existing?.sessionId,
       existingSessionProof: existing?.sessionProof,
@@ -192,37 +206,171 @@ export async function registerOrVerifyDeviceSession(user: User): Promise<{
   return { session, sessionProof };
 }
 
-export async function respondToSuspiciousSession(
+export async function verifyActiveSessionOnServer(user: User): Promise<{
+  active: boolean;
+  status?: string;
+  reason?: string;
+}> {
+  const creds = getLocalSessionCredentials(user.uid);
+  if (!creds) return { active: false, reason: 'MISSING_LOCAL_CREDS' };
+
+  const idToken = await user.getIdToken();
+  const resp = await fetch('/api/security/sessions/verify-active', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${idToken}`,
+    },
+    body: JSON.stringify({
+      sessionId: creds.sessionId,
+      sessionProof: creds.sessionProof,
+    }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  return {
+    active: Boolean(data?.active),
+    status: data?.status,
+    reason: data?.reason,
+  };
+}
+
+export async function checkServerMainAdminStatus(): Promise<{
+  isMainAdmin: boolean;
+  recentReauthValid: boolean;
+  authAgeSeconds: number | null;
+}> {
+  const user = auth?.currentUser;
+  if (!user) return { isMainAdmin: false, recentReauthValid: false, authAgeSeconds: null };
+  const idToken = await user.getIdToken();
+  const resp = await fetch('/api/security/sessions/admin-status', {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+    },
+  });
+  const data = await resp.json().catch(() => ({}));
+  return {
+    isMainAdmin: Boolean(data?.isMainAdmin),
+    recentReauthValid: Boolean(data?.recentReauthValid),
+    authAgeSeconds: typeof data?.authAgeSeconds === 'number' ? data.authAgeSeconds : null,
+  };
+}
+
+export async function verifySecurityChallenge(
   sessionId: string,
-  response: 'confirmed_me' | 'denied_not_me'
-): Promise<SecuritySession> {
+  params: { challengeToken?: string; otpCode?: string }
+): Promise<{ verified: boolean; challengeProof: string; expiresAtMs: number }> {
   const user = auth?.currentUser;
   if (!user) throw new Error('Aktif kullanıcı oturumu bulunamadı.');
 
-  const creds = getLocalSessionCredentials(user.uid);
-  if (!creds || creds.sessionId !== sessionId) {
-    throw new Error('Bu cihaz için doğrulanmış oturum kanıtı bulunamadı.');
-  }
-
   const idToken = await user.getIdToken();
-  const resp = await fetch('/api/security/sessions/respond', {
+  const resp = await fetch('/api/security/sessions/verify-challenge', {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${idToken}`,
     },
     body: JSON.stringify({
       sessionId,
-      sessionProof: creds.sessionProof,
-      response,
+      ...params,
     }),
   });
 
-  const data = await resp.json();
-  if (!resp.ok || !data?.session) {
-    throw new Error(data?.error || 'Güvenlik yanıtı işlenemedi.');
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data?.challengeProof) {
+    throw new Error(data?.error || 'E-posta doğrulama kodu veya bağlantısı geçersiz.');
   }
+  return {
+    verified: true,
+    challengeProof: String(data.challengeProof),
+    expiresAtMs: Number(data.expiresAtMs || 0),
+  };
+}
 
+export async function submitOwnerSessionDecision(
+  sessionId: string,
+  challengeProof: string,
+  decision: 'confirmed_me' | 'denied_not_me'
+): Promise<SecuritySession> {
+  const user = auth?.currentUser;
+  if (!user) throw new Error('Aktif kullanıcı oturumu bulunamadı.');
+
+  const idToken = await user.getIdToken();
+  const resp = await fetch('/api/security/sessions/owner-decide', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${idToken}`,
+    },
+    body: JSON.stringify({
+      sessionId,
+      challengeProof,
+      decision,
+    }),
+  });
+
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data?.session) {
+    throw new Error(data?.error || 'Güvenlik kararı işlenemedi.');
+  }
+  return data.session as SecuritySession;
+}
+
+export async function resendSecurityChallenge(sessionId: string): Promise<{
+  sent: boolean;
+  status: string;
+  error?: string;
+}> {
+  const user = auth?.currentUser;
+  if (!user) throw new Error('Aktif kullanıcı oturumu bulunamadı.');
+
+  const idToken = await user.getIdToken();
+  const resp = await fetch('/api/security/sessions/resend-challenge', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${idToken}`,
+    },
+    body: JSON.stringify({ sessionId }),
+  });
+
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(data?.error || 'Doğrulama e-postası yeniden gönderilemedi.');
+  }
+  return data.emailResult || { sent: false, status: 'failed' };
+}
+
+export async function recoverMainAdminSession(
+  sessionId: string,
+  challengeProof?: string
+): Promise<SecuritySession> {
+  const user = auth?.currentUser;
+  if (!user) throw new Error('Aktif kullanıcı oturumu bulunamadı.');
+
+  const idToken = await user.getIdToken(true);
+  const resp = await fetch('/api/admin/security/recover-self', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${idToken}`,
+      ...getActiveSessionHeaders(user.uid),
+    },
+    body: JSON.stringify({
+      sessionId,
+      ...(challengeProof ? { challengeProof } : {}),
+    }),
+  });
+
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data?.session) {
+    throw new Error(data?.error || 'Ana Yönetici oturum kurtarma işlemi başarısız.');
+  }
   return data.session as SecuritySession;
 }
 
@@ -241,6 +389,7 @@ export async function revokeAllOtherUserSessions(sessionId: string): Promise<{
   const idToken = await user.getIdToken();
   const resp = await fetch('/api/security/sessions/revoke-other-all', {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${idToken}`,
@@ -383,7 +532,39 @@ export function subscribeToAdminLogs(
   );
 }
 
-export async function adminApproveSession(sessionId: string): Promise<void> {
+export async function fetchAdminUserSessionHistory(
+  targetUid: string,
+  challengeProof?: string
+): Promise<{
+  sessions: SecuritySession[];
+  networkMap: Record<string, SecuritySessionNetwork>;
+}> {
+  const user = auth?.currentUser;
+  if (!user) throw new Error('Oturum bulunamadı.');
+  const idToken = await user.getIdToken();
+
+  const resp = await fetch(`/api/admin/security/sessions/history/${encodeURIComponent(targetUid)}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+      ...getActiveSessionHeaders(user.uid),
+      ...(challengeProof ? { 'X-RedChat-Challenge-Proof': challengeProof } : {}),
+    },
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(data?.error || 'Oturum geçmişi alınamadı.');
+  }
+  return {
+    sessions: Array.isArray(data.sessions) ? data.sessions : [],
+    networkMap: data.networkMap || {},
+  };
+}
+
+export async function adminApproveSession(
+  sessionId: string,
+  challengeProof?: string
+): Promise<void> {
   const user = auth?.currentUser;
   if (!user) throw new Error('Oturum bulunamadı.');
   const idToken = await user.getIdToken();
@@ -393,8 +574,12 @@ export async function adminApproveSession(sessionId: string): Promise<void> {
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${idToken}`,
+      ...getActiveSessionHeaders(user.uid),
     },
-    body: JSON.stringify({ sessionId }),
+    body: JSON.stringify({
+      sessionId,
+      ...(challengeProof ? { challengeProof } : {}),
+    }),
   });
 
   const data = await resp.json();
@@ -403,7 +588,10 @@ export async function adminApproveSession(sessionId: string): Promise<void> {
   }
 }
 
-export async function adminRevokeSingleSession(sessionId: string): Promise<void> {
+export async function adminRevokeSingleSession(
+  sessionId: string,
+  challengeProof?: string
+): Promise<void> {
   const user = auth?.currentUser;
   if (!user) throw new Error('Oturum bulunamadı.');
   const idToken = await user.getIdToken();
@@ -413,8 +601,12 @@ export async function adminRevokeSingleSession(sessionId: string): Promise<void>
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${idToken}`,
+      ...getActiveSessionHeaders(user.uid),
     },
-    body: JSON.stringify({ sessionId }),
+    body: JSON.stringify({
+      sessionId,
+      ...(challengeProof ? { challengeProof } : {}),
+    }),
   });
 
   const data = await resp.json();
@@ -425,7 +617,8 @@ export async function adminRevokeSingleSession(sessionId: string): Promise<void>
 
 export async function adminRevokeAllUserSessions(
   targetUid: string,
-  targetUsername?: string
+  targetUsername?: string,
+  challengeProof?: string
 ): Promise<{ revokedCount: number; firebaseTokensRevoked: boolean }> {
   const user = auth?.currentUser;
   if (!user) throw new Error('Oturum bulunamadı.');
@@ -436,8 +629,13 @@ export async function adminRevokeAllUserSessions(
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${idToken}`,
+      ...getActiveSessionHeaders(user.uid),
     },
-    body: JSON.stringify({ targetUid, targetUsername }),
+    body: JSON.stringify({
+      targetUid,
+      targetUsername,
+      ...(challengeProof ? { challengeProof } : {}),
+    }),
   });
 
   const data = await resp.json();

@@ -10,6 +10,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { auth, db } from './firebase';
+import { getActiveSessionHeaders } from './sessionSecurityService';
 import type {
   UserProfile,
   ModeratorGrant,
@@ -86,6 +87,7 @@ async function getBearerHeaders(): Promise<HeadersInit> {
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${token}`,
+    ...getActiveSessionHeaders(currentUser.uid),
   };
 }
 

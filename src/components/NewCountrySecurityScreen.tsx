@@ -1,9 +1,13 @@
-import React, { useState } from 'react';
-import { updatePassword } from 'firebase/auth';
+import React, { useEffect, useState } from 'react';
+import { EmailAuthProvider, reauthenticateWithCredential, updatePassword } from 'firebase/auth';
 import type { SecuritySession, UserProfile } from '../types';
 import { auth } from '../services/firebase';
 import {
-  respondToSuspiciousSession,
+  verifySecurityChallenge,
+  submitOwnerSessionDecision,
+  resendSecurityChallenge,
+  checkServerMainAdminStatus,
+  recoverMainAdminSession,
   revokeAllOtherUserSessions,
   formatSessionDateTime,
 } from '../services/sessionSecurityService';
@@ -21,12 +25,16 @@ import {
   KeyRound,
   Loader2,
   Lock,
+  Mail,
+  RefreshCw,
+  Shield,
 } from 'lucide-react';
 
 interface NewCountrySecurityScreenProps {
   user: UserProfile;
   session: SecuritySession;
   onSessionUpdated: (updated: SecuritySession) => void;
+  onEnterAdminSecurityReview?: () => void;
   onLogout: () => Promise<void> | void;
 }
 
@@ -34,10 +42,24 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
   user,
   session,
   onSessionUpdated,
+  onEnterAdminSecurityReview,
   onLogout,
 }) => {
+  const [otpInput, setOtpInput] = useState('');
+  const [challengeProof, setChallengeProof] = useState<string | null>(null);
+  const [verifyingChallenge, setVerifyingChallenge] = useState(false);
+  const [resendingEmail, setResendingEmail] = useState(false);
+  const [resendMessage, setResendMessage] = useState<string | null>(null);
+
   const [submittingChoice, setSubmittingChoice] = useState<'confirmed_me' | 'denied_not_me' | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Ana Yönetici güvenli kurtarma & inceleme modu
+  const [isServerMainAdmin, setIsServerMainAdmin] = useState(false);
+  const [recentReauthValid, setRecentReauthValid] = useState(false);
+  const [adminPassword, setAdminPassword] = useState('');
+  const [adminReauthLoading, setAdminReauthLoading] = useState(false);
+  const [adminRecovering, setAdminRecovering] = useState(false);
 
   // "Ben Değilim" sonrası hesap kurtarma ve şifre değiştirme durumları
   const [newPassword, setNewPassword] = useState('');
@@ -50,18 +72,148 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
 
   const isMobileOrTablet = session.deviceType === 'mobile' || session.deviceType === 'tablet';
 
+  // URL bağlantısında secSession & secToken varsa otomatik tek kullanımlık link doğrulaması yap
+  useEffect(() => {
+    if (session.status !== 'pending_verification' || challengeProof) return;
+
+    const searchParams = new URLSearchParams(window.location.search);
+    const hashQuery = window.location.hash.includes('?') ? window.location.hash.split('?')[1] : '';
+    const hashParams = new URLSearchParams(hashQuery);
+
+    const secSession = searchParams.get('secSession') || hashParams.get('secSession');
+    const secToken = searchParams.get('secToken') || hashParams.get('secToken');
+
+    if (secSession === session.sessionId && secToken) {
+      setVerifyingChallenge(true);
+      setErrorMsg(null);
+      verifySecurityChallenge(session.sessionId, { challengeToken: secToken })
+        .then((res) => {
+          setChallengeProof(res.challengeProof);
+          // URL'deki tek kullanımlık token'ı temizle
+          window.history.replaceState({}, document.title, window.location.pathname + '#/');
+        })
+        .catch((err: any) => {
+          setErrorMsg(err?.message || 'Doğrulama bağlantısı geçersiz veya süresi dolmuş.');
+        })
+        .finally(() => {
+          setVerifyingChallenge(false);
+        });
+    }
+  }, [session.sessionId, session.status, challengeProof]);
+
+  // Sunucu taraflı Ana Yönetici yetki kontrolü
+  useEffect(() => {
+    let active = true;
+    checkServerMainAdminStatus()
+      .then((res) => {
+        if (!active) return;
+        setIsServerMainAdmin(res.isMainAdmin);
+        setRecentReauthValid(res.recentReauthValid);
+      })
+      .catch(() => {
+        if (!active) return;
+        setIsServerMainAdmin(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [user.uid, session.sessionId]);
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanCode = otpInput.trim().toUpperCase();
+    if (cleanCode.length < 4) {
+      setErrorMsg('Lütfen e-postanıza gönderilen tek kullanımlık doğrulama kodunu girin.');
+      return;
+    }
+
+    setVerifyingChallenge(true);
+    setErrorMsg(null);
+    try {
+      const res = await verifySecurityChallenge(session.sessionId, { otpCode: cleanCode });
+      setChallengeProof(res.challengeProof);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Doğrulama kodu geçersiz.');
+    } finally {
+      setVerifyingChallenge(false);
+    }
+  };
+
+  const handleResendChallenge = async () => {
+    if (resendingEmail) return;
+    setResendingEmail(true);
+    setErrorMsg(null);
+    setResendMessage(null);
+    try {
+      const res = await resendSecurityChallenge(session.sessionId);
+      if (res.sent) {
+        setResendMessage('Yeni tek kullanımlık doğrulama kodu ve bağlantısı e-postanıza gönderildi.');
+      } else {
+        setErrorMsg(
+          res.error ||
+            'Doğrulama e-postası gönderilemedi; oturum güvenliğiniz için kısıtlı modda tutulmaktadır.'
+        );
+      }
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Kod yeniden gönderilemedi.');
+    } finally {
+      setResendingEmail(false);
+    }
+  };
+
   const handleDecision = async (choice: 'confirmed_me' | 'denied_not_me') => {
-    if (submittingChoice) return;
+    if (submittingChoice || !challengeProof) return;
     setErrorMsg(null);
     setSubmittingChoice(choice);
 
     try {
-      const updated = await respondToSuspiciousSession(session.sessionId, choice);
+      const updated = await submitOwnerSessionDecision(session.sessionId, challengeProof, choice);
       onSessionUpdated(updated);
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Güvenlik yanıtınız iletilemedi. Lütfen tekrar deneyin.');
+      setErrorMsg(err?.message || 'Güvenlik kararınız işlenemedi. Lütfen tekrar deneyin.');
     } finally {
       setSubmittingChoice(null);
+    }
+  };
+
+  const handleAdminReauth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!auth?.currentUser || !user.email || !adminPassword) return;
+    setAdminReauthLoading(true);
+    setErrorMsg(null);
+    try {
+      const cred = EmailAuthProvider.credential(user.email, adminPassword);
+      await reauthenticateWithCredential(auth.currentUser, cred);
+      await auth.currentUser.getIdToken(true);
+      const status = await checkServerMainAdminStatus();
+      setIsServerMainAdmin(status.isMainAdmin);
+      setRecentReauthValid(status.recentReauthValid);
+      setAdminPassword('');
+    } catch (err: any) {
+      setErrorMsg(
+        err?.code === 'auth/wrong-password' || err?.code === 'auth/invalid-credential'
+          ? 'Yönetici şifresi doğrulanamadı.'
+          : err?.message || 'Yeniden kimlik doğrulama başarısız.'
+      );
+    } finally {
+      setAdminReauthLoading(false);
+    }
+  };
+
+  const handleRecoverMainAdminSelf = async () => {
+    if (adminRecovering) return;
+    setAdminRecovering(true);
+    setErrorMsg(null);
+    try {
+      const updated = await recoverMainAdminSession(
+        session.sessionId,
+        challengeProof || undefined
+      );
+      onSessionUpdated(updated);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Yönetici oturumu doğrulanamadı.');
+    } finally {
+      setAdminRecovering(false);
     }
   };
 
@@ -143,6 +295,9 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
     }
   };
 
+  const emailFailedOrNotConfigured =
+    session.emailStatus === 'failed' || session.emailStatus === 'not_configured';
+
   return (
     <div
       id="new-country-security-screen"
@@ -161,7 +316,7 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
       </div>
 
       {/* Ana İçerik */}
-      <div className="w-full max-w-md my-auto py-6">
+      <div className="w-full max-w-md my-auto py-6 space-y-4">
         {session.status === 'pending_verification' && (
           <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-6 sm:p-8 shadow-xl space-y-6">
             <div className="flex flex-col items-center text-center space-y-3">
@@ -170,23 +325,27 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
               </div>
 
               <h1 className="text-2xl font-bold text-white tracking-tight">
-                Bu siz miydiniz?
+                {challengeProof ? 'Bu siz miydiniz?' : 'Oturum Doğrulaması Gerekli'}
               </h1>
 
               <p className="text-sm text-[#8696a0] leading-relaxed">
-                Hesabınıza daha önce giriş yapmadığınız bir ülkeden erişim algılandı.
+                Hesabınıza daha önce görülmemiş bir cihaz ve ülkeden erişim algılandı.
+                <strong className="block text-amber-400 mt-1">
+                  Bu oturum henüz doğrulanmadı.
+                </strong>
               </p>
             </div>
 
-            {/* Tespit Edilen Ülke ve Oturum Bilgileri (Zero-Pill sade satırlar) */}
+            {/* Oturum Detayları */}
             <div className="border-t border-b border-zinc-800 py-4 space-y-3 text-sm">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-zinc-400">
                   <Globe className="w-4 h-4 text-red-400 shrink-0" />
-                  <span>Tespit edilen ülke:</span>
+                  <span>Konum</span>
                 </div>
                 <div className="font-semibold text-white text-right">
                   {session.countryName} {session.flagEmoji}
+                  {session.city ? ` · ${session.city}` : ''}
                 </div>
               </div>
 
@@ -194,7 +353,7 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
                 <div className="flex items-center justify-between gap-3 text-xs">
                   <div className="flex items-center gap-2 text-zinc-400">
                     <MapPin className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
-                    <span>Önceki bilinen ülke</span>
+                    <span>Bilinen son ülke</span>
                   </div>
                   <span className="text-zinc-300">{session.previousCountryName}</span>
                 </div>
@@ -209,7 +368,7 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
                   )}
                   <span>Cihaz ve tarayıcı</span>
                 </div>
-                <span className="text-zinc-300 text-right truncate max-w-[210px]">
+                <span className="text-zinc-300 text-right truncate max-w-[220px]">
                   {session.browserName} · {session.osName}
                 </span>
               </div>
@@ -222,9 +381,29 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
               </div>
             </div>
 
-            <p className="text-xs sm:text-sm text-zinc-300 text-center font-medium">
-              Bu oturumun size ait olup olmadığını belirtin.
-            </p>
+            {/* E-posta gönderim durumu uyarısı (varsa) */}
+            {emailFailedOrNotConfigured ? (
+              <div className="p-3.5 rounded-xl bg-amber-950/40 border border-amber-800/50 text-amber-200 text-xs leading-relaxed space-y-1">
+                <div className="font-bold flex items-center gap-1.5 text-amber-400">
+                  <Mail className="w-4 h-4 shrink-0" />
+                  <span>Güvenlik E-postası Gönderilemedi</span>
+                </div>
+                <p className="text-zinc-300">
+                  {session.emailStatus === 'not_configured'
+                    ? 'E-posta servisi şu anda yapılandırılmadığı için tek kullanımlık kod iletilemedi.'
+                    : `E-posta gönderimi başarısız oldu (${session.emailError || 'Servis hatası'}).`}
+                  {' '}Güvenliğiniz için oturum kapalı tutulmaya devam eder; yönetici onayı gereklidir.
+                </p>
+              </div>
+            ) : (
+              <div className="p-3 rounded-xl bg-zinc-950/70 border border-zinc-800 text-xs text-zinc-300 flex items-start gap-2.5">
+                <Mail className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                <span>
+                  Doğrulanmış e-posta adresinize tek kullanımlık doğrulama kodu ve bağlantısı gönderildi.
+                  Karar verebilmek için önce kimliğinizi doğrulayın.
+                </span>
+              </div>
+            )}
 
             {errorMsg && (
               <div className="p-3 rounded-xl bg-red-950/50 border border-red-900/60 text-red-300 text-xs flex items-start gap-2">
@@ -233,35 +412,172 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <button
-                type="button"
-                disabled={Boolean(submittingChoice)}
-                onClick={() => handleDecision('confirmed_me')}
-                className="min-h-[46px] px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
-              >
-                {submittingChoice === 'confirmed_me' ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <CheckCircle className="w-4 h-4 shrink-0" />
-                )}
-                <span>Bu Benim</span>
-              </button>
+            {resendMessage && (
+              <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-900/60 text-emerald-300 text-xs flex items-start gap-2">
+                <CheckCircle className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
+                <span>{resendMessage}</span>
+              </div>
+            )}
 
-              <button
-                type="button"
-                disabled={Boolean(submittingChoice)}
-                onClick={() => handleDecision('denied_not_me')}
-                className="min-h-[46px] px-4 py-3 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-60 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
-              >
-                {submittingChoice === 'denied_not_me' ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <XCircle className="w-4 h-4 shrink-0" />
-                )}
-                <span>Ben Değilim</span>
-              </button>
+            {/* Adım 1: E-posta doğrulama kodu/bağlantısı doğrulanmadan karar butonları AÇILMAZ */}
+            {!challengeProof ? (
+              <form onSubmit={handleVerifyOtp} className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
+                    Tek Kullanımlık E-posta Doğrulama Kodu
+                  </label>
+                  <input
+                    id="input-security-otp"
+                    type="text"
+                    value={otpInput}
+                    onChange={(e) => setOtpInput(e.target.value.toUpperCase())}
+                    placeholder="Örn: A7K9P2"
+                    maxLength={10}
+                    className="w-full px-3.5 py-2.5 text-center font-mono tracking-[0.25em] text-sm uppercase bg-zinc-950 border border-zinc-800 rounded-xl text-white placeholder-zinc-600 focus:outline-none focus:border-red-500"
+                  />
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2.5">
+                  <button
+                    type="submit"
+                    disabled={verifyingChallenge || !otpInput.trim()}
+                    className="flex-1 min-h-[44px] px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-xs font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    {verifyingChallenge ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <ShieldCheck className="w-4 h-4 shrink-0" />
+                    )}
+                    <span>Kodu Doğrula</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={resendingEmail}
+                    onClick={handleResendChallenge}
+                    className="min-h-[44px] px-4 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-200 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  >
+                    {resendingEmail ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3.5 h-3.5 shrink-0" />
+                    )}
+                    <span>Yeniden Gönder</span>
+                  </button>
+                </div>
+              </form>
+            ) : (
+              /* Adım 2: Hesap sahibi e-posta ile doğrulandıktan sonra karar butonları açılır */
+              <div className="space-y-4">
+                <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 text-xs flex items-center gap-2">
+                  <CheckCircle className="w-4 h-4 shrink-0 text-emerald-400" />
+                  <span>Hesap sahibi doğrulandı. Bu oturumun size ait olup olmadığını seçin:</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    id="btn-owner-confirm-me"
+                    type="button"
+                    disabled={Boolean(submittingChoice)}
+                    onClick={() => handleDecision('confirmed_me')}
+                    className="min-h-[46px] px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                  >
+                    {submittingChoice === 'confirmed_me' ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <CheckCircle className="w-4 h-4 shrink-0" />
+                    )}
+                    <span>Bu Benim</span>
+                  </button>
+
+                  <button
+                    id="btn-owner-deny-not-me"
+                    type="button"
+                    disabled={Boolean(submittingChoice)}
+                    onClick={() => handleDecision('denied_not_me')}
+                    className="min-h-[46px] px-4 py-3 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-60 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                  >
+                    {submittingChoice === 'denied_not_me' ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <XCircle className="w-4 h-4 shrink-0" />
+                    )}
+                    <span>Ben Değilim</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Ana Yönetici Özel Güvenli İnceleme & Kurtarma Geçidi (Sadece Ana Yöneticiler İçin) */}
+        {isServerMainAdmin && session.status === 'pending_verification' && (
+          <div className="bg-zinc-900/95 border border-amber-700/50 rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-950/70 border border-amber-700/60 flex items-center justify-center shrink-0">
+                <Shield className="w-5 h-5 text-amber-400" />
+              </div>
+              <div className="space-y-1">
+                <h2 className="text-sm font-bold text-white">
+                  Ana Yönetici Güvenlik İncelemesi ve Kurtarma
+                </h2>
+                <p className="text-xs text-zinc-400 leading-relaxed">
+                  Ana Yönetici hesabınız tamamen kilitlenmeden şüpheli oturumları inceleyebilir veya
+                  yeniden kimlik doğrulaması yaparak bu oturumu güvenli şekilde kurtarabilirsiniz.
+                </p>
+              </div>
             </div>
+
+            {!recentReauthValid && !challengeProof ? (
+              <form onSubmit={handleAdminReauth} className="space-y-2.5">
+                <input
+                  type="password"
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  placeholder="Ana Yönetici hesap şifrenizi yeniden girin"
+                  className="w-full px-3.5 py-2.5 text-xs bg-zinc-950 border border-zinc-800 rounded-xl text-white placeholder-zinc-500 focus:outline-none focus:border-amber-500"
+                />
+                <button
+                  type="submit"
+                  disabled={adminReauthLoading || !adminPassword}
+                  className="w-full min-h-[42px] px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-semibold transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  {adminReauthLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <KeyRound className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>Kimliği Yeniden Doğrula</span>
+                </button>
+              </form>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {onEnterAdminSecurityReview && (
+                  <button
+                    type="button"
+                    onClick={onEnterAdminSecurityReview}
+                    className="min-h-[42px] px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-amber-300 border border-amber-700/40 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <ShieldCheck className="w-4 h-4 shrink-0" />
+                    <span>Güvenlik İnceleme Modu</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  disabled={adminRecovering}
+                  onClick={handleRecoverMainAdminSelf}
+                  className="min-h-[42px] px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  {adminRecovering ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <CheckCircle className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>Bu Oturumu Kurtar</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -270,37 +586,14 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
             <div className="w-16 h-16 mx-auto rounded-2xl bg-amber-950/60 border border-amber-800/50 flex items-center justify-center">
               <ShieldCheck className="w-8 h-8 text-amber-400" />
             </div>
-
             <div className="space-y-2">
               <h1 className="text-xl font-bold text-white tracking-tight">
                 Admin Onayı Bekleniyor
               </h1>
               <p className="text-sm text-[#8696a0] leading-relaxed">
-                Girişin size ait olduğuna dair onay bilginiz RedChat yönetimine iletildi.
-                Güvenlik nedeniyle bu oturum yönetici onaylayana kadar sohbetlere erişemezsiniz.
+                Bu oturum yönetici incelemesindedir. Onay verildiğinde erişiminiz otomatik olarak açılacaktır.
               </p>
             </div>
-
-            <div className="border-t border-b border-zinc-800 py-3.5 text-xs space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-zinc-400">Tespit edilen ülke</span>
-                <span className="text-zinc-200 font-semibold">
-                  {session.countryName} {session.flagEmoji}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-zinc-400">Bildirilen yanıt</span>
-                <span className="text-emerald-400 font-semibold">Bu Benim</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-zinc-400">Oturum durumu</span>
-                <span className="text-amber-400 font-semibold">İncelemede</span>
-              </div>
-            </div>
-
-            <p className="text-xs text-zinc-500">
-              Yönetici oturuma izin verdiğinde bu ekran otomatik olarak açılacaktır.
-            </p>
           </div>
         )}
 
@@ -314,8 +607,8 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
                 Şüpheli Oturum İptal Edildi
               </h1>
               <p className="text-xs sm:text-sm text-[#8696a0] leading-relaxed">
-                Bu oturum erişime kapatıldı ve RedChat yönetimine acil bildirim iletildi.
-                Hesabınızı güvence altına almak için aşağıdaki adımları kullanabilirsiniz.
+                Bu oturum "Ben Değilim" bildiriminiz üzerine güvenlik amacıyla kapatıldı.
+                Hesabınızı güvence altına almak için aşağıdaki işlemleri uygulayın.
               </p>
             </div>
 
@@ -326,11 +619,11 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
               </div>
             )}
 
-            {/* 1. Hesap Kurtarma & Şifre Değiştirme */}
+            {/* 1. Hesap Kurtarma & Parola Yenileme */}
             <div className="border-t border-zinc-800 pt-4 space-y-3">
               <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200">
                 <KeyRound className="w-4 h-4 text-amber-400 shrink-0" />
-                <span>Hesap Kurtarma ve Şifre Değiştirme</span>
+                <span>Parolayı Yenile</span>
               </div>
 
               <form onSubmit={handlePasswordChange} className="space-y-2.5">
@@ -338,14 +631,14 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
                   type="password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Yeni şifreniz (en az 6 karakter)"
+                  placeholder="Yeni parolanız (en az 6 karakter)"
                   className="w-full px-3.5 py-2.5 text-xs bg-zinc-950 border border-zinc-800 rounded-xl text-white placeholder-zinc-500 focus:outline-none focus:border-red-500"
                 />
                 <input
                   type="password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="Yeni şifre tekrar"
+                  placeholder="Yeni parola tekrar"
                   className="w-full px-3.5 py-2.5 text-xs bg-zinc-950 border border-zinc-800 rounded-xl text-white placeholder-zinc-500 focus:outline-none focus:border-red-500"
                 />
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -354,7 +647,7 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
                     disabled={passwordLoading || !newPassword}
                     className="min-h-[42px] px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-white text-xs font-semibold transition-colors cursor-pointer"
                   >
-                    Şifreyi Güncelle
+                    Parolayı Güncelle
                   </button>
                   <button
                     type="button"
@@ -380,7 +673,7 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
               )}
             </div>
 
-            {/* 2. İsteğe Bağlı Tek Tıkla Diğer Tüm Oturumları Kapat */}
+            {/* 2. Diğer Tüm Oturumları Kapat */}
             <div className="border-t border-zinc-800 pt-4 space-y-2.5">
               <button
                 type="button"

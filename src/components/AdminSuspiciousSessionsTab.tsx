@@ -9,6 +9,7 @@ import {
   subscribeToAdminSecuritySessions,
   subscribeToAdminSecurityNetworkMap,
   subscribeToAdminLogs,
+  fetchAdminUserSessionHistory,
   adminApproveSession,
   adminRevokeSingleSession,
   adminRevokeAllUserSessions,
@@ -28,17 +29,22 @@ import {
   Search,
   Loader2,
   FileText,
+  Mail,
+  History,
+  X,
 } from 'lucide-react';
 
 interface AdminSuspiciousSessionsTabProps {
   currentUser: UserProfile;
   allUsers: UserProfile[];
+  challengeProof?: string;
 }
 
 type SessionFilter = 'suspicious' | 'pending' | 'approved' | 'revoked' | 'all';
 
 export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProps> = ({
   allUsers,
+  challengeProof,
 }) => {
   const [sessions, setSessions] = useState<SecuritySession[]>([]);
   const [networkMap, setNetworkMap] = useState<Record<string, SecuritySessionNetwork>>({});
@@ -59,6 +65,16 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
     type: 'success' | 'error';
     text: string;
   } | null>(null);
+
+  // Oturum Geçmişi İnceleme Modalı
+  const [historyTarget, setHistoryTarget] = useState<{
+    uid: string;
+    username: string;
+  } | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historySessions, setHistorySessions] = useState<SecuritySession[]>([]);
+  const [historyNetworkMap, setHistoryNetworkMap] = useState<Record<string, SecuritySessionNetwork>>({});
 
   const userPhotoMap = useMemo(() => {
     const map = new Map<string, string | null>();
@@ -128,24 +144,43 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
 
       if (!q) return true;
       const net = networkMap[s.sessionId];
+      const city = s.city || net?.city;
       return (
         s.username?.toLowerCase().includes(q) ||
         s.displayName?.toLowerCase().includes(q) ||
-        s.userId?.toLowerCase().includes(q) ||
+        (s.uid || s.userId)?.toLowerCase().includes(q) ||
         s.countryName?.toLowerCase().includes(q) ||
         s.countryCode?.toLowerCase().includes(q) ||
         (net?.ip && net.ip.toLowerCase().includes(q)) ||
-        (net?.city && net.city.toLowerCase().includes(q))
+        (city && city.toLowerCase().includes(q))
       );
     });
   }, [sessions, filter, searchQuery, networkMap]);
+
+  const handleOpenHistory = async (targetUid: string, username: string) => {
+    setHistoryTarget({ uid: targetUid, username });
+    setHistoryLoading(true);
+    setHistoryError(null);
+    setHistorySessions([]);
+    setHistoryNetworkMap({});
+
+    try {
+      const data = await fetchAdminUserSessionHistory(targetUid, challengeProof);
+      setHistorySessions(data.sessions);
+      setHistoryNetworkMap(data.networkMap);
+    } catch (err: any) {
+      setHistoryError(err?.message || 'Oturum geçmişi yüklenemedi.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
 
   const handleApprove = async (session: SecuritySession) => {
     if (processingSessionId) return;
     setProcessingSessionId(session.sessionId);
     setActionBanner(null);
     try {
-      await adminApproveSession(session.sessionId);
+      await adminApproveSession(session.sessionId, challengeProof);
       setActionBanner({
         type: 'success',
         text: `@${session.username} kullanıcısının ${session.countryName} oturumuna izin verildi.`,
@@ -165,7 +200,7 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
     setProcessingSessionId(session.sessionId);
     setActionBanner(null);
     try {
-      await adminRevokeSingleSession(session.sessionId);
+      await adminRevokeSingleSession(session.sessionId, challengeProof);
       setActionBanner({
         type: 'success',
         text: `@${session.username} kullanıcısının seçilen oturumu tekil olarak kapatıldı (diğer cihazlar korundu).`,
@@ -187,7 +222,8 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
     try {
       const res = await adminRevokeAllUserSessions(
         confirmRevokeAllTarget.uid,
-        confirmRevokeAllTarget.username
+        confirmRevokeAllTarget.username,
+        challengeProof
       );
       setActionBanner({
         type: 'success',
@@ -207,9 +243,9 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
   const getUserResponseLabel = (resp: SecuritySession['userResponse']) => {
     switch (resp) {
       case 'confirmed_me':
-        return { text: 'Bu Benim dedi', colorClass: 'text-emerald-600 dark:text-emerald-400' };
+        return { text: 'Bu Benim (Doğrulandı)', colorClass: 'text-emerald-600 dark:text-emerald-400' };
       case 'denied_not_me':
-        return { text: 'Ben Değilim dedi', colorClass: 'text-red-600 dark:text-red-400' };
+        return { text: 'Ben Değilim (Reddedildi)', colorClass: 'text-red-600 dark:text-red-400' };
       case 'pending':
         return { text: 'Henüz yanıtlamadı', colorClass: 'text-amber-600 dark:text-amber-400' };
       default:
@@ -217,11 +253,47 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
     }
   };
 
+  const getEmailStatusMeta = (s: SecuritySession) => {
+    if (s.emailSent === true || s.emailStatus === 'sent') {
+      return {
+        text: 'E-posta Gönderildi',
+        colorClass: 'text-emerald-600 dark:text-emerald-400',
+        detail: s.emailRecipient || null,
+      };
+    }
+    if (s.emailStatus === 'failed') {
+      return {
+        text: 'Gönderilemedi',
+        colorClass: 'text-red-600 dark:text-red-400',
+        detail: s.emailError || 'Resend API hatası',
+      };
+    }
+    if (s.emailStatus === 'not_configured') {
+      return {
+        text: 'Servis Yapılandırılmadı',
+        colorClass: 'text-amber-600 dark:text-amber-400',
+        detail: 'RESEND_API_KEY tanımlı değil',
+      };
+    }
+    return {
+      text: 'Atlandı / Gerekmedi',
+      colorClass: 'text-zinc-500 dark:text-zinc-400',
+      detail: null,
+    };
+  };
+
   const getStatusMeta = (s: SecuritySession) => {
+    if (s.verificationStatus === 'expired') {
+      return {
+        text: 'Süresi Doldu (Kapatıldı)',
+        colorClass: 'text-zinc-500 dark:text-zinc-400',
+        Icon: XCircle,
+      };
+    }
     switch (s.status) {
       case 'pending_verification':
         return {
-          text: 'Kullanıcı Yanıtı Bekliyor',
+          text: 'Doğrulama Bekliyor (Kısıtlı)',
           colorClass: 'text-amber-600 dark:text-amber-400',
           Icon: ShieldAlert,
         };
@@ -233,7 +305,7 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
         };
       case 'active':
         return {
-          text: s.adminDecision === 'approved' ? 'Admin İzin Verdi (Aktif)' : 'Aktif Oturum',
+          text: s.adminDecision === 'approved' ? 'Doğrulandı / İzin Verildi (Aktif)' : 'Aktif Oturum',
           colorClass: 'text-emerald-600 dark:text-emerald-400',
           Icon: CheckCircle,
         };
@@ -246,6 +318,11 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
     }
   };
 
+  const historyUserLogs = useMemo(() => {
+    if (!historyTarget) return [];
+    return adminLogs.filter((l) => l.targetUid === historyTarget.uid);
+  }, [adminLogs, historyTarget]);
+
   return (
     <div className="space-y-5">
       {/* Üst Başlık ve Görünüm Anahtarı */}
@@ -256,7 +333,7 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
           </div>
           <div>
             <h2 className="text-sm sm:text-base font-bold text-zinc-900 dark:text-zinc-100">
-              Şüpheli Oturumlar ve Yeni Ülke Güvenliği
+              Şüpheli Oturumlar ve Giriş Güvenliği
             </h2>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-0.5 tabular-nums">
               {suspiciousPendingCount} bekleyen inceleme · {suspiciousTotalCount} toplam şüpheli oturum · {sessions.length} kayıtlı cihaz oturumu
@@ -371,15 +448,18 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
             <div className="space-y-3">
               {filteredSessions.map((session) => {
                 const net = networkMap[session.sessionId];
+                const ownerUid = session.uid || session.userId;
                 const respMeta = getUserResponseLabel(session.userResponse);
                 const statusMeta = getStatusMeta(session);
+                const emailMeta = getEmailStatusMeta(session);
                 const StatusIcon = statusMeta.Icon;
                 const isMobile = session.deviceType === 'mobile' || session.deviceType === 'tablet';
-                const avatarUrl = session.photoURL || userPhotoMap.get(session.userId) || null;
+                const avatarUrl = session.photoURL || userPhotoMap.get(ownerUid) || null;
                 const isBusy = processingSessionId === session.sessionId;
                 const isRevoked = session.status === 'revoked';
                 const isAlreadyTrustedActive =
                   session.status === 'active' && session.trusted === true;
+                const city = session.city || net?.city;
 
                 return (
                   <div
@@ -405,7 +485,7 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
                             </span>
                           </div>
                           <div className="text-[11px] text-zinc-500 dark:text-zinc-400 font-mono tabular-nums mt-0.5 truncate">
-                            UID: {session.userId} · Oturum: {session.sessionId}
+                            UID: {ownerUid} · Oturum: {session.sessionId}
                           </div>
                         </div>
                       </div>
@@ -416,33 +496,32 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
                       </div>
                     </div>
 
-                    {/* Orta Grid: Konum, IP, Zaman, Cihaz, Kullanıcı Yanıtı */}
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+                    {/* Orta Grid: Ülke & Şehir, IP, Cihaz & OS & Tarayıcı, Zaman & Yanıt, E-posta Durumu */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 text-xs">
                       <div className="space-y-1">
                         <div className="flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
                           <Globe className="w-3.5 h-3.5 shrink-0" />
-                          <span>Ülke ve Geçmiş</span>
+                          <span>Ülke ve Şehir</span>
                         </div>
                         <div className="font-semibold text-zinc-900 dark:text-zinc-100">
                           {session.countryName} {session.flagEmoji}
                         </div>
-                        {session.previousCountryName && (
-                          <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                            Önceki: {session.previousCountryName}
-                          </div>
-                        )}
+                        <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
+                          {city ? `Şehir: ${city}` : 'Şehir bilgisi yok'}
+                          {session.previousCountryName ? ` · Önceki: ${session.previousCountryName}` : ''}
+                        </div>
                       </div>
 
                       <div className="space-y-1">
                         <div className="flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
                           <MapPin className="w-3.5 h-3.5 shrink-0" />
-                          <span>IP Konum Bilgisi (Admin)</span>
+                          <span>IP Adresi (Admin)</span>
                         </div>
                         <div className="font-mono tabular-nums font-semibold text-zinc-900 dark:text-zinc-100">
                           {net?.ip || 'Çözümlenemedi'}
                         </div>
                         <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate">
-                          {[net?.city, net?.region, net?.isp].filter(Boolean).join(' · ') || 'Ek konum verisi yok'}
+                          {[net?.region, net?.isp].filter(Boolean).join(' · ') || 'Ağ sağlayıcı bilgisi yok'}
                         </div>
                       </div>
 
@@ -453,19 +532,19 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
                           ) : (
                             <Monitor className="w-3.5 h-3.5 shrink-0" />
                           )}
-                          <span>Cihaz ve Tarayıcı</span>
+                          <span>Cihaz, OS ve Tarayıcı</span>
                         </div>
                         <div className="font-semibold text-zinc-900 dark:text-zinc-100">
-                          {session.browserName} · {session.osName}
+                          {session.osName} · {session.browserName}
                         </div>
                         <div className="text-[11px] text-zinc-500 dark:text-zinc-400 font-mono truncate">
-                          {session.deviceId}
+                          {session.deviceType} · {session.deviceId}
                         </div>
                       </div>
 
                       <div className="space-y-1">
                         <div className="text-zinc-500 dark:text-zinc-400">
-                          Tarih & Kullanıcı Yanıtı
+                          Giriş & Kullanıcı Yanıtı
                         </div>
                         <div className="font-mono tabular-nums text-zinc-900 dark:text-zinc-100">
                           {formatSessionDateTime(session.createdAt)}
@@ -473,6 +552,21 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
                         <div className={`font-semibold ${respMeta.colorClass}`}>
                           {respMeta.text}
                         </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
+                          <Mail className="w-3.5 h-3.5 shrink-0" />
+                          <span>E-posta Durumu</span>
+                        </div>
+                        <div className={`font-semibold ${emailMeta.colorClass}`}>
+                          {emailMeta.text}
+                        </div>
+                        {emailMeta.detail && (
+                          <div className="text-[11px] text-zinc-500 dark:text-zinc-400 truncate" title={emailMeta.detail}>
+                            {emailMeta.detail}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -508,10 +602,19 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
 
                       <button
                         type="button"
+                        onClick={() => handleOpenHistory(ownerUid, session.username)}
+                        className="min-h-[40px] px-3.5 py-2 rounded-xl bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                      >
+                        <History className="w-3.5 h-3.5 shrink-0" />
+                        <span>Oturum Geçmişini İncele</span>
+                      </button>
+
+                      <button
+                        type="button"
                         disabled={Boolean(processingSessionId)}
                         onClick={() =>
                           setConfirmRevokeAllTarget({
-                            uid: session.userId,
+                            uid: ownerUid,
                             username: session.username,
                           })
                         }
@@ -577,6 +680,91 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Oturum Geçmişini İncele Modalı */}
+      {historyTarget && (
+        <div className="fixed inset-0 z-[1000] bg-black/70 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <History className="w-5 h-5 text-red-500 shrink-0" />
+                <div>
+                  <h3 className="text-sm font-bold text-zinc-900 dark:text-white">
+                    Oturum Geçmişi — @{historyTarget.username}
+                  </h3>
+                  <p className="text-[11px] font-mono text-zinc-500">{historyTarget.uid}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHistoryTarget(null)}
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-5 overflow-y-auto space-y-4">
+              {historyLoading ? (
+                <div className="py-10 flex items-center justify-center gap-2 text-xs text-zinc-500">
+                  <Loader2 className="w-4 h-4 animate-spin text-red-500" />
+                  <span>Kullanıcının oturum geçmişi getiriliyor...</span>
+                </div>
+              ) : historyError ? (
+                <div className="p-4 rounded-xl bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50 text-xs text-red-600 dark:text-red-300">
+                  {historyError}
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-2.5">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-500">
+                      Cihaz ve Giriş Kayıtları ({historySessions.length})
+                    </h4>
+                    {historySessions.map((hs) => {
+                      const hNet = historyNetworkMap[hs.sessionId];
+                      const sm = getStatusMeta(hs);
+                      return (
+                        <div
+                          key={hs.sessionId}
+                          className="p-3 rounded-xl bg-zinc-50 dark:bg-zinc-950/70 border border-zinc-200 dark:border-zinc-800 text-xs space-y-1.5"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                              {hs.countryName} {hs.flagEmoji} {hs.city || hNet?.city ? `· ${hs.city || hNet?.city}` : ''}
+                            </span>
+                            <span className={`font-semibold ${sm.colorClass}`}>{sm.text}</span>
+                          </div>
+                          <div className="text-zinc-500 dark:text-zinc-400 flex flex-wrap gap-x-3 gap-y-1">
+                            <span>{hs.osName} · {hs.browserName}</span>
+                            <span className="font-mono">IP: {hNet?.ip || 'Bilinmiyor'}</span>
+                            <span className="font-mono">{formatSessionDateTime(hs.createdAt)}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {historyUserLogs.length > 0 && (
+                    <div className="space-y-2 pt-2 border-t border-zinc-200 dark:border-zinc-800">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-500">
+                        İlgili Güvenlik Olayları ({historyUserLogs.length})
+                      </h4>
+                      {historyUserLogs.slice(0, 12).map((l) => (
+                        <div key={l.id} className="text-xs text-zinc-600 dark:text-zinc-300 flex items-start justify-between gap-2 py-1">
+                          <span>{l.details}</span>
+                          <span className="text-[11px] font-mono text-zinc-400 shrink-0">
+                            {formatSessionDateTime(l.createdAt)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

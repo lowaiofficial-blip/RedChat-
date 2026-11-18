@@ -134,6 +134,36 @@ export function getHardwareFingerprint(): string {
   }
 }
 
+export function getDeviceSignals(): {
+  hardwareFingerprint: string;
+  screenBucket: string;
+  timezone: string;
+  platform: string;
+  language: string;
+  touchPoints: number;
+} {
+  if (typeof window === 'undefined') {
+    return {
+      hardwareFingerprint: 'FP-NODE-ENV',
+      screenBucket: 'unknown',
+      timezone: 'UTC',
+      platform: 'node',
+      language: 'tr',
+      touchPoints: 0,
+    };
+  }
+  const w = Math.round((window.screen?.width || 0) / 100) * 100;
+  const h = Math.round((window.screen?.height || 0) / 100) * 100;
+  return {
+    hardwareFingerprint: getHardwareFingerprint(),
+    screenBucket: `${w}x${h}`,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    platform: navigator.platform || 'unknown',
+    language: navigator.language || 'tr',
+    touchPoints: navigator.maxTouchPoints || 0,
+  };
+}
+
 /**
  * Cihaz için kalıcı ve silinmeye dayanıklı Donanım / Hardware ID (HWID) üretir veya getirir
  */

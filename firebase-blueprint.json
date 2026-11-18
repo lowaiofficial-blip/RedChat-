@@ -170,30 +170,43 @@
       "fields": {
         "id": { "type": "string", "description": "Session document ID" },
         "sessionId": { "type": "string", "description": "Cryptographic session ID" },
-        "userId": { "type": "string", "description": "Owner user UID" },
+        "uid": { "type": "string", "description": "Owner user UID" },
+        "userId": { "type": "string", "description": "Owner user UID (legacy alias)" },
         "username": { "type": "string", "description": "Owner username" },
         "displayName": { "type": "string", "description": "Owner display name" },
-        "deviceId": { "type": "string", "description": "Device hardware ID" },
+        "deviceId": { "type": "string", "description": "Server-attested device ID" },
+        "deviceSignature": { "type": "string", "description": "Privacy-safe HMAC device fingerprint" },
         "deviceType": { "type": "string", "description": "desktop | tablet | mobile | unknown" },
         "browserName": { "type": "string", "description": "Parsed browser name" },
         "osName": { "type": "string", "description": "Parsed operating system name" },
         "countryCode": { "type": "string", "description": "ISO 3166-1 alpha-2 country code" },
         "countryName": { "type": "string", "description": "Localized Turkish country name" },
         "flagEmoji": { "type": "string", "description": "Country flag emoji" },
+        "city": { "type": "string", "description": "Detected city if available" },
         "previousCountryName": { "type": "string", "description": "Previous known country name" },
         "isSuspicious": { "type": "boolean", "description": "Flagged for new country + new device check" },
         "trusted": { "type": "boolean", "description": "Whether session is trusted/approved" },
         "status": { "type": "string", "description": "active | pending_verification | awaiting_admin_approval | revoked" },
+        "sessionStatus": { "type": "string", "description": "active | pending_verification | revoked" },
+        "verificationStatus": { "type": "string", "description": "pending | verified | denied | expired" },
         "userResponse": { "type": "string", "description": "pending | confirmed_me | denied_not_me | not_required" },
         "adminDecision": { "type": "string", "description": "pending | approved | revoked | auto_trusted" },
+        "emailSent": { "type": "boolean", "description": "Whether security notification email was sent" },
+        "emailStatus": { "type": "string", "description": "sent | failed | not_configured | skipped" },
+        "emailError": { "type": "string", "description": "Error detail if email send failed" },
+        "verifiedAt": { "type": "timestamp", "description": "Verification timestamp" },
+        "revokedAt": { "type": "timestamp", "description": "Revocation timestamp" },
+        "expiresAt": { "type": "timestamp", "description": "Session expiration timestamp" },
         "createdAt": { "type": "timestamp", "description": "Login timestamp" },
-        "lastActiveAt": { "type": "timestamp", "description": "Last active timestamp" }
+        "lastActiveAt": { "type": "timestamp", "description": "Last active timestamp" },
+        "lastSeenAt": { "type": "timestamp", "description": "Last seen timestamp" }
       }
     },
     "SecuritySessionNetwork": {
       "path": "securitySessionNetwork/{sessionId}",
       "fields": {
         "sessionId": { "type": "string", "description": "Session ID" },
+        "uid": { "type": "string", "description": "Owner UID" },
         "userId": { "type": "string", "description": "Owner UID" },
         "ip": { "type": "string", "description": "Admin-only client IP address" },
         "city": { "type": "string", "description": "Detected city" },
@@ -204,12 +217,30 @@
         "createdAt": { "type": "timestamp", "description": "Record timestamp" }
       }
     },
+    "SecurityVerificationToken": {
+      "path": "securityVerificationTokens/{sessionId}",
+      "fields": {
+        "sessionId": { "type": "string", "description": "Target pending session ID" },
+        "uid": { "type": "string", "description": "Account owner UID" },
+        "tokenHash": { "type": "string", "description": "Salted SHA-256 hash of URL verification token" },
+        "otpHash": { "type": "string", "description": "Salted SHA-256 hash of 6-character OTP code" },
+        "salt": { "type": "string", "description": "Per-challenge cryptographic salt" },
+        "commitHash": { "type": "string", "description": "SHA-256 hash of server-only atomic commit key" },
+        "decisionCommitKey": { "type": "string", "description": "Server-revealed commit secret on verified consumption" },
+        "used": { "type": "boolean", "description": "Single-use consumption flag" },
+        "usedAt": { "type": "timestamp", "description": "Consumption timestamp" },
+        "attempts": { "type": "number", "description": "Failed OTP verification attempts counter" },
+        "expiresAt": { "type": "timestamp", "description": "Challenge expiration timestamp" },
+        "createdAt": { "type": "timestamp", "description": "Challenge creation timestamp" }
+      }
+    },
     "UserSecurityProfile": {
       "path": "userSecurityProfiles/{uid}",
       "fields": {
         "uid": { "type": "string", "description": "User UID" },
         "knownCountryCodes": { "type": "array", "description": "Approved ISO country codes" },
-        "knownDeviceIds": { "type": "array", "description": "Approved hardware device IDs" },
+        "knownDeviceIds": { "type": "array", "description": "Approved attested device IDs" },
+        "knownDeviceSignatures": { "type": "array", "description": "Approved privacy-safe server device signatures" },
         "lastKnownCountryCode": { "type": "string", "description": "Last approved country code" },
         "lastKnownCountryName": { "type": "string", "description": "Last approved country name" },
         "updatedAt": { "type": "timestamp", "description": "Last update timestamp" }

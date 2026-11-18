@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { getApps } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
+import { requireActiveSecuritySession } from "./serverSecurity";
 
 const PROJECT_ID = "redchat-7c1db";
 const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
@@ -663,6 +664,11 @@ export function registerModerationRoutes(app: Express) {
       const tokenUser = await authenticateRequest(req, res);
       if (!tokenUser) return;
 
+      const secGate = await requireActiveSecuritySession(req, res, tokenUser as any, {
+        requireSessionHeaders: true,
+      });
+      if (!secGate.ok) return;
+
       const authority = await resolveVerifiedAuthority(tokenUser);
       if (!authority.isMainAdmin) {
         return res.status(403).json({
@@ -769,6 +775,11 @@ export function registerModerationRoutes(app: Express) {
       const tokenUser = await authenticateRequest(req, res);
       if (!tokenUser) return;
 
+      const secGate = await requireActiveSecuritySession(req, res, tokenUser as any, {
+        requireSessionHeaders: true,
+      });
+      if (!secGate.ok) return;
+
       const authority = await resolveVerifiedAuthority(tokenUser);
       if (!authority.isMainAdmin && !authority.isModerator) {
         return res.status(403).json({ error: "Bu işlem için moderatör veya yönetici yetkisi gerekli." });
@@ -871,6 +882,11 @@ export function registerModerationRoutes(app: Express) {
       const tokenUser = await authenticateRequest(req, res);
       if (!tokenUser) return;
 
+      const secGate = await requireActiveSecuritySession(req, res, tokenUser as any, {
+        requireSessionHeaders: true,
+      });
+      if (!secGate.ok) return;
+
       const authority = await resolveVerifiedAuthority(tokenUser);
       if (!authority.isMainAdmin && !authority.isModerator) {
         return res.status(403).json({ error: "Bu işlem için moderatör veya yönetici yetkisi gerekli." });
@@ -938,6 +954,11 @@ export function registerModerationRoutes(app: Express) {
     try {
       const tokenUser = await authenticateRequest(req, res);
       if (!tokenUser) return;
+
+      const secGate = await requireActiveSecuritySession(req, res, tokenUser as any, {
+        requireSessionHeaders: true,
+      });
+      if (!secGate.ok) return;
 
       const authority = await resolveVerifiedAuthority(tokenUser);
       if (!authority.isMainAdmin && !authority.isModerator) {
@@ -1042,6 +1063,11 @@ export function registerModerationRoutes(app: Express) {
       const tokenUser = await authenticateRequest(req, res);
       if (!tokenUser) return;
 
+      const secGate = await requireActiveSecuritySession(req, res, tokenUser as any, {
+        requireSessionHeaders: true,
+      });
+      if (!secGate.ok) return;
+
       const authority = await resolveVerifiedAuthority(tokenUser);
       if (!authority.isMainAdmin && !authority.isModerator) {
         return res.status(403).json({ error: "Bu işlem için moderatör veya yönetici yetkisi gerekli." });
@@ -1145,6 +1171,11 @@ export function registerModerationRoutes(app: Express) {
       const tokenUser = await authenticateRequest(req, res);
       if (!tokenUser) return;
 
+      const secGate = await requireActiveSecuritySession(req, res, tokenUser as any, {
+        requireSessionHeaders: true,
+      });
+      if (!secGate.ok) return;
+
       const authority = await resolveVerifiedAuthority(tokenUser);
       if (!authority.isMainAdmin && !authority.isModerator) {
         return res.status(403).json({ error: "Yetkisiz erişim." });
@@ -1179,6 +1210,11 @@ export function registerModerationRoutes(app: Express) {
     try {
       const tokenUser = await authenticateRequest(req, res);
       if (!tokenUser) return;
+
+      const secGate = await requireActiveSecuritySession(req, res, tokenUser as any, {
+        requireSessionHeaders: true,
+      });
+      if (!secGate.ok) return;
 
       const authority = await resolveVerifiedAuthority(tokenUser);
       if (!authority.isMainAdmin && !authority.isModerator) {
@@ -1234,6 +1270,11 @@ export function registerModerationRoutes(app: Express) {
     try {
       const tokenUser = await authenticateRequest(req, res);
       if (!tokenUser) return;
+
+      const secGate = await requireActiveSecuritySession(req, res, tokenUser as any, {
+        requireSessionHeaders: true,
+      });
+      if (!secGate.ok) return;
 
       const authority = await resolveVerifiedAuthority(tokenUser);
       if (!authority.isMainAdmin && !authority.isModerator) {

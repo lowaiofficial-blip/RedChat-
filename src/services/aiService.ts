@@ -1,4 +1,19 @@
 import type { UserProfile, ChatMessage } from '../types';
+import { auth } from './firebase';
+import { getActiveSessionHeaders } from './sessionSecurityService';
+
+async function getAiAuthHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  const currentUser = auth?.currentUser;
+  if (currentUser) {
+    const token = await currentUser.getIdToken();
+    headers.Authorization = `Bearer ${token}`;
+    Object.assign(headers, getActiveSessionHeaders(currentUser.uid));
+  }
+  return headers;
+}
 
 export const REDCHAT_AI_UID = 'system_redchat_ai';
 export const REDCHAT_AI_USERNAME = 'deepred_ai';
@@ -94,11 +109,10 @@ export async function requestAIChatResponse(
   }));
 
   try {
+    const headers = await getAiAuthHeaders();
     const response = await fetch('/api/ai/chat', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         userMessage: cleanMessage,
         messages: formattedHistory,
@@ -153,11 +167,10 @@ export async function requestAIChatStream(
   }));
 
   try {
+    const headers = await getAiAuthHeaders();
     const response = await fetch('/api/ai/chat/stream', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         userMessage: cleanMessage,
         messages: formattedHistory,
@@ -301,11 +314,10 @@ export async function requestAiImageGeneration(
     throw new Error('Görsel açıklaması boş olamaz.');
   }
 
+  const headers = await getAiAuthHeaders();
   const res = await fetch('/api/ai/image/generate', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify({
       prompt: cleanPrompt,
       userId,

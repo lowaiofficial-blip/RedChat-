@@ -416,49 +416,127 @@ service cloud.firestore {
     }
 
     // =========================================================================
-    // 🌍 YENİ ÜLKE & OTURUM GÜVENLİĞİ (/securitySessions, /securitySessionNetwork)
+    // 🌍 YENİ ÜLKE & OTURUM GÜVENLİĞİ (/securitySessions, /securitySessionNetwork, /securityVerificationTokens)
     // =========================================================================
+    match /securityVerificationTokens/{sessionId} {
+      allow get: if isAdmin() || (isAuthenticated() && resource.data.uid == request.auth.uid);
+      allow list: if false;
+
+      allow create: if isAdmin() || (
+        isAuthenticated() &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.sessionId == sessionId &&
+        request.resource.data.used == false &&
+        request.resource.data.commitHash is string &&
+        request.resource.data.commitHash.size() == 64
+      );
+
+      allow update: if isAdmin() || (
+        isAuthenticated() &&
+        resource.data.uid == request.auth.uid &&
+        request.resource.data.uid == resource.data.uid &&
+        request.resource.data.sessionId == resource.data.sessionId &&
+        (
+          // 1. Tek kullanımlık commit anahtarıyla tüketme (yalnızca sunucunun HMAC commitHash'i ile açılır)
+          (
+            resource.data.used == false &&
+            request.resource.data.used == true &&
+            request.resource.data.decisionCommitKey is string &&
+            hashing.sha256(request.resource.data.decisionCommitKey).toHexString() == resource.data.commitHash
+          ) ||
+          // 2. Hatalı OTP deneme sayacı artışı
+          (
+            resource.data.used == false &&
+            request.resource.data.used == false &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['attempts']) &&
+            request.resource.data.attempts is int &&
+            request.resource.data.attempts >= resource.data.get('attempts', 0)
+          ) ||
+          // 3. Yeniden kod gönderimi (yalnızca kullanılmamış token tazelenebilir)
+          (
+            resource.data.used == false &&
+            request.resource.data.used == false &&
+            request.resource.data.commitHash is string &&
+            request.resource.data.commitHash.size() == 64 &&
+            request.resource.data.createdAt is timestamp &&
+            request.resource.data.createdAt > resource.data.createdAt
+          )
+        )
+      );
+
+      allow delete: if isAdmin();
+    }
+
     match /securitySessions/{sessionId} {
-      allow get: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
-      allow list: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow get: if isAdmin() || (
+        isAuthenticated() &&
+        (resource.data.userId == request.auth.uid || resource.data.get('uid', '') == request.auth.uid)
+      );
+      allow list: if isAdmin() || (
+        isAuthenticated() &&
+        (resource.data.userId == request.auth.uid || resource.data.get('uid', '') == request.auth.uid)
+      );
 
       allow create: if isAdmin() || (
         isAuthenticated() &&
         request.resource.data.userId == request.auth.uid &&
+        request.resource.data.get('uid', request.auth.uid) == request.auth.uid &&
         request.resource.data.sessionId == sessionId &&
         request.resource.data.status in ['active', 'pending_verification'] &&
+        request.resource.data.get('sessionStatus', request.resource.data.status) == request.resource.data.status &&
         request.resource.data.trusted == (request.resource.data.status == 'active') &&
         request.resource.data.adminDecision in ['pending', 'auto_trusted'] &&
         (
           request.resource.data.status == 'pending_verification' ||
           !exists(/databases/$(database)/documents/userSecurityProfiles/$(request.auth.uid)) ||
           request.resource.data.countryCode in get(/databases/$(database)/documents/userSecurityProfiles/$(request.auth.uid)).data.knownCountryCodes ||
-          request.resource.data.deviceId in get(/databases/$(database)/documents/userSecurityProfiles/$(request.auth.uid)).data.knownDeviceIds
+          request.resource.data.deviceId in get(/databases/$(database)/documents/userSecurityProfiles/$(request.auth.uid)).data.knownDeviceIds ||
+          request.resource.data.get('deviceSignature', '') in get(/databases/$(database)/documents/userSecurityProfiles/$(request.auth.uid)).data.get('knownDeviceSignatures', [])
         )
       );
 
       allow update: if isAdmin() || (
         isAuthenticated() &&
-        resource.data.userId == request.auth.uid &&
+        (resource.data.userId == request.auth.uid || resource.data.get('uid', '') == request.auth.uid) &&
         request.resource.data.userId == resource.data.userId &&
         request.resource.data.sessionId == resource.data.sessionId &&
         (
-          // 1. Aktif oturum son görülme kalp atışı
+          // 1. Aktif veya iptal oturumlarda yalnızca son görülme & e-posta gönderim durumu güncellenebilir (statü/yetki değiştirilemez)
           (
-            resource.data.status == 'active' &&
-            request.resource.data.status == 'active' &&
-            request.resource.data.trusted == true &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastActiveAt'])
+            resource.data.status in ['active', 'revoked'] &&
+            request.resource.data.status == resource.data.status &&
+            request.resource.data.trusted == resource.data.trusted &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastActiveAt', 'lastSeenAt', 'emailSent', 'emailStatus', 'emailError', 'emailDispatches'])
           ) ||
-          // 2. Kullanıcı "Bu Benim" dedi (oturum kilidi açılmaz, admin onayı bekler)
+          // 2. Bekleyen oturumda yeniden kod gönderimi sonrası meta güncelleme
           (
             resource.data.status == 'pending_verification' &&
-            request.resource.data.status == 'awaiting_admin_approval' &&
-            request.resource.data.userResponse == 'confirmed_me' &&
+            request.resource.data.status == 'pending_verification' &&
             request.resource.data.trusted == false &&
-            request.resource.data.adminDecision == 'pending'
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['challengeExpiresAt', 'verificationStatus', 'emailSent', 'emailStatus', 'emailError', 'emailDispatches'])
           ) ||
-          // 3. Kullanıcı "Ben Değilim" dedi veya kendi oturumunu iptal etti
+          // 3. E-posta challenge doğrulaması ile atomik oturum kilidi açma / reddetme
+          (
+            resource.data.status == 'pending_verification' &&
+            request.resource.data.status in ['active', 'revoked'] &&
+            request.resource.data.get('sessionStatus', request.resource.data.status) == request.resource.data.status &&
+            request.resource.data.trusted == (request.resource.data.status == 'active') &&
+            exists(/databases/$(database)/documents/securityVerificationTokens/$(sessionId)) &&
+            get(/databases/$(database)/documents/securityVerificationTokens/$(sessionId)).data.used == false &&
+            getAfter(/databases/$(database)/documents/securityVerificationTokens/$(sessionId)).data.used == true &&
+            getAfter(/databases/$(database)/documents/securityVerificationTokens/$(sessionId)).data.decisionCommitKey is string &&
+            hashing.sha256(getAfter(/databases/$(database)/documents/securityVerificationTokens/$(sessionId)).data.decisionCommitKey).toHexString() == get(/databases/$(database)/documents/securityVerificationTokens/$(sessionId)).data.commitHash
+          ) ||
+          // 4. Süresi dolmuş oturumun kapatılması
+          (
+            resource.data.status != 'revoked' &&
+            request.resource.data.status == 'revoked' &&
+            request.resource.data.trusted == false &&
+            request.resource.data.get('revokedReason', '') == 'session_expired' &&
+            resource.data.get('expiresAt', null) is timestamp &&
+            resource.data.expiresAt <= request.time
+          ) ||
+          // 5. Kullanıcının kendi oturumunu iptal etmesi ("Ben Değilim" veya tüm oturumları kapat)
           (
             resource.data.status != 'revoked' &&
             request.resource.data.status == 'revoked' &&
@@ -488,11 +566,21 @@ service cloud.firestore {
         isOwner(userId) &&
         request.resource.data.uid == userId
       );
-      // Normal kullanıcı kendi bilinen ülke listesini istemciden genişletemez
+      // Normal kullanıcı doğrudan bilinen ülke listesini genişletemez; yalnızca geçerli e-posta doğrulama tokenı tüketimiyle atomik güncellenir
       allow update: if isAdmin() || (
         isOwner(userId) &&
         request.resource.data.uid == userId &&
-        request.resource.data.knownCountryCodes == resource.data.knownCountryCodes
+        (
+          request.resource.data.knownCountryCodes == resource.data.knownCountryCodes ||
+          (
+            request.resource.data.get('lastVerifiedSessionId', '') is string &&
+            exists(/databases/$(database)/documents/securityVerificationTokens/$(request.resource.data.lastVerifiedSessionId)) &&
+            get(/databases/$(database)/documents/securityVerificationTokens/$(request.resource.data.lastVerifiedSessionId)).data.uid == userId &&
+            get(/databases/$(database)/documents/securityVerificationTokens/$(request.resource.data.lastVerifiedSessionId)).data.used == false &&
+            getAfter(/databases/$(database)/documents/securityVerificationTokens/$(request.resource.data.lastVerifiedSessionId)).data.used == true &&
+            hashing.sha256(getAfter(/databases/$(database)/documents/securityVerificationTokens/$(request.resource.data.lastVerifiedSessionId)).data.decisionCommitKey).toHexString() == get(/databases/$(database)/documents/securityVerificationTokens/$(request.resource.data.lastVerifiedSessionId)).data.commitHash
+          )
+        )
       );
       allow delete: if isAdmin();
     }

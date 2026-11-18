@@ -10,7 +10,11 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { GoogleGenAI } from "@google/genai";
 import { Client } from "@gradio/client";
-import { registerSessionSecurityRoutes } from "./serverSecurity";
+import {
+  registerSessionSecurityRoutes,
+  requireActiveSecuritySession,
+  verifyBearerIdTokenWithAuthTime,
+} from "./serverSecurity";
 import { registerModerationRoutes, startModerationExpirySweep } from "./serverModeration";
 
 
@@ -562,6 +566,15 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
   // 🤖 REDCHAT AI SERVER-SIDE STREAMING ENDPOINT (Google Gemini gemini-3.1-flash-lite)
   app.post("/api/ai/chat/stream", async (req, res) => {
     try {
+      const tokenUser = await verifyBearerIdTokenWithAuthTime(req).catch(() => null);
+      if (!tokenUser) {
+        return res.status(401).json({ error: "Kimlik doğrulama gerekli." });
+      }
+      const secGate = await requireActiveSecuritySession(req, res, tokenUser, {
+        requireSessionHeaders: true,
+      });
+      if (!secGate.ok) return;
+
       const { messages, userMessage, userId, mode = "fast" } = req.body;
 
       if (!userMessage && (!messages || messages.length === 0)) {
@@ -682,6 +695,15 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
   // 🤖 REDCHAT AI SERVER-SIDE NON-STREAMING ENDPOINT (Google Gemini gemini-3.1-flash-lite)
   app.post("/api/ai/chat", async (req, res) => {
     try {
+      const tokenUser = await verifyBearerIdTokenWithAuthTime(req).catch(() => null);
+      if (!tokenUser) {
+        return res.status(401).json({ error: "Kimlik doğrulama gerekli." });
+      }
+      const secGate = await requireActiveSecuritySession(req, res, tokenUser, {
+        requireSessionHeaders: true,
+      });
+      if (!secGate.ok) return;
+
       const { messages, userMessage, userId, mode = "fast" } = req.body;
 
       if (!userMessage && (!messages || messages.length === 0)) {
@@ -850,6 +872,15 @@ Tarih ve zaman sorulursa sadece bu bilgiyi baz alarak kısa ve doğal cevap ver 
   // 🎨 POST /api/ai/image/generate (Hugging Face FLUX.2-dev + Cloudinary CDN + Günlük 3 Limit)
   app.post("/api/ai/image/generate", async (req, res) => {
     try {
+      const tokenUser = await verifyBearerIdTokenWithAuthTime(req).catch(() => null);
+      if (!tokenUser) {
+        return res.status(401).json({ error: "Kimlik doğrulama gerekli." });
+      }
+      const secGate = await requireActiveSecuritySession(req, res, tokenUser, {
+        requireSessionHeaders: true,
+      });
+      if (!secGate.ok) return;
+
       const { prompt, userId } = req.body;
       const cleanPrompt = String(prompt || "").trim();
 

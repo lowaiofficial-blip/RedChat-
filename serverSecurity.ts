@@ -5,24 +5,42 @@ import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 
 const PROJECT_ID = "redchat-7c1db";
-const ADMIN_EMAILS = ["robloxenes930@gmail.com", "gg00cat73@gmail.com"];
+const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
+
+export const MAIN_ADMIN_EMAILS = ["robloxenes930@gmail.com", "gg00cat73@gmail.com"];
+export const MUSE_MODERATOR_UID = "GnQk5MbPQdS4GDl4cohFzRlKNw22";
+export const MUSE_MODERATOR_EMAIL = "muse@gmail.com";
 const SECURITY_NOTIFY_EMAIL = "redchatbusiness@outlook.com";
 
-// Sunucu tarafı HMAC oturum doğrulama anahtarı
+const DEVICE_COOKIE_NAME = "__rc_dev";
+const CHALLENGE_TTL_MS = 15 * 60 * 1000; // 15 dakika
+const CHALLENGE_PROOF_TTL_MS = 10 * 60 * 1000; // Doğrulandıktan sonra karar için 10 dakika
+const ACTIVE_SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 gün
+const PENDING_SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 saat
+const REAUTH_MAX_AGE_SECONDS = 300; // Ana Yönetici kurtarma için son 5 dakika
+
+// Sunucu tarafı HMAC doğrulama anahtarı (istemciye asla açılmaz)
 const SESSION_HMAC_SECRET =
   process.env.SESSION_SECRET ||
   process.env.FIREBASE_SERVICE_ACCOUNT_KEY ||
   process.env.RESEND_API_KEY ||
   "redchat-7c1db-server-session-hmac-secret";
 
-// Google Public x509 Certs cache (Admin SDK yoksa Firebase ID Token doğrulaması için)
+// Bellekte tekilleştirme ve atomik tek-kullanımlık kilitler
+const sentEmailEventsCache = new Set<string>();
+const verifiedChallengeCache = new Map<
+  string,
+  { sessionId: string; uid: string; verifiedAtMs: number; expiresAtMs: number }
+>();
+
 let cachedCerts: Record<string, string> = {};
 let cachedCertsExpiry = 0;
 
-interface VerifiedTokenUser {
+export interface VerifiedTokenUser {
   uid: string;
   email: string | null;
   emailVerified: boolean;
+  authTime: number | null;
   token: string;
 }
 
@@ -30,6 +48,32 @@ function base64UrlDecode(str: string): Buffer {
   const padded = str.replace(/-/g, "+").replace(/_/g, "/");
   const padLen = (4 - (padded.length % 4)) % 4;
   return Buffer.from(padded + "=".repeat(padLen), "base64");
+}
+
+function parseCookies(req: Request): Record<string, string> {
+  const raw = req.headers.cookie;
+  const result: Record<string, string> = {};
+  if (!raw || typeof raw !== "string") return result;
+
+  raw.split(";").forEach((part) => {
+    const idx = part.indexOf("=");
+    if (idx <= 0) return;
+    const key = part.slice(0, idx).trim();
+    const val = part.slice(idx + 1).trim();
+    try {
+      result[key] = decodeURIComponent(val);
+    } catch {
+      result[key] = val;
+    }
+  });
+  return result;
+}
+
+function safeTimingEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
 }
 
 async function getGooglePublicCerts(): Promise<Record<string, string>> {
@@ -54,7 +98,9 @@ async function getGooglePublicCerts(): Promise<Record<string, string>> {
   return cachedCerts;
 }
 
-async function verifyBearerIdToken(req: Request): Promise<VerifiedTokenUser | null> {
+export async function verifyBearerIdTokenWithAuthTime(
+  req: Request
+): Promise<VerifiedTokenUser | null> {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return null;
@@ -62,7 +108,7 @@ async function verifyBearerIdToken(req: Request): Promise<VerifiedTokenUser | nu
   const idToken = authHeader.slice(7).trim();
   if (!idToken) return null;
 
-  // 1. Firebase Admin SDK mevcutsa doğrudan kullan
+  // 1. Firebase Admin SDK
   if (getApps().length > 0) {
     try {
       const decoded = await getAuth().verifyIdToken(idToken, true);
@@ -70,6 +116,7 @@ async function verifyBearerIdToken(req: Request): Promise<VerifiedTokenUser | nu
         uid: decoded.uid,
         email: decoded.email || null,
         emailVerified: Boolean(decoded.email_verified),
+        authTime: typeof decoded.auth_time === "number" ? decoded.auth_time : null,
         token: idToken,
       };
     } catch (err: any) {
@@ -80,7 +127,7 @@ async function verifyBearerIdToken(req: Request): Promise<VerifiedTokenUser | nu
     }
   }
 
-  // 2. Fallback: Google x509 sertifikalarıyla kriptografik RS256 JWT doğrulaması
+  // 2. Fallback: RS256 Google x509 doğrulaması
   try {
     const parts = idToken.split(".");
     if (parts.length !== 3) return null;
@@ -110,10 +157,11 @@ async function verifyBearerIdToken(req: Request): Promise<VerifiedTokenUser | nu
       uid: payload.sub,
       email: typeof payload.email === "string" ? payload.email : null,
       emailVerified: Boolean(payload.email_verified),
+      authTime: typeof payload.auth_time === "number" ? payload.auth_time : null,
       token: idToken,
     };
   } catch (err) {
-    console.warn("[Security] Fallback ID token verification failed:", err);
+    console.warn("[Security] ID token verification failed:", err);
     return null;
   }
 }
@@ -124,7 +172,7 @@ async function authenticateRequest(
   asVerifyActive = false
 ): Promise<VerifiedTokenUser | null> {
   try {
-    const tokenUser = await verifyBearerIdToken(req);
+    const tokenUser = await verifyBearerIdTokenWithAuthTime(req);
     if (!tokenUser) {
       res.status(401).json(
         asVerifyActive
@@ -141,6 +189,7 @@ async function authenticateRequest(
           ? {
               active: false,
               status: "revoked",
+              sessionStatus: "revoked",
               reason: "TOKEN_REVOKED",
               error: "Oturum jetonu iptal edilmiş.",
             }
@@ -158,7 +207,7 @@ async function authenticateRequest(
 }
 
 // =========================================================================
-// 🔥 FIRESTORE DUAL ADAPTER (Admin SDK + Authenticated REST Fallback)
+// 🔥 FIRESTORE DUAL ADAPTER (Admin SDK + Authenticated REST & Atomic Commit)
 // =========================================================================
 
 function toRestValue(val: any): any {
@@ -224,7 +273,19 @@ function fromRestDoc(docJson: any): Record<string, any> | null {
   return out;
 }
 
-const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
+function parseTimestampMs(val: any): number | null {
+  if (!val) return null;
+  if (val instanceof Date) return val.getTime();
+  if (typeof val?.toMillis === "function") return val.toMillis();
+  if (typeof val?.toDate === "function") return val.toDate().getTime();
+  if (typeof val?.seconds === "number") return val.seconds * 1000;
+  if (typeof val === "number") return val;
+  if (typeof val === "string") {
+    const ms = Date.parse(val);
+    return Number.isNaN(ms) ? null : ms;
+  }
+  return null;
+}
 
 async function dbGetDoc(
   colPath: string,
@@ -245,8 +306,7 @@ async function dbGetDoc(
     const errText = await resp.text();
     throw new Error(`Firestore REST getDoc failed (${resp.status}): ${errText}`);
   }
-  const json = await resp.json();
-  return fromRestDoc(json);
+  return fromRestDoc(await resp.json());
 }
 
 async function dbSetDoc(
@@ -286,6 +346,66 @@ async function dbSetDoc(
   }
 }
 
+interface AtomicWriteOp {
+  colPath: string;
+  docId: string;
+  data: Record<string, any>;
+  mustExist?: boolean;
+}
+
+async function dbAtomicCommit(ops: AtomicWriteOp[], idToken?: string): Promise<void> {
+  if (ops.length === 0) return;
+
+  if (getApps().length > 0) {
+    const db = getFirestore();
+    const batch = db.batch();
+    for (const op of ops) {
+      const ref = db.collection(op.colPath).doc(op.docId);
+      batch.set(ref, op.data, { merge: true });
+    }
+    await batch.commit();
+    return;
+  }
+
+  const docRoot = `projects/${PROJECT_ID}/databases/(default)/documents`;
+  const writes = ops.map((op) => {
+    const fields: Record<string, any> = {};
+    const fieldPaths: string[] = [];
+    for (const [k, v] of Object.entries(op.data)) {
+      if (v !== undefined) {
+        fields[k] = toRestValue(v);
+        fieldPaths.push(k);
+      }
+    }
+    const writeObj: Record<string, any> = {
+      update: {
+        name: `${docRoot}/${op.colPath}/${op.docId}`,
+        fields,
+      },
+      updateMask: { fieldPaths },
+    };
+    if (op.mustExist !== undefined) {
+      writeObj.currentDocument = { exists: op.mustExist };
+    }
+    return writeObj;
+  });
+
+  const resp = await fetch(`${FIRESTORE_BASE}:commit`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+    },
+    body: JSON.stringify({ writes }),
+    signal: AbortSignal.timeout(6000),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`Firestore REST atomic commit failed (${resp.status}): ${errText}`);
+  }
+}
+
 async function dbQueryByUserId(
   colPath: string,
   userId: string,
@@ -295,7 +415,12 @@ async function dbQueryByUserId(
     const snap = await getFirestore()
       .collection(colPath)
       .where("userId", "==", userId)
-      .get();
+      .orderBy("createdAt", "desc")
+      .limit(100)
+      .get()
+      .catch(async () =>
+        getFirestore().collection(colPath).where("userId", "==", userId).get()
+      );
     return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   }
 
@@ -315,14 +440,61 @@ async function dbQueryByUserId(
             value: { stringValue: userId },
           },
         },
+        limit: 100,
       },
     }),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(6000),
   });
 
   if (!resp.ok) {
     const errText = await resp.text();
     throw new Error(`Firestore REST query failed (${resp.status}): ${errText}`);
+  }
+
+  const rows = (await resp.json()) as any[];
+  const out: Record<string, any>[] = [];
+  for (const row of rows) {
+    if (row.document) {
+      const parsed = fromRestDoc(row.document);
+      if (parsed) out.push(parsed);
+    }
+  }
+  return out;
+}
+
+async function dbListRecent(
+  colPath: string,
+  limitCount = 150,
+  idToken?: string
+): Promise<Record<string, any>[]> {
+  if (getApps().length > 0) {
+    const snap = await getFirestore()
+      .collection(colPath)
+      .orderBy("createdAt", "desc")
+      .limit(limitCount)
+      .get();
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  }
+
+  const resp = await fetch(`${FIRESTORE_BASE}:runQuery`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+    },
+    body: JSON.stringify({
+      structuredQuery: {
+        from: [{ collectionId: colPath }],
+        orderBy: [{ field: { fieldPath: "createdAt" }, direction: "DESCENDING" }],
+        limit: limitCount,
+      },
+    }),
+    signal: AbortSignal.timeout(6000),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`Firestore REST list failed (${resp.status}): ${errText}`);
   }
 
   const rows = (await resp.json()) as any[];
@@ -356,7 +528,6 @@ function isPrivateOrLoopbackIp(ip: string): boolean {
   ) {
     return true;
   }
-  // 172.16.0.0 - 172.31.255.255
   if (clean.startsWith("172.")) {
     const second = parseInt(clean.split(".")[1] || "0", 10);
     if (second >= 16 && second <= 31) return true;
@@ -366,12 +537,16 @@ function isPrivateOrLoopbackIp(ip: string): boolean {
 
 function isValidIpFormat(ip: string): boolean {
   const clean = ip.trim().replace(/^::ffff:/, "");
-  const ipv4Regex = /^(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)$/;
+  const ipv4Regex =
+    /^(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)\.(25[0-5]|2[0-4]\d|[01]?\d\d?)$/;
   const ipv6Regex = /^[0-9a-fA-F:]+$/;
   return ipv4Regex.test(clean) || (clean.includes(":") && ipv6Regex.test(clean));
 }
 
-export async function extractRealClientIp(req: Request, clientPublicIp?: string): Promise<string> {
+export async function extractRealClientIp(
+  req: Request,
+  clientPublicIp?: string
+): Promise<string> {
   const candidates: string[] = [];
 
   const cfIp = req.headers["cf-connecting-ip"];
@@ -390,7 +565,6 @@ export async function extractRealClientIp(req: Request, clientPublicIp?: string)
   if (req.socket?.remoteAddress) candidates.push(req.socket.remoteAddress);
   if (req.ip) candidates.push(req.ip);
 
-  // İlk herkese açık (public) IP'yi seç
   for (const raw of candidates) {
     const clean = raw.replace(/^::ffff:/, "").trim();
     if (clean && isValidIpFormat(clean) && !isPrivateOrLoopbackIp(clean)) {
@@ -398,7 +572,6 @@ export async function extractRealClientIp(req: Request, clientPublicIp?: string)
     }
   }
 
-  // Proxy olmayan yerel test/geliştirme ortamında istemcinin bildirdiği veya sunucu çıkış IP'si
   if (clientPublicIp && isValidIpFormat(clientPublicIp) && !isPrivateOrLoopbackIp(clientPublicIp)) {
     return clientPublicIp.trim();
   }
@@ -437,9 +610,7 @@ export function getCountryNameTurkish(countryCode: string, fallbackName?: string
 export function getCountryFlagEmoji(countryCode: string): string {
   const code = (countryCode || "").trim().toUpperCase();
   if (!/^[A-Z]{2}$/.test(code)) return "🌐";
-  return String.fromCodePoint(
-    ...[...code].map((char) => 127397 + char.charCodeAt(0))
-  );
+  return String.fromCodePoint(...[...code].map((char) => 127397 + char.charCodeAt(0)));
 }
 
 export interface GeoIpResult {
@@ -457,7 +628,7 @@ export async function lookupGeoIp(ip: string, req?: Request): Promise<GeoIpResul
   const cleanIp = ip.replace(/^::ffff:/, "").trim();
 
   if (!isPrivateOrLoopbackIp(cleanIp)) {
-    // 1. Provider: ipwho.is
+    // 1. ipwho.is
     try {
       const resp = await fetch(`https://ipwho.is/${encodeURIComponent(cleanIp)}`, {
         signal: AbortSignal.timeout(3500),
@@ -482,7 +653,7 @@ export async function lookupGeoIp(ip: string, req?: Request): Promise<GeoIpResul
       console.warn("[GeoIP] ipwho.is error:", err);
     }
 
-    // 2. Provider: ipapi.co
+    // 2. ipapi.co
     try {
       const resp = await fetch(`https://ipapi.co/${encodeURIComponent(cleanIp)}/json/`, {
         headers: { "User-Agent": "RedChat-Security/1.0" },
@@ -508,7 +679,7 @@ export async function lookupGeoIp(ip: string, req?: Request): Promise<GeoIpResul
       console.warn("[GeoIP] ipapi.co error:", err);
     }
 
-    // 3. Provider: ip-api.com
+    // 3. ip-api.com
     try {
       const resp = await fetch(
         `http://ip-api.com/json/${encodeURIComponent(cleanIp)}?fields=status,country,countryCode,regionName,city,isp`,
@@ -535,7 +706,6 @@ export async function lookupGeoIp(ip: string, req?: Request): Promise<GeoIpResul
     }
   }
 
-  // 4. Proxy / CDN başlıklarından ülke kodu kontrolü (örn. Cloudflare / Cloud Run / AppEngine)
   if (req) {
     const headerCode =
       (req.headers["cf-ipcountry"] as string) ||
@@ -570,7 +740,7 @@ export async function lookupGeoIp(ip: string, req?: Request): Promise<GeoIpResul
 }
 
 // =========================================================================
-// 💻 GÜVENİLİR CİHAZ & TARAYICI PARSER
+// 💻 SUNUCU DOĞRULAMALI GİZLİLİĞE UYGUN CİHAZ KİMLİĞİ & PARSER
 // =========================================================================
 
 export function parseUserAgentInfo(uaRaw: string): {
@@ -607,8 +777,105 @@ export function parseUserAgentInfo(uaRaw: string): {
   return { browserName, osName, deviceType };
 }
 
+interface DeviceSignals {
+  hardwareFingerprint?: string;
+  screenBucket?: string;
+  timezone?: string;
+  platform?: string;
+  language?: string;
+  touchPoints?: number;
+}
+
+function signDeviceCookieValue(serverDeviceId: string, osName: string, deviceType: string): string {
+  const sig = crypto
+    .createHmac("sha256", SESSION_HMAC_SECRET)
+    .update(`rcdev|${serverDeviceId}|${osName}|${deviceType}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `${serverDeviceId}.${sig}`;
+}
+
+function verifyDeviceCookie(
+  rawCookie: string | undefined,
+  osName: string,
+  deviceType: string
+): string | null {
+  if (!rawCookie || typeof rawCookie !== "string") return null;
+  const parts = rawCookie.split(".");
+  if (parts.length !== 2) return null;
+  const [devId, sig] = parts;
+  if (!devId || !sig || !devId.startsWith("RCD-")) return null;
+  const expected = signDeviceCookieValue(devId, osName, deviceType).split(".")[1];
+  return safeTimingEqual(sig, expected) ? devId : null;
+}
+
+function computePrivacySafeDeviceSignature(
+  uid: string,
+  uaInfo: { browserName: string; osName: string; deviceType: string },
+  signals?: DeviceSignals,
+  fallbackClientHwid?: string
+): string {
+  const fp =
+    typeof signals?.hardwareFingerprint === "string" && signals.hardwareFingerprint.trim()
+      ? signals.hardwareFingerprint.trim().slice(0, 80)
+      : (fallbackClientHwid || "").trim().slice(0, 80);
+  const platform =
+    typeof signals?.platform === "string" ? signals.platform.trim().slice(0, 40) : "";
+  const screenBucket =
+    typeof signals?.screenBucket === "string" ? signals.screenBucket.trim().slice(0, 40) : "";
+  const tz =
+    typeof signals?.timezone === "string" ? signals.timezone.trim().slice(0, 50) : "";
+
+  const material = `dsg|${uid}|${uaInfo.osName}|${uaInfo.deviceType}|${uaInfo.browserName}|${platform}|${screenBucket}|${tz}|${fp}`;
+  return (
+    "SIG-" +
+    crypto
+      .createHmac("sha256", SESSION_HMAC_SECRET)
+      .update(material)
+      .digest("hex")
+      .slice(0, 28)
+      .toUpperCase()
+  );
+}
+
+function setSignedDeviceCookie(
+  req: Request,
+  res: Response,
+  serverDeviceId: string,
+  osName: string,
+  deviceType: string
+) {
+  const value = signDeviceCookieValue(serverDeviceId, osName, deviceType);
+  const isSecure =
+    req.secure || String(req.headers["x-forwarded-proto"] || "").includes("https");
+  const cookieParts = [
+    `${DEVICE_COOKIE_NAME}=${encodeURIComponent(value)}`,
+    "Path=/",
+    "Max-Age=315360000",
+    "HttpOnly",
+    "SameSite=Lax",
+  ];
+  if (isSecure) {
+    cookieParts.push("Secure");
+  }
+  res.setHeader("Set-Cookie", cookieParts.join("; "));
+}
+
+function getDeviceTypeTurkish(deviceType: string): string {
+  switch (deviceType) {
+    case "mobile":
+      return "Akıllı Telefon (Mobil)";
+    case "tablet":
+      return "Tablet";
+    case "desktop":
+      return "Masaüstü / Dizüstü Bilgisayar";
+    default:
+      return "Bilinmeyen Cihaz";
+  }
+}
+
 // =========================================================================
-// 🔐 KRİPTOGRAFİK OTURUM İMZALAMA & DOĞRULAMA
+// 🔐 KRİPTOGRAFİK OTURUM, CHALLENGE TOKEN & AKTİFLİK DOĞRULAMA
 // =========================================================================
 
 function computeProofHash(sessionProof: string): string {
@@ -635,69 +902,333 @@ function verifyProofAgainstSession(
 ): boolean {
   if (!proof || typeof proof !== "string") return false;
   if (networkDoc?.proofHash) {
-    return computeProofHash(proof) === networkDoc.proofHash;
+    return safeTimingEqual(computeProofHash(proof), String(networkDoc.proofHash));
   }
+  const ownerUid = session.uid || session.userId;
   const expectedPrefix = computeSessionHmac(
     session.sessionId,
-    session.userId,
+    ownerUid,
     session.deviceId
   ).slice(0, 32);
   return proof.startsWith(`${expectedPrefix}.`);
 }
 
+function computeSaltedSha256(secret: string, salt: string): string {
+  return crypto
+    .createHash("sha256")
+    .update(`${salt}:${secret}`)
+    .digest("hex");
+}
+
+function deriveDeterministicCommitSecret(
+  sessionId: string,
+  uid: string,
+  tokenHash: string
+): string {
+  return crypto
+    .createHmac("sha256", SESSION_HMAC_SECRET)
+    .update(`atomic-commit|${sessionId}|${uid}|${tokenHash}`)
+    .digest("hex");
+}
+
+function buildVerifiedChallengeProof(
+  sessionId: string,
+  uid: string,
+  expiresAtMs: number
+): string {
+  const payload = `${sessionId}.${uid}.${expiresAtMs}`;
+  const sig = crypto
+    .createHmac("sha256", SESSION_HMAC_SECRET)
+    .update(`challenge-ok|${payload}`)
+    .digest("hex")
+    .slice(0, 36);
+  return `${payload}.${sig}`;
+}
+
+function verifyChallengeProof(
+  challengeProof: string,
+  expectedSessionId: string,
+  expectedUid: string
+): boolean {
+  if (!challengeProof || typeof challengeProof !== "string") return false;
+  const parts = challengeProof.split(".");
+  if (parts.length !== 4) return false;
+  const [sid, uid, expStr, sig] = parts;
+  if (sid !== expectedSessionId || uid !== expectedUid) return false;
+  const expMs = Number(expStr);
+  if (!Number.isFinite(expMs) || expMs <= Date.now()) return false;
+  const expectedSig = crypto
+    .createHmac("sha256", SESSION_HMAC_SECRET)
+    .update(`challenge-ok|${sid}.${uid}.${expStr}`)
+    .digest("hex")
+    .slice(0, 36);
+  return safeTimingEqual(sig, expectedSig);
+}
+
+function generateOtpCode(): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  const bytes = crypto.randomBytes(6);
+  for (let i = 0; i < 6; i++) {
+    code += alphabet[bytes[i] % alphabet.length];
+  }
+  return code;
+}
+
+function resolveAppOrigin(req: Request): string {
+  const originHeader = req.headers.origin;
+  if (typeof originHeader === "string" && /^https?:\/\//.test(originHeader)) {
+    return originHeader.replace(/\/$/, "");
+  }
+  const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost:3000";
+  const proto = req.headers["x-forwarded-proto"] || (req.secure ? "https" : "http");
+  return `${proto}://${host}`;
+}
+
+/**
+ * Aktif oturum doğrulaması (Middleware / Helper):
+ * İptal edilmiş, süresi dolmuş veya pending_verification oturumlarının hassas uçları kullanmasını engeller.
+ */
+export async function requireActiveSecuritySession(
+  req: Request,
+  res: Response,
+  tokenUser: VerifiedTokenUser,
+  options: { requireSessionHeaders?: boolean } = {}
+): Promise<{ ok: boolean; session?: Record<string, any> }> {
+  const sessionId = String(req.headers["x-redchat-session-id"] || "").trim();
+  const sessionProof = String(req.headers["x-redchat-session-proof"] || "").trim();
+
+  if (!sessionId || !sessionProof) {
+    if (options.requireSessionHeaders) {
+      res.status(403).json({
+        error: "Aktif oturum güvenlik doğrulaması eksik.",
+        code: "SESSION_HEADERS_REQUIRED",
+      });
+      return { ok: false };
+    }
+    return { ok: true };
+  }
+
+  const session = await dbGetDoc("securitySessions", sessionId, tokenUser.token).catch(
+    () => null
+  );
+  if (!session || (session.uid || session.userId) !== tokenUser.uid) {
+    res.status(401).json({
+      error: "Oturum kaydı bulunamadı veya kullanıcıya ait değil.",
+      code: "SESSION_NOT_FOUND",
+    });
+    return { ok: false };
+  }
+
+  const networkDoc = await dbGetDoc("securitySessionNetwork", sessionId, tokenUser.token).catch(
+    () => null
+  );
+  if (!verifyProofAgainstSession(sessionProof, session, networkDoc)) {
+    res.status(403).json({
+      error: "Geçersiz oturum imzası.",
+      code: "INVALID_SESSION_PROOF",
+    });
+    return { ok: false };
+  }
+
+  const expiresMs = parseTimestampMs(session.expiresAt);
+  if (expiresMs !== null && expiresMs <= Date.now()) {
+    await dbSetDoc(
+      "securitySessions",
+      sessionId,
+      {
+        status: "revoked",
+        sessionStatus: "revoked",
+        verificationStatus:
+          session.verificationStatus === "pending" ? "expired" : "expired",
+        trusted: false,
+        revokedAt: new Date(),
+        revokedReason: "session_expired",
+      },
+      tokenUser.token
+    ).catch(() => {});
+
+    res.status(401).json({
+      error: "Oturum süresi doldu. Lütfen yeniden giriş yapın.",
+      code: "SESSION_EXPIRED",
+    });
+    return { ok: false };
+  }
+
+  const effStatus = session.sessionStatus || session.status;
+  if (effStatus === "revoked" || session.status === "revoked" || session.revokedAt) {
+    res.status(401).json({
+      error: "Bu oturum sonlandırılmıştır.",
+      code: "SESSION_REVOKED",
+    });
+    return { ok: false };
+  }
+
+  if (
+    session.status === "pending_verification" ||
+    session.status === "awaiting_admin_approval" ||
+    effStatus === "pending_verification" ||
+    session.trusted !== true
+  ) {
+    res.status(403).json({
+      error: "Bu oturum henüz doğrulanmadığı için işlem kısıtlanmıştır.",
+      code: "SESSION_PENDING_VERIFICATION",
+    });
+    return { ok: false };
+  }
+
+  return { ok: true, session };
+}
+
 // =========================================================================
-// 📧 RESEND E-POSTA GÖNDERİM YARDIMCISI
+// 📧 RESEND E-POSTA GÖNDERİMİ & ÇİFT GÖNDERİM ENGELLEME
 // =========================================================================
 
-interface SecurityEmailPayload {
-  eventType: "new_country_detected" | "user_confirmed_me" | "user_denied_not_me";
+type SecurityEmailEventType =
+  | "unverified_suspicious_login"
+  | "verified_login_notification"
+  | "owner_denied_alert";
+
+interface SecurityEmailDispatchParams {
+  sessionId: string;
+  eventType: SecurityEmailEventType;
+  recipientEmail: string;
   username: string;
   displayName: string;
   userId: string;
-  previousCountryName: string;
-  newCountryName: string;
-  newCountryFlag: string;
+  countryName: string;
+  countryCode: string;
+  countryFlag: string;
+  city?: string | null;
+  deviceType: string;
+  osName: string;
+  browserName: string;
   loginTimeFormatted: string;
-  userChoiceLabel: string;
-  ip: string;
-  deviceSummary: string;
+  previousCountryName?: string;
+  verificationUrl?: string;
+  verificationCode?: string;
+  sessionDataForDedup?: Record<string, any> | null;
 }
 
-async function sendSecurityResendEmail(payload: SecurityEmailPayload): Promise<{
+async function sendSecurityResendEmailOnce(params: SecurityEmailDispatchParams): Promise<{
   sent: boolean;
-  status: "sent" | "failed" | "not_configured";
+  status: "sent" | "failed" | "not_configured" | "skipped";
+  recipient: string | null;
+  subject: string | null;
   error?: string;
+  deduplicated?: boolean;
 }> {
+  const dedupKey = `${params.sessionId}:${params.eventType}`;
+  const existingDispatch = params.sessionDataForDedup?.emailDispatches?.[params.eventType];
+
+  if (sentEmailEventsCache.has(dedupKey) || existingDispatch?.sent === true) {
+    return {
+      sent: true,
+      status: "sent",
+      recipient: existingDispatch?.recipient || params.recipientEmail || null,
+      subject: existingDispatch?.subject || null,
+      deduplicated: true,
+    };
+  }
+
+  const recipient = (params.recipientEmail || "").trim();
+  if (!recipient || !recipient.includes("@")) {
+    return {
+      sent: false,
+      status: "failed",
+      recipient: null,
+      subject: null,
+      error: "Hesap sahibinin doğrulanmış e-posta adresi bulunamadı.",
+    };
+  }
+
   const resendApiKey = process.env.RESEND_API_KEY;
   if (!resendApiKey || !resendApiKey.trim()) {
-    console.warn("⚠️ [Security Email] RESEND_API_KEY tanımlı değil; e-posta gönderilemedi.");
+    console.warn(
+      `⚠️ [Security Email] RESEND_API_KEY tanımlı değil (${params.eventType} -> ${recipient}).`
+    );
     return {
       sent: false,
       status: "not_configured",
+      recipient,
+      subject: null,
       error: "RESEND_API_KEY ortam değişkeni sunucuda tanımlı değil.",
     };
   }
 
-  const subject =
-    payload.eventType === "new_country_detected"
-      ? "RedChat — Yeni Ülkeden Oturum Açıldı"
-      : payload.eventType === "user_denied_not_me"
-      ? "RedChat ACİL — Kullanıcı Şüpheli Oturumu Reddetti (Ben Değilim)"
-      : "RedChat — Şüpheli Oturum İçin Kullanıcı Yanıtı (Bu Benim)";
+  const cityText = params.city && params.city.trim() ? params.city.trim() : "Belirtilmedi";
+  const deviceLabel = getDeviceTypeTurkish(params.deviceType);
 
-  const accentColor =
-    payload.eventType === "user_denied_not_me"
-      ? "#dc2626"
-      : payload.eventType === "user_confirmed_me"
-      ? "#d97706"
-      : "#dc2626";
+  let subject = "";
+  let headline = "";
+  let statusBadgeText = "";
+  let accentColor = "#dc2626";
+  let extraHtmlBlock = "";
+  let extraTextBlock = "";
 
-  const bannerTitle =
-    payload.eventType === "new_country_detected"
-      ? "Yeni Ülkeden Oturum Açıldı"
-      : payload.eventType === "user_denied_not_me"
-      ? "ACİL GÜVENLİK UYARISI — Oturum Reddedildi"
-      : "Kullanıcı Girişi Kendisine Ait Olduğunu Bildirdi";
+  if (params.eventType === "unverified_suspicious_login") {
+    subject = "RedChat — Yeni Oturum Açıldı";
+    headline = "Hesabınızda Yeni Bir Oturum Algılandı";
+    statusBadgeText = "Bu oturum henüz doğrulanmadı";
+    accentColor = "#dc2626";
+    extraHtmlBlock = `
+      <div style="margin: 20px 0; padding: 16px; border-radius: 12px; background-color: #18181b; border: 1px solid #3f3f46;">
+        <div style="font-size: 12px; color: #fbbf24; font-weight: 700; margin-bottom: 8px;">
+          ⚠️ Bu oturum henüz doğrulanmadı
+        </div>
+        <p style="margin: 0 0 12px 0; font-size: 13px; color: #d4d4d8; line-height: 1.5;">
+          Güvenliğiniz için sohbet ve hassas hesap işlemleri geçici olarak kısıtlanmıştır.
+          Karar vermeden önce tek kullanımlık doğrulama kodunu kullanın veya aşağıdaki doğrulama bağlantısına tıklayın (15 dakika geçerlidir):
+        </p>
+        ${
+          params.verificationCode
+            ? `<div style="margin: 12px 0; padding: 12px; border-radius: 10px; background-color: #09090b; border: 1px dashed #dc2626; text-align: center;">
+                <div style="font-size: 11px; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.08em;">Tek Kullanımlık Doğrulama Kodu</div>
+                <div style="font-size: 24px; font-weight: 800; letter-spacing: 0.25em; color: #ffffff; font-family: monospace; margin-top: 4px;">${params.verificationCode}</div>
+              </div>`
+            : ""
+        }
+        ${
+          params.verificationUrl
+            ? `<div style="margin-top: 14px; text-align: center;">
+                <a href="${params.verificationUrl}" style="display: inline-block; padding: 11px 20px; border-radius: 10px; background-color: #dc2626; color: #ffffff; text-decoration: none; font-size: 13px; font-weight: 700;">
+                  Oturumu Doğrula ve Yanıtla
+                </a>
+              </div>`
+            : ""
+        }
+      </div>
+    `;
+    extraTextBlock = [
+      "Oturum durumu: Bu oturum henüz doğrulanmadı",
+      params.verificationCode ? `Doğrulama kodu: ${params.verificationCode}` : "",
+      params.verificationUrl ? `Doğrulama bağlantısı: ${params.verificationUrl}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  } else if (params.eventType === "verified_login_notification") {
+    subject = "RedChat — Hesabınızda Yeni Giriş";
+    headline = "Hesabınızda Doğrulanmış Yeni Giriş";
+    statusBadgeText = "Doğrulandı — Aktif Oturum";
+    accentColor = "#10b981";
+    extraHtmlBlock = `
+      <div style="margin: 18px 0; padding: 14px; border-radius: 12px; background-color: #052e16; border: 1px solid #166534; font-size: 13px; color: #bbf7d0;">
+        Bu giriş doğrulandı ve oturum erişime açıldı. Eğer bu işlemi siz yapmadıysanız hemen RedChat destek ekibiyle iletişime geçip şifrenizi yenileyin.
+      </div>
+    `;
+    extraTextBlock = "Oturum durumu: Doğrulandı — Aktif Oturum";
+  } else {
+    subject = "RedChat ACİL — Şüpheli Oturum Reddedildi (Ben Değilim)";
+    headline = "ACİL GÜVENLİK UYARISI — Oturum Reddedildi";
+    statusBadgeText = "Hesap Sahibi Tarafından İptal Edildi";
+    accentColor = "#dc2626";
+    extraHtmlBlock = `
+      <div style="margin: 18px 0; padding: 14px; border-radius: 12px; background-color: #450a0a; border: 1px solid #991b1b; font-size: 13px; color: #fecaca;">
+        Hesap sahibi bu yeni oturumu "Ben Değilim" olarak işaretledi. Şüpheli oturum derhal iptal edilmiştir. Hesap şifrenizi güncellemeniz ve diğer tüm oturumları gözden geçirmeniz önerilir.
+      </div>
+    `;
+    extraTextBlock = "Oturum durumu: Hesap sahibi tarafından reddedildi ve iptal edildi";
+  }
 
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 620px; margin: 0 auto; padding: 24px; border: 1px solid #27272a; border-radius: 16px; background-color: #09090b; color: #f4f4f5;">
@@ -706,64 +1237,66 @@ async function sendSecurityResendEmail(payload: SecurityEmailPayload): Promise<{
           RedChat Oturum Güvenliği
         </div>
         <h2 style="margin: 6px 0 0 0; font-size: 20px; font-weight: 700; color: #ffffff;">
-          ${bannerTitle}
+          ${headline}
         </h2>
       </div>
+
+      ${extraHtmlBlock}
 
       <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
         <tbody>
           <tr>
             <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b; width: 42%;">Kullanıcı adı</td>
-            <td style="padding: 9px 0; color: #ffffff; font-weight: 600; border-bottom: 1px solid #18181b;">@${payload.username} (${payload.displayName})</td>
+            <td style="padding: 9px 0; color: #ffffff; font-weight: 600; border-bottom: 1px solid #18181b;">@${params.username} (${params.displayName})</td>
           </tr>
           <tr>
-            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Hesap kimliği</td>
-            <td style="padding: 9px 0; color: #e4e4e7; font-family: monospace; border-bottom: 1px solid #18181b;">${payload.userId}</td>
+            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Ülke</td>
+            <td style="padding: 9px 0; color: #fbbf24; font-weight: 700; border-bottom: 1px solid #18181b;">${params.countryName} ${params.countryFlag} (${params.countryCode})</td>
           </tr>
           <tr>
-            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Önceki bilinen ülke</td>
-            <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${payload.previousCountryName}</td>
+            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Şehir</td>
+            <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${cityText}</td>
           </tr>
           <tr>
-            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Yeni giriş yapılan ülke</td>
-            <td style="padding: 9px 0; color: #fbbf24; font-weight: 700; border-bottom: 1px solid #18181b;">${payload.newCountryName} ${payload.newCountryFlag}</td>
+            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Cihaz bilgisi</td>
+            <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${deviceLabel}</td>
           </tr>
           <tr>
-            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Oturum açılma zamanı</td>
-            <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${payload.loginTimeFormatted}</td>
+            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">İşletim sistemi & Tarayıcı</td>
+            <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${params.osName} · ${params.browserName}</td>
           </tr>
           <tr>
-            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Kullanıcının seçimi</td>
-            <td style="padding: 9px 0; color: #ffffff; font-weight: 700; border-bottom: 1px solid #18181b;">${payload.userChoiceLabel}</td>
+            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Tarih & Saat</td>
+            <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${params.loginTimeFormatted}</td>
           </tr>
           <tr>
-            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">IP adresi (Admin)</td>
-            <td style="padding: 9px 0; color: #e4e4e7; font-family: monospace; border-bottom: 1px solid #18181b;">${payload.ip}</td>
-          </tr>
-          <tr>
-            <td style="padding: 9px 0; color: #a1a1aa;">Cihaz ve tarayıcı</td>
-            <td style="padding: 9px 0; color: #e4e4e7;">${payload.deviceSummary}</td>
+            <td style="padding: 9px 0; color: #a1a1aa;">Oturum durumu</td>
+            <td style="padding: 9px 0; color: #ffffff; font-weight: 700;">${statusBadgeText}</td>
           </tr>
         </tbody>
       </table>
 
       <div style="margin-top: 20px; padding-top: 12px; border-top: 1px solid #27272a; font-size: 12px; color: #71717a;">
-        Bu bildirim RedChat Oturum Güvenliği sistemi tarafından otomatik olarak oluşturulmuştur. Yönetici onay/iptal işlemleri Admin Paneli → Şüpheli Oturumlar sekmesinden yapılabilir.
+        RedChat Güvenlik Sistemi · Oturum No: ${params.sessionId}
       </div>
     </div>
   `;
 
   const text = [
-    bannerTitle,
-    `Kullanıcı adı: @${payload.username} (${payload.displayName})`,
-    `Hesap kimliği: ${payload.userId}`,
-    `Önceki bilinen ülke: ${payload.previousCountryName}`,
-    `Yeni giriş yapılan ülke: ${payload.newCountryName} ${payload.newCountryFlag}`,
-    `Oturum açılma zamanı: ${payload.loginTimeFormatted}`,
-    `Kullanıcının seçimi: ${payload.userChoiceLabel}`,
-    `IP adresi: ${payload.ip}`,
-    `Cihaz ve tarayıcı: ${payload.deviceSummary}`,
+    headline,
+    `Kullanıcı adı: @${params.username} (${params.displayName})`,
+    `Ülke: ${params.countryName} ${params.countryFlag} (${params.countryCode})`,
+    `Şehir: ${cityText}`,
+    `Cihaz bilgisi: ${deviceLabel}`,
+    `İşletim sistemi & Tarayıcı: ${params.osName} · ${params.browserName}`,
+    `Tarih & Saat: ${params.loginTimeFormatted}`,
+    extraTextBlock,
   ].join("\n");
+
+  const toList =
+    params.eventType === "owner_denied_alert" && recipient.toLowerCase() !== SECURITY_NOTIFY_EMAIL
+      ? [recipient, SECURITY_NOTIFY_EMAIL]
+      : [recipient];
 
   try {
     const resp = await fetch("https://api.resend.com/emails", {
@@ -774,7 +1307,7 @@ async function sendSecurityResendEmail(payload: SecurityEmailPayload): Promise<{
       },
       body: JSON.stringify({
         from: process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev",
-        to: [SECURITY_NOTIFY_EMAIL],
+        to: toList,
         subject,
         html,
         text,
@@ -783,7 +1316,8 @@ async function sendSecurityResendEmail(payload: SecurityEmailPayload): Promise<{
     });
 
     if (resp.ok) {
-      return { sent: true, status: "sent" };
+      sentEmailEventsCache.add(dedupKey);
+      return { sent: true, status: "sent", recipient, subject };
     }
 
     const errText = await resp.text();
@@ -791,6 +1325,8 @@ async function sendSecurityResendEmail(payload: SecurityEmailPayload): Promise<{
     return {
       sent: false,
       status: "failed",
+      recipient,
+      subject,
       error: `Resend HTTP ${resp.status}: ${errText}`,
     };
   } catch (err: any) {
@@ -798,6 +1334,8 @@ async function sendSecurityResendEmail(payload: SecurityEmailPayload): Promise<{
     return {
       sent: false,
       status: "failed",
+      recipient,
+      subject,
       error: err?.message || "Resend ağ hatası",
     };
   }
@@ -854,18 +1392,142 @@ async function writeAdminLog(
   }
 }
 
-async function assertAdminUser(tokenUser: VerifiedTokenUser): Promise<{
-  isAdmin: boolean;
+function buildAdminLogData(params: {
+  category: "security_session" | "email_review" | "moderation" | "system";
+  action: string;
+  severity: "info" | "warning" | "critical";
+  actorUid: string;
+  actorEmail?: string | null;
+  actorName?: string | null;
+  targetUid?: string | null;
+  targetUsername?: string | null;
+  sessionId?: string | null;
+  details: string;
+  metadata?: Record<string, any>;
+}) {
+  const logId = `log_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+  return {
+    logId,
+    doc: {
+      id: logId,
+      category: params.category,
+      action: params.action,
+      severity: params.severity,
+      actorUid: params.actorUid,
+      actorEmail: params.actorEmail || null,
+      actorName: params.actorName || null,
+      targetUid: params.targetUid || null,
+      targetUsername: params.targetUsername || null,
+      sessionId: params.sessionId || null,
+      details: params.details,
+      metadata: params.metadata || {},
+      createdAt: new Date(),
+    },
+  };
+}
+
+/**
+ * Sıkı Sunucu Tarafı Ana Yönetici Doğrulaması:
+ * - İstemciden gelen email/role verisine ASLA güvenmez.
+ * - Doğrulanmış Firebase JWT e-postası, UID ve Firestore role bilgisini kontrol eder.
+ * - Muse Moderatörünü ve normal kullanıcıları KESİN olarak reddeder.
+ */
+async function assertMainAdminStrict(tokenUser: VerifiedTokenUser): Promise<{
+  isMainAdmin: boolean;
   displayName: string;
+  userDoc: Record<string, any> | null;
 }> {
   const emailLower = (tokenUser.email || "").trim().toLowerCase();
   const userDoc = await dbGetDoc("users", tokenUser.uid, tokenUser.token).catch(() => null);
-  const isAdmin =
-    ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(emailLower) ||
-    userDoc?.role === "admin";
+
+  if (
+    tokenUser.uid === MUSE_MODERATOR_UID ||
+    emailLower === MUSE_MODERATOR_EMAIL ||
+    userDoc?.role === "moderator"
+  ) {
+    return {
+      isMainAdmin: false,
+      displayName: userDoc?.displayName || "Moderatör",
+      userDoc,
+    };
+  }
+
+  const isEmailInMainAdminList = MAIN_ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(
+    emailLower
+  );
+  const isMainAdmin = isEmailInMainAdminList || userDoc?.role === "admin";
+
   return {
-    isAdmin,
-    displayName: userDoc?.displayName || userDoc?.username || tokenUser.email || "Admin",
+    isMainAdmin,
+    displayName: userDoc?.displayName || userDoc?.username || tokenUser.email || "Ana Yönetici",
+    userDoc,
+  };
+}
+
+function isFreshReauth(tokenUser: VerifiedTokenUser): boolean {
+  if (!tokenUser.authTime) return false;
+  const ageSec = Math.floor(Date.now() / 1000) - tokenUser.authTime;
+  return ageSec >= -30 && ageSec <= REAUTH_MAX_AGE_SECONDS;
+}
+
+/**
+ * Bekleyen oturumdan Ana Yönetici işlem yapıyorsa ek güvenlik geçidini doğrular:
+ * Aktif oturumda doğrudan geçer; pending_verification oturumda ise son 5 dakikada
+ * yenilenmiş kimlik doğrulama (auth_time) veya doğrulanmış email challengeProof zorunludur.
+ */
+async function assertAdminActionAllowedOnCurrentSession(
+  req: Request,
+  tokenUser: VerifiedTokenUser,
+  challengeProof?: string
+): Promise<{ allowed: boolean; error?: string; code?: string }> {
+  const sessionId = String(req.headers["x-redchat-session-id"] || "").trim();
+  const sessionProof = String(req.headers["x-redchat-session-proof"] || "").trim();
+
+  if (!sessionId || !sessionProof) {
+    // Taze reauth varsa izin ver, aksi halde aktif oturum bilgisi bekle
+    if (isFreshReauth(tokenUser)) return { allowed: true };
+    return {
+      allowed: false,
+      error: "Yönetici oturumu güvenlik doğrulaması eksik.",
+      code: "SESSION_REQUIRED",
+    };
+  }
+
+  const session = await dbGetDoc("securitySessions", sessionId, tokenUser.token).catch(
+    () => null
+  );
+  if (!session || (session.uid || session.userId) !== tokenUser.uid) {
+    return { allowed: false, error: "Yönetici oturumu bulunamadı.", code: "SESSION_NOT_FOUND" };
+  }
+
+  const networkDoc = await dbGetDoc("securitySessionNetwork", sessionId, tokenUser.token).catch(
+    () => null
+  );
+  if (!verifyProofAgainstSession(sessionProof, session, networkDoc)) {
+    return { allowed: false, error: "Geçersiz yönetici oturum kanıtı.", code: "INVALID_PROOF" };
+  }
+
+  const effStatus = session.sessionStatus || session.status;
+  if (effStatus === "revoked" || session.status === "revoked" || session.revokedAt) {
+    return { allowed: false, error: "İptal edilmiş yönetici oturumu.", code: "SESSION_REVOKED" };
+  }
+
+  if (effStatus === "active" && session.trusted === true) {
+    return { allowed: true };
+  }
+
+  // Pending Ana Yönetici oturumu: Güvenli kurtarma / inceleme modu yalnızca taze re-auth veya geçerli challengeProof ile açılır
+  if (
+    isFreshReauth(tokenUser) ||
+    (challengeProof && verifyChallengeProof(challengeProof, sessionId, tokenUser.uid))
+  ) {
+    return { allowed: true };
+  }
+
+  return {
+    allowed: false,
+    error: "Beklemedeki Ana Yönetici oturumundan işlem yapmak için yeniden kimlik doğrulama (şifre veya e-posta kodu) gereklidir.",
+    code: "ADMIN_REAUTH_REQUIRED",
   };
 }
 
@@ -874,6 +1536,26 @@ async function assertAdminUser(tokenUser: VerifiedTokenUser): Promise<{
 // =========================================================================
 
 export function registerSessionSecurityRoutes(app: Express) {
+  // 0. Yönetici Yetki Durumu (İstemci rol sinyali değil, sunucu doğrulaması)
+  app.get("/api/security/sessions/admin-status", async (req: Request, res: Response) => {
+    try {
+      const tokenUser = await authenticateRequest(req, res);
+      if (!tokenUser) return;
+
+      const check = await assertMainAdminStrict(tokenUser);
+      return res.json({
+        uid: tokenUser.uid,
+        isMainAdmin: check.isMainAdmin,
+        recentReauthValid: isFreshReauth(tokenUser),
+        authAgeSeconds: tokenUser.authTime
+          ? Math.max(0, Math.floor(Date.now() / 1000) - tokenUser.authTime)
+          : null,
+      });
+    } catch {
+      return res.status(500).json({ isMainAdmin: false });
+    }
+  });
+
   // 1. Oturum Kaydı ve Yeni Ülke + Yeni Cihaz Kontrolü
   app.post("/api/security/sessions/register", async (req: Request, res: Response) => {
     try {
@@ -882,6 +1564,7 @@ export function registerSessionSecurityRoutes(app: Express) {
 
       const {
         deviceId,
+        deviceSignals,
         userAgent,
         existingSessionId,
         existingSessionProof,
@@ -893,28 +1576,58 @@ export function registerSessionSecurityRoutes(app: Express) {
         return res.status(400).json({ error: "Geçerli cihaz kimliği (deviceId) gerekli." });
       }
 
-      const cleanDeviceId = deviceId.trim().slice(0, 140);
+      const clientHwid = deviceId.trim().slice(0, 140);
       const uaString = typeof userAgent === "string" ? userAgent : req.headers["user-agent"] || "";
       const uaInfo = parseUserAgentInfo(uaString);
+
+      const cookies = parseCookies(req);
+      const cookieDeviceId = verifyDeviceCookie(
+        cookies[DEVICE_COOKIE_NAME],
+        uaInfo.osName,
+        uaInfo.deviceType
+      );
+
+      // Sunucunun gizliliğe uygun ürettiği kriptografik cihaz imzası
+      const deviceSignature = computePrivacySafeDeviceSignature(
+        tokenUser.uid,
+        uaInfo,
+        deviceSignals,
+        clientHwid
+      );
+
+      // Sunucu tarafından doğrulanan cihaz kimliği (mevcut imzalı çerez varsa koru, yoksa sunucu imzalı üret)
+      const attestedDeviceId =
+        cookieDeviceId || `RCD-${crypto.createHash("sha256").update(`${tokenUser.uid}:${deviceSignature}`).digest("hex").slice(0, 20).toUpperCase()}`;
+
+      setSignedDeviceCookie(req, res, attestedDeviceId, uaInfo.osName, uaInfo.deviceType);
 
       const clientIp = await extractRealClientIp(req, clientPublicIp);
       const geo = await lookupGeoIp(clientIp, req);
       const now = new Date();
 
-      const userDoc = await dbGetDoc("users", tokenUser.uid, tokenUser.token);
+      const userDoc = await dbGetDoc("users", tokenUser.uid, tokenUser.token).catch(() => null);
       const username = userDoc?.username || tokenUser.email?.split("@")[0] || "kullanici";
       const displayName = userDoc?.displayName || username;
       const photoURL = userDoc?.photoURL || null;
+      const ownerVerifiedEmail = (tokenUser.email || userDoc?.email || "").trim();
 
-      // Eğer istemcinin geçerli bir mevcut oturum kimliği varsa ve taze login değilse doğrula
+      // Mevcut oturum yenilemesi (sayfa reload / session resume - ASLA giriş e-postası tetiklemez!)
       if (
         !isFreshLogin &&
         typeof existingSessionId === "string" &&
         existingSessionId.trim().length > 0 &&
         typeof existingSessionProof === "string"
       ) {
-        const existingSession = await dbGetDoc("securitySessions", existingSessionId.trim(), tokenUser.token);
-        if (existingSession && existingSession.userId === tokenUser.uid) {
+        const existingSession = await dbGetDoc(
+          "securitySessions",
+          existingSessionId.trim(),
+          tokenUser.token
+        ).catch(() => null);
+
+        if (
+          existingSession &&
+          (existingSession.uid || existingSession.userId) === tokenUser.uid
+        ) {
           const networkDoc = await dbGetDoc(
             "securitySessionNetwork",
             existingSessionId.trim(),
@@ -922,14 +1635,38 @@ export function registerSessionSecurityRoutes(app: Express) {
           ).catch(() => null);
 
           if (verifyProofAgainstSession(existingSessionProof, existingSession, networkDoc)) {
+            const expMs = parseTimestampMs(existingSession.expiresAt);
+            if (expMs !== null && expMs <= now.getTime()) {
+              const expiredUpdate = {
+                status: "revoked",
+                sessionStatus: "revoked",
+                verificationStatus: "expired",
+                trusted: false,
+                revokedAt: now,
+                revokedReason: "session_expired",
+              };
+              await dbSetDoc("securitySessions", existingSession.sessionId, expiredUpdate, tokenUser.token);
+              return res.json({
+                success: true,
+                session: { ...existingSession, ...expiredUpdate },
+                sessionProof: existingSessionProof,
+                geoSummary: {
+                  countryCode: existingSession.countryCode,
+                  countryName: existingSession.countryName,
+                  flagEmoji: existingSession.flagEmoji,
+                },
+              });
+            }
+
             if (existingSession.status === "active") {
               await dbSetDoc(
                 "securitySessions",
                 existingSession.sessionId,
-                { lastActiveAt: now },
+                { lastActiveAt: now, lastSeenAt: now },
                 tokenUser.token
               );
             }
+
             return res.json({
               success: true,
               session: existingSession,
@@ -945,65 +1682,100 @@ export function registerSessionSecurityRoutes(app: Express) {
       }
 
       // Kullanıcının bilinen ülke & cihaz profili (Security Baseline)
-      const secProfile = await dbGetDoc("userSecurityProfiles", tokenUser.uid, tokenUser.token);
+      const secProfile = await dbGetDoc("userSecurityProfiles", tokenUser.uid, tokenUser.token).catch(
+        () => null
+      );
       const knownCountryCodes: string[] = Array.isArray(secProfile?.knownCountryCodes)
         ? secProfile.knownCountryCodes
         : [];
       const knownDeviceIds: string[] = Array.isArray(secProfile?.knownDeviceIds)
         ? secProfile.knownDeviceIds
         : [];
+      const knownDeviceSignatures: string[] = Array.isArray(secProfile?.knownDeviceSignatures)
+        ? secProfile.knownDeviceSignatures
+        : [];
 
-      const hasBaseline = knownCountryCodes.length > 0 || knownDeviceIds.length > 0;
+      const hasBaseline =
+        knownCountryCodes.length > 0 ||
+        knownDeviceIds.length > 0 ||
+        knownDeviceSignatures.length > 0;
       const detectedCode = geo.countryCode;
       const isNewCountry =
         detectedCode !== "UNKNOWN" && !knownCountryCodes.includes(detectedCode);
-      const isNewDevice = !knownDeviceIds.includes(cleanDeviceId);
 
-      // Onaylı kural: Yalnızca YENİ CİHAZ ve YENİ ÜLKE birlikteyse güvenlik kontrolü tetiklenir!
-      const shouldTriggerCountryCheck = hasBaseline && isNewCountry && isNewDevice;
+      // Güvenilir cihaz doğrulaması:
+      // İstemcinin düz body ile gönderdiği clientHwid tek başına GÜVENİLMEZ.
+      // Ya sunucunun imzalı HTTP-only çerezi (cookieDeviceId) + cihaz listesi eşleşmeli
+      // ya da sunucunun hesapladığı deviceSignature knownDeviceSignatures içinde olmalı!
+      const matchesSignedCookie =
+        Boolean(cookieDeviceId) && knownDeviceIds.includes(cookieDeviceId as string);
+      const matchesServerSignature = knownDeviceSignatures.includes(deviceSignature);
+      const legacyCompatMatch =
+        knownDeviceSignatures.length === 0 &&
+        Boolean(cookieDeviceId) &&
+        knownDeviceIds.includes(clientHwid);
+
+      const isKnownTrustedDevice =
+        matchesSignedCookie || matchesServerSignature || legacyCompatMatch;
+      const isNewDevice = !isKnownTrustedDevice;
+
+      // KRİTİK KURAL: Şüpheli giriş YALNIZCA yeni cihaz VE yeni ülke birlikteyse tetiklenir!
+      const shouldTriggerCheck = hasBaseline && isNewCountry && isNewDevice;
 
       const sessionId = `sess_${crypto.randomBytes(12).toString("hex")}`;
-      const sessionProof = buildSessionProof(sessionId, tokenUser.uid, cleanDeviceId);
+      const sessionProof = buildSessionProof(sessionId, tokenUser.uid, attestedDeviceId);
       const proofHash = computeProofHash(sessionProof);
+
+      const expiresAt = new Date(
+        now.getTime() + (shouldTriggerCheck ? PENDING_SESSION_TTL_MS : ACTIVE_SESSION_TTL_MS)
+      );
 
       const previousCountryCode = secProfile?.lastKnownCountryCode || knownCountryCodes[0] || null;
       const previousCountryName =
         secProfile?.lastKnownCountryName ||
         (previousCountryCode ? getCountryNameTurkish(previousCountryCode) : "Bilinmiyor");
 
-      let emailResult: { sent: boolean; status: "sent" | "failed" | "not_configured" | "skipped"; error?: string } = {
-        sent: false,
-        status: "skipped",
-      };
-
       const sessionData: Record<string, any> = {
         id: sessionId,
         sessionId,
+        uid: tokenUser.uid,
         userId: tokenUser.uid,
         username,
         displayName,
         photoURL,
-        deviceId: cleanDeviceId,
+        deviceId: attestedDeviceId,
+        deviceSignature,
         deviceType: uaInfo.deviceType,
         browserName: uaInfo.browserName,
         osName: uaInfo.osName,
         countryCode: geo.countryCode,
         countryName: geo.countryName,
         flagEmoji: geo.flagEmoji,
+        city: geo.city || null,
         previousCountryCode,
         previousCountryName,
-        isSuspicious: shouldTriggerCountryCheck,
-        trusted: !shouldTriggerCountryCheck,
-        status: shouldTriggerCountryCheck ? "pending_verification" : "active",
-        userResponse: shouldTriggerCountryCheck ? "pending" : "not_required",
-        adminDecision: shouldTriggerCountryCheck ? "pending" : "auto_trusted",
+        isSuspicious: shouldTriggerCheck,
+        trusted: !shouldTriggerCheck,
+        status: shouldTriggerCheck ? "pending_verification" : "active",
+        sessionStatus: shouldTriggerCheck ? "pending_verification" : "active",
+        verificationStatus: shouldTriggerCheck ? "pending" : "verified",
+        userResponse: shouldTriggerCheck ? "pending" : "not_required",
+        adminDecision: shouldTriggerCheck ? "pending" : "auto_trusted",
+        emailSent: false,
+        emailStatus: "skipped",
+        emailError: null,
+        emailDispatches: {},
         createdAt: now,
         lastActiveAt: now,
+        lastSeenAt: now,
+        verifiedAt: shouldTriggerCheck ? null : now,
+        expiresAt,
       };
 
       const networkData: Record<string, any> = {
         id: sessionId,
         sessionId,
+        uid: tokenUser.uid,
         userId: tokenUser.uid,
         ip: geo.ip,
         city: geo.city,
@@ -1014,11 +1786,12 @@ export function registerSessionSecurityRoutes(app: Express) {
         geoProvider: geo.provider,
         userAgentRaw: uaString.slice(0, 500),
         proofHash,
+        deviceSignature,
         createdAt: now,
         updatedAt: now,
       };
 
-      // İlk kez baseline oluşturuluyor ya da mevcut ülke + yeni cihaz ise baseline güncelle
+      // İlk baseline veya bilinen ülkeden yeni cihaz -> güvenilen cihaza ekle
       if (!hasBaseline) {
         await dbSetDoc(
           "userSecurityProfiles",
@@ -1026,7 +1799,8 @@ export function registerSessionSecurityRoutes(app: Express) {
           {
             uid: tokenUser.uid,
             knownCountryCodes: detectedCode !== "UNKNOWN" ? [detectedCode] : [],
-            knownDeviceIds: [cleanDeviceId],
+            knownDeviceIds: [attestedDeviceId],
+            knownDeviceSignatures: [deviceSignature],
             lastKnownCountryCode: detectedCode !== "UNKNOWN" ? detectedCode : null,
             lastKnownCountryName: detectedCode !== "UNKNOWN" ? geo.countryName : null,
             createdAt: now,
@@ -1034,40 +1808,108 @@ export function registerSessionSecurityRoutes(app: Express) {
           },
           tokenUser.token
         );
-      } else if (!shouldTriggerCountryCheck && isNewDevice && !isNewCountry) {
-        // Bilinen ülkeden yeni cihaz -> güvenilen cihaz listesine ekle
-        const nextDevices = Array.from(new Set([...knownDeviceIds, cleanDeviceId])).slice(-25);
+      } else if (!shouldTriggerCheck && isNewDevice && !isNewCountry) {
+        const nextDevices = Array.from(new Set([...knownDeviceIds, attestedDeviceId])).slice(-25);
+        const nextSigs = Array.from(new Set([...knownDeviceSignatures, deviceSignature])).slice(-25);
         await dbSetDoc(
           "userSecurityProfiles",
           tokenUser.uid,
           {
             uid: tokenUser.uid,
             knownDeviceIds: nextDevices,
+            knownDeviceSignatures: nextSigs,
             updatedAt: now,
           },
           tokenUser.token
         );
       }
 
-      if (shouldTriggerCountryCheck) {
-        // Admin'e Resend üzerinden gerçek e-posta gönder
-        emailResult = await sendSecurityResendEmail({
-          eventType: "new_country_detected",
+      let emailResult: {
+        sent: boolean;
+        status: "sent" | "failed" | "not_configured" | "skipped";
+        recipient?: string | null;
+        error?: string;
+      } = {
+        sent: false,
+        status: "skipped",
+      };
+
+      if (shouldTriggerCheck) {
+        // Tek kullanımlık doğrulama kodu & URL token üretimi (yalnızca salt + sha256 hash saklanır)
+        const rawToken = crypto.randomBytes(24).toString("base64url");
+        const rawOtp = generateOtpCode();
+        const salt = crypto.randomBytes(16).toString("hex");
+        const tokenHash = computeSaltedSha256(rawToken, salt);
+        const otpHash = computeSaltedSha256(rawOtp, salt);
+        const challengeExpiresAt = new Date(now.getTime() + CHALLENGE_TTL_MS);
+
+        const commitSecret = deriveDeterministicCommitSecret(
+          sessionId,
+          tokenUser.uid,
+          tokenHash
+        );
+        const commitHash = crypto.createHash("sha256").update(commitSecret, "utf8").digest("hex");
+
+        sessionData.challengeExpiresAt = challengeExpiresAt;
+
+        await dbSetDoc(
+          "securityVerificationTokens",
+          sessionId,
+          {
+            sessionId,
+            uid: tokenUser.uid,
+            tokenHash,
+            otpHash,
+            salt,
+            commitHash,
+            decisionCommitKey: "",
+            used: false,
+            usedAt: null,
+            attempts: 0,
+            expiresAt: challengeExpiresAt,
+            createdAt: now,
+          },
+          tokenUser.token
+        );
+
+        const appOrigin = resolveAppOrigin(req);
+        const verificationUrl = `${appOrigin}/#/?secSession=${encodeURIComponent(sessionId)}&secToken=${encodeURIComponent(rawToken)}`;
+
+        emailResult = await sendSecurityResendEmailOnce({
+          sessionId,
+          eventType: "unverified_suspicious_login",
+          recipientEmail: ownerVerifiedEmail,
           username,
           displayName,
           userId: tokenUser.uid,
-          previousCountryName,
-          newCountryName: geo.countryName,
-          newCountryFlag: geo.flagEmoji,
+          countryName: geo.countryName,
+          countryCode: geo.countryCode,
+          countryFlag: geo.flagEmoji,
+          city: geo.city,
+          deviceType: uaInfo.deviceType,
+          osName: uaInfo.osName,
+          browserName: uaInfo.browserName,
           loginTimeFormatted: formatTrDateTime(now),
-          userChoiceLabel: "Henüz yanıtlamadı (Güvenlik ekranında bekleniyor)",
-          ip: geo.ip,
-          deviceSummary: `${uaInfo.browserName} · ${uaInfo.osName} (${uaInfo.deviceType})`,
+          previousCountryName,
+          verificationUrl,
+          verificationCode: rawOtp,
+          sessionDataForDedup: sessionData,
         });
 
         sessionData.emailSent = emailResult.sent;
         sessionData.emailStatus = emailResult.status;
         sessionData.emailError = emailResult.error || null;
+        sessionData.emailRecipient = ownerVerifiedEmail || null;
+        sessionData.emailDispatches = {
+          unverified_suspicious_login: {
+            sent: emailResult.sent,
+            status: emailResult.status,
+            recipient: ownerVerifiedEmail || null,
+            subject: "RedChat — Yeni Oturum Açıldı",
+            sentAt: now,
+            error: emailResult.error || null,
+          },
+        };
 
         await writeAdminLog(
           {
@@ -1075,21 +1917,56 @@ export function registerSessionSecurityRoutes(app: Express) {
             action: "new_country_detected",
             severity: "warning",
             actorUid: tokenUser.uid,
-            actorEmail: tokenUser.email,
+            actorEmail: ownerVerifiedEmail || tokenUser.email,
             actorName: displayName,
             targetUid: tokenUser.uid,
             targetUsername: username,
             sessionId,
-            details: `Yeni cihaz ve yeni ülkeden giriş algılandı: ${geo.countryName} (${geo.countryCode}). Önceki bilinen ülke: ${previousCountryName}.`,
+            details: `Yeni cihaz ve yeni ülkeden giriş algılandı: ${geo.countryName} (${geo.countryCode}). Oturum 'pending_verification' durumuna alındı.`,
             metadata: {
               countryCode: geo.countryCode,
               countryName: geo.countryName,
+              city: geo.city || null,
               previousCountryName,
               emailStatus: emailResult.status,
             },
           },
           tokenUser.token
         );
+      } else if (isFreshLogin && hasBaseline) {
+        // Yalnızca gerçek taze normal doğrulanmış girişte (reload değil!) "Hesabınızda Yeni Giriş" e-postası gönder
+        emailResult = await sendSecurityResendEmailOnce({
+          sessionId,
+          eventType: "verified_login_notification",
+          recipientEmail: ownerVerifiedEmail,
+          username,
+          displayName,
+          userId: tokenUser.uid,
+          countryName: geo.countryName,
+          countryCode: geo.countryCode,
+          countryFlag: geo.flagEmoji,
+          city: geo.city,
+          deviceType: uaInfo.deviceType,
+          osName: uaInfo.osName,
+          browserName: uaInfo.browserName,
+          loginTimeFormatted: formatTrDateTime(now),
+          sessionDataForDedup: sessionData,
+        });
+
+        sessionData.emailSent = emailResult.sent;
+        sessionData.emailStatus = emailResult.status;
+        sessionData.emailError = emailResult.error || null;
+        sessionData.emailRecipient = ownerVerifiedEmail || null;
+        sessionData.emailDispatches = {
+          verified_login_notification: {
+            sent: emailResult.sent,
+            status: emailResult.status,
+            recipient: ownerVerifiedEmail || null,
+            subject: "RedChat — Hesabınızda Yeni Giriş",
+            sentAt: now,
+            error: emailResult.error || null,
+          },
+        };
       }
 
       await dbSetDoc("securitySessions", sessionId, sessionData, tokenUser.token);
@@ -1104,6 +1981,7 @@ export function registerSessionSecurityRoutes(app: Express) {
           countryCode: geo.countryCode,
           countryName: geo.countryName,
           flagEmoji: geo.flagEmoji,
+          city: geo.city,
         },
       });
     } catch (err: any) {
@@ -1114,122 +1992,475 @@ export function registerSessionSecurityRoutes(app: Express) {
     }
   });
 
-  // 2. Kullanıcı Kararı ("Bu Benim" / "Ben Değilim")
-  app.post("/api/security/sessions/respond", async (req: Request, res: Response) => {
+  // 2A. Tek Kullanımlık E-Posta Doğrulama Kodu veya Bağlantı Tokenını Doğrula
+  app.post("/api/security/sessions/verify-challenge", async (req: Request, res: Response) => {
     try {
       const tokenUser = await authenticateRequest(req, res);
       if (!tokenUser) return;
 
-      const { sessionId, sessionProof, response } = req.body || {};
-      if (!sessionId || !["confirmed_me", "denied_not_me"].includes(response)) {
-        return res.status(400).json({ error: "Geçersiz güvenlik yanıtı." });
+      const { sessionId, challengeToken, otpCode } = req.body || {};
+      if (!sessionId || typeof sessionId !== "string") {
+        return res.status(400).json({ error: "Geçersiz oturum kimliği." });
+      }
+      if (!challengeToken && !otpCode) {
+        return res.status(400).json({ error: "Doğrulama kodu veya bağlantısı gereklidir." });
       }
 
       const session = await dbGetDoc("securitySessions", sessionId, tokenUser.token);
-      if (!session) {
-        return res.status(404).json({ error: "Oturum kaydı bulunamadı." });
+      if (!session || (session.uid || session.userId) !== tokenUser.uid) {
+        return res.status(404).json({ error: "İlgili oturum kaydı bulunamadı." });
       }
 
-      if (session.userId !== tokenUser.uid) {
-        return res.status(403).json({ error: "Bu oturuma yanıt verme yetkiniz yok." });
+      if (session.status === "revoked" || session.sessionStatus === "revoked") {
+        return res.status(403).json({ error: "Bu oturum zaten iptal edilmiştir." });
+      }
+      if (session.status === "active" && session.trusted === true) {
+        return res.status(400).json({ error: "Bu oturum zaten doğrulanmış durumda." });
       }
 
-      // Yetkili oturum kontrolü: Başka bir oturumun bu oturum yerine yanıt vermesini engelle
-      const networkDoc = await dbGetDoc("securitySessionNetwork", sessionId, tokenUser.token).catch(
-        () => null
-      );
-      if (!verifyProofAgainstSession(sessionProof, session, networkDoc)) {
-        return res.status(403).json({
-          error: "Bu güvenlik kararını yalnızca ilgili cihaz oturumundan bildirebilirsiniz.",
+      const challengeDoc = await dbGetDoc("securityVerificationTokens", sessionId, tokenUser.token);
+      if (!challengeDoc || challengeDoc.uid !== tokenUser.uid) {
+        return res.status(404).json({
+          error: "Bu oturum için aktif bir e-posta doğrulama talebi bulunamadı.",
         });
       }
 
+      if (challengeDoc.used === true) {
+        return res.status(409).json({
+          error: "Bu doğrulama kodu/bağlantısı daha önce kullanılmıştır (tek kullanımlıktır).",
+          code: "CHALLENGE_ALREADY_USED",
+        });
+      }
+
+      const expMs = parseTimestampMs(challengeDoc.expiresAt);
+      if (expMs !== null && expMs <= Date.now()) {
+        await dbSetDoc(
+          "securitySessions",
+          sessionId,
+          { verificationStatus: "expired" },
+          tokenUser.token
+        ).catch(() => {});
+        return res.status(410).json({
+          error: "Doğrulama kodu veya bağlantısının süresi dolmuştur.",
+          code: "CHALLENGE_EXPIRED",
+        });
+      }
+
+      const attempts = Number(challengeDoc.attempts || 0);
+      if (attempts >= 5) {
+        return res.status(429).json({
+          error: "Çok fazla hatalı doğrulama denemesi yapıldı. Lütfen yeni kod isteyin.",
+          code: "TOO_MANY_ATTEMPTS",
+        });
+      }
+
+      let matched = false;
+      if (typeof challengeToken === "string" && challengeToken.trim()) {
+        const computed = computeSaltedSha256(challengeToken.trim(), String(challengeDoc.salt));
+        matched = safeTimingEqual(computed, String(challengeDoc.tokenHash || ""));
+      } else if (typeof otpCode === "string" && otpCode.trim()) {
+        const normOtp = otpCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+        const computed = computeSaltedSha256(normOtp, String(challengeDoc.salt));
+        matched = safeTimingEqual(computed, String(challengeDoc.otpHash || ""));
+      }
+
+      if (!matched) {
+        await dbSetDoc(
+          "securityVerificationTokens",
+          sessionId,
+          { attempts: attempts + 1 },
+          tokenUser.token
+        ).catch(() => {});
+        return res.status(403).json({
+          error: "Doğrulama kodu veya bağlantısı geçersiz.",
+          remainingAttempts: Math.max(0, 4 - attempts),
+        });
+      }
+
+      const proofExpMs = Date.now() + CHALLENGE_PROOF_TTL_MS;
+      const challengeProof = buildVerifiedChallengeProof(sessionId, tokenUser.uid, proofExpMs);
+      verifiedChallengeCache.set(sessionId, {
+        sessionId,
+        uid: tokenUser.uid,
+        verifiedAtMs: Date.now(),
+        expiresAtMs: proofExpMs,
+      });
+
+      return res.json({
+        success: true,
+        verified: true,
+        challengeProof,
+        expiresAtMs: proofExpMs,
+      });
+    } catch (err: any) {
+      console.error("❌ [Verify Challenge] Error:", err);
+      return res.status(500).json({ error: err?.message || "Doğrulama işlemi başarısız." });
+    }
+  });
+
+  // 2B. Hesap Sahibi Kararı ("Bu Benim" / "Ben Değilim" — YALNIZCA doğrulama sonrası!)
+  app.post("/api/security/sessions/owner-decide", async (req: Request, res: Response) => {
+    try {
+      const tokenUser = await authenticateRequest(req, res);
+      if (!tokenUser) return;
+
+      const { sessionId, challengeProof, decision } = req.body || {};
+      if (!sessionId || !["confirmed_me", "denied_not_me"].includes(decision)) {
+        return res.status(400).json({ error: "Geçersiz güvenlik kararı parametresi." });
+      }
+
+      if (!verifyChallengeProof(String(challengeProof || ""), sessionId, tokenUser.uid)) {
+        return res.status(403).json({
+          error: "Bu işlemi gerçekleştirmek için önce e-postanıza gönderilen tek kullanımlık kod veya bağlantıyı doğrulamalısınız.",
+          code: "CHALLENGE_VERIFICATION_REQUIRED",
+        });
+      }
+
+      const session = await dbGetDoc("securitySessions", sessionId, tokenUser.token);
+      if (!session || (session.uid || session.userId) !== tokenUser.uid) {
+        return res.status(404).json({ error: "Oturum bulunamadı." });
+      }
+
+      if (session.status === "revoked" || session.sessionStatus === "revoked") {
+        return res.status(400).json({ error: "Bu oturum zaten iptal edilmiş." });
+      }
+
+      const challengeDoc = await dbGetDoc("securityVerificationTokens", sessionId, tokenUser.token);
+      if (!challengeDoc || challengeDoc.used === true) {
+        return res.status(409).json({
+          error: "Bu doğrulama kodu/bağlantısı zaten kullanılmış.",
+          code: "CHALLENGE_ALREADY_USED",
+        });
+      }
+
+      const expMs = parseTimestampMs(challengeDoc.expiresAt);
+      if (expMs !== null && expMs <= Date.now()) {
+        return res.status(410).json({ error: "Doğrulama süresi dolmuş." });
+      }
+
+      // Sunucu commit anahtarı (değişmez tokenHash üzerinden HMAC ile yalnızca sunucu türetir)
+      const commitSecret = deriveDeterministicCommitSecret(
+        sessionId,
+        tokenUser.uid,
+        String(challengeDoc.tokenHash || "")
+      );
+
+      const now = new Date();
+      const isConfirmedMe = decision === "confirmed_me";
+      const networkDoc = await dbGetDoc("securitySessionNetwork", sessionId, tokenUser.token).catch(
+        () => null
+      );
+      const userDoc = await dbGetDoc("users", tokenUser.uid, tokenUser.token).catch(() => null);
+      const ownerVerifiedEmail = (tokenUser.email || userDoc?.email || "").trim();
+
+      const sessionUpdates: Record<string, any> = isConfirmedMe
+        ? {
+            status: "active",
+            sessionStatus: "active",
+            verificationStatus: "verified",
+            trusted: true,
+            userResponse: "confirmed_me",
+            adminDecision: "approved",
+            userRespondedAt: now,
+            verifiedAt: now,
+            lastActiveAt: now,
+            lastSeenAt: now,
+          }
+        : {
+            status: "revoked",
+            sessionStatus: "revoked",
+            verificationStatus: "denied",
+            trusted: false,
+            userResponse: "denied_not_me",
+            adminDecision: "revoked",
+            userRespondedAt: now,
+            revokedAt: now,
+            revokedBy: tokenUser.uid,
+            revokedReason: "owner_denied_not_me",
+            lastActiveAt: now,
+            lastSeenAt: now,
+          };
+
+      const logBundle = buildAdminLogData({
+        category: "security_session",
+        action: isConfirmedMe ? "owner_verified_session" : "owner_denied_login_urgent",
+        severity: isConfirmedMe ? "info" : "critical",
+        actorUid: tokenUser.uid,
+        actorEmail: ownerVerifiedEmail,
+        actorName: session.displayName,
+        targetUid: tokenUser.uid,
+        targetUsername: session.username,
+        sessionId,
+        details: isConfirmedMe
+          ? `@${session.username} e-posta doğrulaması ile ${session.countryName} oturumunu onayladı ve cihaz güvenilir listesine eklendi.`
+          : `ACİL: @${session.username} e-posta doğrulaması sonrasında ${session.countryName} oturumunu "Ben Değilim" olarak reddetti. Oturum iptal edildi.`,
+        metadata: {
+          countryCode: session.countryCode,
+          countryName: session.countryName,
+          city: session.city || networkDoc?.city || null,
+        },
+      });
+
+      const ops: AtomicWriteOp[] = [
+        {
+          colPath: "securityVerificationTokens",
+          docId: sessionId,
+          mustExist: true,
+          data: {
+            used: true,
+            usedAt: now,
+            decisionCommitKey: commitSecret,
+          },
+        },
+        {
+          colPath: "securitySessions",
+          docId: sessionId,
+          mustExist: true,
+          data: sessionUpdates,
+        },
+        {
+          colPath: "adminLogs",
+          docId: logBundle.logId,
+          data: logBundle.doc,
+        },
+      ];
+
+      if (isConfirmedMe) {
+        const secProfile = await dbGetDoc(
+          "userSecurityProfiles",
+          tokenUser.uid,
+          tokenUser.token
+        ).catch(() => null);
+        const existingCountries: string[] = Array.isArray(secProfile?.knownCountryCodes)
+          ? secProfile.knownCountryCodes
+          : [];
+        const existingDevices: string[] = Array.isArray(secProfile?.knownDeviceIds)
+          ? secProfile.knownDeviceIds
+          : [];
+        const existingSigs: string[] = Array.isArray(secProfile?.knownDeviceSignatures)
+          ? secProfile.knownDeviceSignatures
+          : [];
+
+        const nextCountries =
+          session.countryCode && session.countryCode !== "UNKNOWN"
+            ? Array.from(new Set([...existingCountries, session.countryCode]))
+            : existingCountries;
+        const nextDevices = session.deviceId
+          ? Array.from(new Set([...existingDevices, session.deviceId])).slice(-25)
+          : existingDevices;
+        const nextSigs = session.deviceSignature
+          ? Array.from(new Set([...existingSigs, session.deviceSignature])).slice(-25)
+          : existingSigs;
+
+        ops.push({
+          colPath: "userSecurityProfiles",
+          docId: tokenUser.uid,
+          data: {
+            uid: tokenUser.uid,
+            knownCountryCodes: nextCountries,
+            knownDeviceIds: nextDevices,
+            knownDeviceSignatures: nextSigs,
+            lastKnownCountryCode:
+              session.countryCode !== "UNKNOWN"
+                ? session.countryCode
+                : secProfile?.lastKnownCountryCode || null,
+            lastKnownCountryName:
+              session.countryCode !== "UNKNOWN"
+                ? session.countryName
+                : secProfile?.lastKnownCountryName || null,
+            lastVerifiedSessionId: sessionId,
+            updatedAt: now,
+          },
+        });
+      }
+
+      await dbAtomicCommit(ops, tokenUser.token);
+      verifiedChallengeCache.delete(sessionId);
+
+      // E-posta bildirimi gönder (tekilleştirilmiş)
+      const emailEvent: SecurityEmailEventType = isConfirmedMe
+        ? "verified_login_notification"
+        : "owner_denied_alert";
+
+      const emailResult = await sendSecurityResendEmailOnce({
+        sessionId,
+        eventType: emailEvent,
+        recipientEmail: ownerVerifiedEmail,
+        username: session.username,
+        displayName: session.displayName,
+        userId: tokenUser.uid,
+        countryName: session.countryName,
+        countryCode: session.countryCode,
+        countryFlag: session.flagEmoji || "🌐",
+        city: session.city || networkDoc?.city || null,
+        deviceType: session.deviceType || "unknown",
+        osName: session.osName || "Bilinmiyor",
+        browserName: session.browserName || "Bilinmiyor",
+        loginTimeFormatted: formatTrDateTime(now),
+        sessionDataForDedup: session,
+      });
+
+      const nextDispatches = {
+        ...(session.emailDispatches || {}),
+        [emailEvent]: {
+          sent: emailResult.sent,
+          status: emailResult.status,
+          recipient: emailResult.recipient,
+          subject: emailResult.subject,
+          sentAt: now,
+          error: emailResult.error || null,
+        },
+      };
+
+      await dbSetDoc(
+        "securitySessions",
+        sessionId,
+        {
+          emailSent: emailResult.sent || Boolean(session.emailSent),
+          emailStatus: emailResult.status,
+          emailError: emailResult.error || null,
+          emailDispatches: nextDispatches,
+        },
+        tokenUser.token
+      ).catch(() => {});
+
+      return res.json({
+        success: true,
+        session: {
+          ...session,
+          ...sessionUpdates,
+          emailSent: emailResult.sent || Boolean(session.emailSent),
+          emailStatus: emailResult.status,
+          emailError: emailResult.error || null,
+          emailDispatches: nextDispatches,
+        },
+        emailResult,
+      });
+    } catch (err: any) {
+      console.error("❌ [Owner Decide] Error:", err);
+      return res.status(500).json({ error: err?.message || "Güvenlik kararı işlenemedi." });
+    }
+  });
+
+  // Eski doğrulamasız /respond ucunu güvenlik nedeniyle kapat (self-approval bypass engeli)
+  app.post("/api/security/sessions/respond", async (_req: Request, res: Response) => {
+    return res.status(403).json({
+      error:
+        "Doğrudan cihaz üzerinden tek tuşla onay devre dışıdır. Lütfen e-posta doğrulama kodu veya bağlantısı ile kimliğinizi doğrulayın.",
+      code: "OUT_OF_BAND_VERIFICATION_REQUIRED",
+    });
+  });
+
+  // 2C. Doğrulama Kodunu Yeniden Gönder (Rate-limited)
+  app.post("/api/security/sessions/resend-challenge", async (req: Request, res: Response) => {
+    try {
+      const tokenUser = await authenticateRequest(req, res);
+      if (!tokenUser) return;
+
+      const { sessionId } = req.body || {};
+      if (!sessionId) return res.status(400).json({ error: "sessionId gerekli." });
+
+      const session = await dbGetDoc("securitySessions", sessionId, tokenUser.token);
+      if (!session || (session.uid || session.userId) !== tokenUser.uid) {
+        return res.status(404).json({ error: "Oturum bulunamadı." });
+      }
       if (session.status !== "pending_verification") {
-        return res.status(400).json({
-          error: "Bu oturum için güvenlik yanıtı zaten işlenmiş veya oturum sonlandırılmış.",
+        return res.status(400).json({ error: "Bu oturum doğrulama beklemiyor." });
+      }
+
+      const prevTokenDoc = await dbGetDoc("securityVerificationTokens", sessionId, tokenUser.token).catch(
+        () => null
+      );
+      const prevCreatedMs = parseTimestampMs(prevTokenDoc?.createdAt);
+      if (prevCreatedMs && Date.now() - prevCreatedMs < 60 * 1000) {
+        return res.status(429).json({
+          error: "Yeni kod isteyebilmek için lütfen 60 saniye bekleyin.",
         });
       }
 
       const now = new Date();
-      const isConfirmedMe = response === "confirmed_me";
+      const rawToken = crypto.randomBytes(24).toString("base64url");
+      const rawOtp = generateOtpCode();
+      const salt = crypto.randomBytes(16).toString("hex");
+      const tokenHash = computeSaltedSha256(rawToken, salt);
+      const otpHash = computeSaltedSha256(rawOtp, salt);
+      const challengeExpiresAt = new Date(now.getTime() + CHALLENGE_TTL_MS);
+      const commitSecret = deriveDeterministicCommitSecret(
+        sessionId,
+        tokenUser.uid,
+        tokenHash
+      );
+      const commitHash = crypto.createHash("sha256").update(commitSecret, "utf8").digest("hex");
 
-      const updates: Record<string, any> = isConfirmedMe
-        ? {
-            userResponse: "confirmed_me",
-            userRespondedAt: now,
-            status: "awaiting_admin_approval",
-            adminDecision: "pending",
-            lastActiveAt: now,
-          }
-        : {
-            userResponse: "denied_not_me",
-            userRespondedAt: now,
-            status: "revoked",
-            trusted: false,
-            adminDecision: "revoked",
-            revokedAt: now,
-            revokedBy: tokenUser.uid,
-            revokedReason: "user_denied_not_me",
-            lastActiveAt: now,
-          };
-
-      const emailResult = await sendSecurityResendEmail({
-        eventType: isConfirmedMe ? "user_confirmed_me" : "user_denied_not_me",
-        username: session.username,
-        displayName: session.displayName,
-        userId: session.userId,
-        previousCountryName: session.previousCountryName || "Bilinmiyor",
-        newCountryName: session.countryName,
-        newCountryFlag: session.flagEmoji || "🌐",
-        loginTimeFormatted: formatTrDateTime(now),
-        userChoiceLabel: isConfirmedMe
-          ? "Bu Benim (Kullanıcı onayladı — Admin incelemesi bekleniyor)"
-          : "Ben Değilim (Şüpheli oturum kullanıcı tarafından iptal edildi)",
-        ip: networkDoc?.ip || "Bilinmiyor",
-        deviceSummary: `${session.browserName} · ${session.osName} (${session.deviceType})`,
-      });
-
-      updates.emailSent = emailResult.sent;
-      updates.emailStatus = emailResult.status;
-      updates.emailError = emailResult.error || null;
-
-      await dbSetDoc("securitySessions", sessionId, updates, tokenUser.token);
-
-      await writeAdminLog(
+      await dbSetDoc(
+        "securityVerificationTokens",
+        sessionId,
         {
-          category: "security_session",
-          action: isConfirmedMe ? "user_confirmed_login" : "user_denied_login_urgent",
-          severity: isConfirmedMe ? "info" : "critical",
-          actorUid: tokenUser.uid,
-          actorEmail: tokenUser.email,
-          actorName: session.displayName,
-          targetUid: session.userId,
-          targetUsername: session.username,
           sessionId,
-          details: isConfirmedMe
-            ? `@${session.username} ${session.countryName} girişi için 'Bu Benim' seçeneğini bildirdi. Admin onayı bekleniyor.`
-            : `ACİL: @${session.username} ${session.countryName} girişi için 'Ben Değilim' dedi ve oturum derhal iptal edildi.`,
-          metadata: {
-            countryCode: session.countryCode,
-            countryName: session.countryName,
-            emailStatus: emailResult.status,
-          },
+          uid: tokenUser.uid,
+          tokenHash,
+          otpHash,
+          salt,
+          commitHash,
+          decisionCommitKey: "",
+          used: false,
+          usedAt: null,
+          attempts: 0,
+          expiresAt: challengeExpiresAt,
+          createdAt: now,
         },
         tokenUser.token
       );
 
-      return res.json({
-        success: true,
-        session: { ...session, ...updates },
-        emailResult,
+      const userDoc = await dbGetDoc("users", tokenUser.uid, tokenUser.token).catch(() => null);
+      const ownerVerifiedEmail = (tokenUser.email || userDoc?.email || "").trim();
+      const appOrigin = resolveAppOrigin(req);
+      const verificationUrl = `${appOrigin}/#/?secSession=${encodeURIComponent(sessionId)}&secToken=${encodeURIComponent(rawToken)}`;
+
+      // Resend yeniden gönderimi için bellek kilidini aç
+      sentEmailEventsCache.delete(`${sessionId}:unverified_suspicious_login`);
+
+      const emailResult = await sendSecurityResendEmailOnce({
+        sessionId,
+        eventType: "unverified_suspicious_login",
+        recipientEmail: ownerVerifiedEmail,
+        username: session.username,
+        displayName: session.displayName,
+        userId: tokenUser.uid,
+        countryName: session.countryName,
+        countryCode: session.countryCode,
+        countryFlag: session.flagEmoji || "🌐",
+        city: session.city,
+        deviceType: session.deviceType,
+        osName: session.osName,
+        browserName: session.browserName,
+        loginTimeFormatted: formatTrDateTime(now),
+        verificationUrl,
+        verificationCode: rawOtp,
+        sessionDataForDedup: null,
       });
+
+      await dbSetDoc(
+        "securitySessions",
+        sessionId,
+        {
+          challengeExpiresAt,
+          verificationStatus: "pending",
+          emailSent: emailResult.sent,
+          emailStatus: emailResult.status,
+          emailError: emailResult.error || null,
+        },
+        tokenUser.token
+      );
+
+      return res.json({ success: true, emailResult });
     } catch (err: any) {
-      console.error("❌ [Security Respond] Error:", err);
-      return res.status(500).json({ error: err?.message || "Güvenlik yanıtı kaydedilemedi." });
+      console.error("❌ [Resend Challenge] Error:", err);
+      return res.status(500).json({ error: err?.message || "Doğrulama kodu yeniden gönderilemedi." });
     }
   });
 
-  // 3. Kullanıcı İsteğiyle Diğer Tüm Oturumları Tek Tıkla Kapat ("Ben Değilim" Sonrası)
+  // 3. Kullanıcı İsteğiyle Diğer Tüm Oturumları Kapat ("Ben Değilim" Sonrası veya aktif hesapta)
   app.post("/api/security/sessions/revoke-other-all", async (req: Request, res: Response) => {
     try {
       const tokenUser = await authenticateRequest(req, res);
@@ -1247,13 +2478,17 @@ export function registerSessionSecurityRoutes(app: Express) {
 
       if (
         !callerSession ||
-        callerSession.userId !== tokenUser.uid ||
+        (callerSession.uid || callerSession.userId) !== tokenUser.uid ||
         !verifyProofAgainstSession(sessionProof, callerSession, networkDoc)
       ) {
         return res.status(403).json({ error: "Yetkisiz oturum işlemi." });
       }
 
-      const allUserSessions = await dbQueryByUserId("securitySessions", tokenUser.uid, tokenUser.token);
+      const allUserSessions = await dbQueryByUserId(
+        "securitySessions",
+        tokenUser.uid,
+        tokenUser.token
+      );
       const now = new Date();
       let revokedCount = 0;
 
@@ -1264,6 +2499,8 @@ export function registerSessionSecurityRoutes(app: Express) {
             s.sessionId || s.id,
             {
               status: "revoked",
+              sessionStatus: "revoked",
+              verificationStatus: s.verificationStatus === "pending" ? "denied" : s.verificationStatus,
               trusted: false,
               adminDecision: "revoked",
               revokedAt: now,
@@ -1314,18 +2551,19 @@ export function registerSessionSecurityRoutes(app: Express) {
     }
   });
 
-  // 4. Oturumun Aktifliğini Sunucuda Doğrula
+  // 4. Oturumun Aktifliğini Sunucuda Doğrula (Süre dolması ve iptal dahil)
   app.post("/api/security/sessions/verify-active", async (req: Request, res: Response) => {
     try {
       const tokenUser = await authenticateRequest(req, res, true);
       if (!tokenUser) return;
+
       const { sessionId, sessionProof } = req.body || {};
       if (!sessionId || !sessionProof) {
         return res.status(400).json({ active: false, reason: "MISSING_SESSION" });
       }
 
       const session = await dbGetDoc("securitySessions", sessionId, tokenUser.token);
-      if (!session || session.userId !== tokenUser.uid) {
+      if (!session || (session.uid || session.userId) !== tokenUser.uid) {
         return res.status(401).json({ active: false, reason: "SESSION_NOT_FOUND" });
       }
 
@@ -1336,77 +2574,397 @@ export function registerSessionSecurityRoutes(app: Express) {
         return res.status(403).json({ active: false, reason: "INVALID_PROOF" });
       }
 
+      const expMs = parseTimestampMs(session.expiresAt);
+      if (expMs !== null && expMs <= Date.now()) {
+        await dbSetDoc(
+          "securitySessions",
+          sessionId,
+          {
+            status: "revoked",
+            sessionStatus: "revoked",
+            verificationStatus: "expired",
+            trusted: false,
+            revokedAt: new Date(),
+            revokedReason: "session_expired",
+          },
+          tokenUser.token
+        ).catch(() => {});
+
+        return res.status(401).json({
+          active: false,
+          status: "revoked",
+          sessionStatus: "revoked",
+          verificationStatus: "expired",
+          reason: "SESSION_EXPIRED",
+        });
+      }
+
+      const effStatus = session.sessionStatus || session.status;
+      const isActive =
+        session.status === "active" &&
+        effStatus === "active" &&
+        session.trusted === true &&
+        !session.revokedAt;
+
       return res.json({
-        active: session.status === "active",
+        active: isActive,
         status: session.status,
+        sessionStatus: effStatus,
+        verificationStatus: session.verificationStatus || (isActive ? "verified" : "pending"),
       });
     } catch {
       return res.status(500).json({ active: false, reason: "SERVER_ERROR" });
     }
   });
 
-  // 5. ADMIN: Oturuma İzin Ver
-  app.post("/api/admin/security/sessions/approve", async (req: Request, res: Response) => {
+  // 5. ADMIN: Şüpheli Oturumlar Listesi & Detay (Moderatör erişemez)
+  app.get("/api/admin/security/sessions/list", async (req: Request, res: Response) => {
     try {
       const tokenUser = await authenticateRequest(req, res);
       if (!tokenUser) return;
 
-      const adminCheck = await assertAdminUser(tokenUser);
-      if (!adminCheck.isAdmin) {
-        return res.status(403).json({ error: "Bu işlem için yönetici yetkisi gerekli." });
+      const adminCheck = await assertMainAdminStrict(tokenUser);
+      if (!adminCheck.isMainAdmin) {
+        return res.status(403).json({ error: "Bu işlem yalnızca Ana Yönetici yetkisindedir." });
       }
 
-      const { sessionId } = req.body || {};
+      const challengeProof = String(req.headers["x-redchat-challenge-proof"] || "");
+      const gate = await assertAdminActionAllowedOnCurrentSession(req, tokenUser, challengeProof);
+      if (!gate.allowed) {
+        return res.status(403).json({ error: gate.error, code: gate.code });
+      }
+
+      const sessions = await dbListRecent("securitySessions", 150, tokenUser.token);
+      const networks = await dbListRecent("securitySessionNetwork", 150, tokenUser.token).catch(
+        () => []
+      );
+      const networkMap: Record<string, any> = {};
+      networks.forEach((n) => {
+        if (n.sessionId || n.id) networkMap[n.sessionId || n.id] = n;
+      });
+
+      return res.json({ sessions, networkMap });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || "Oturum listesi alınamadı." });
+    }
+  });
+
+  // 6. ADMIN: Kullanıcının Tüm Oturum Geçmişini İncele
+  app.get("/api/admin/security/sessions/history/:targetUid", async (req: Request, res: Response) => {
+    try {
+      const tokenUser = await authenticateRequest(req, res);
+      if (!tokenUser) return;
+
+      const adminCheck = await assertMainAdminStrict(tokenUser);
+      if (!adminCheck.isMainAdmin) {
+        return res.status(403).json({ error: "Bu işlem yalnızca Ana Yönetici yetkisindedir." });
+      }
+
+      const challengeProof = String(req.headers["x-redchat-challenge-proof"] || "");
+      const gate = await assertAdminActionAllowedOnCurrentSession(req, tokenUser, challengeProof);
+      if (!gate.allowed) {
+        return res.status(403).json({ error: gate.error, code: gate.code });
+      }
+
+      const targetUid = String(req.params.targetUid || "").trim();
+      if (!targetUid) return res.status(400).json({ error: "targetUid gerekli." });
+
+      const sessions = await dbQueryByUserId("securitySessions", targetUid, tokenUser.token);
+      const sorted = [...sessions].sort(
+        (a, b) => (parseTimestampMs(b.createdAt) || 0) - (parseTimestampMs(a.createdAt) || 0)
+      );
+
+      const networks = await dbQueryByUserId(
+        "securitySessionNetwork",
+        targetUid,
+        tokenUser.token
+      ).catch(() => []);
+      const networkMap: Record<string, any> = {};
+      networks.forEach((n) => {
+        networkMap[n.sessionId || n.id] = n;
+      });
+
+      return res.json({
+        targetUid,
+        sessions: sorted,
+        networkMap,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || "Oturum geçmişi alınamadı." });
+    }
+  });
+
+  // 7. ANA YÖNETİCİ KURTARMA: Pending Oturumu Güvenli Re-Auth / Email Kodu ile Doğrula
+  app.post("/api/admin/security/recover-self", async (req: Request, res: Response) => {
+    try {
+      const tokenUser = await authenticateRequest(req, res);
+      if (!tokenUser) return;
+
+      const adminCheck = await assertMainAdminStrict(tokenUser);
+      if (!adminCheck.isMainAdmin) {
+        return res.status(403).json({
+          error: "Kurtarma modu yalnızca doğrulanmış Ana Yöneticiler içindir.",
+        });
+      }
+
+      const { sessionId, challengeProof } = req.body || {};
       if (!sessionId) return res.status(400).json({ error: "sessionId gerekli." });
 
       const session = await dbGetDoc("securitySessions", sessionId, tokenUser.token);
-      if (!session) return res.status(404).json({ error: "Oturum bulunamadı." });
+      if (!session || (session.uid || session.userId) !== tokenUser.uid) {
+        return res.status(404).json({ error: "Yönetici oturumu bulunamadı." });
+      }
+
+      if (session.status === "revoked" || session.sessionStatus === "revoked") {
+        return res.status(403).json({ error: "İptal edilmiş oturum kurtarılamaz." });
+      }
+
+      const hasValidReauth = isFreshReauth(tokenUser);
+      const hasValidChallenge =
+        typeof challengeProof === "string" &&
+        verifyChallengeProof(challengeProof, sessionId, tokenUser.uid);
+
+      if (!hasValidReauth && !hasValidChallenge) {
+        return res.status(403).json({
+          error:
+            "Ana Yönetici kurtarması için taze kimlik doğrulama (şifre yenileme/doğrulama) veya tek kullanımlık e-posta doğrulama kodu gereklidir.",
+          code: "ADMIN_REAUTH_REQUIRED",
+        });
+      }
 
       const now = new Date();
-      await dbSetDoc(
-        "securitySessions",
-        sessionId,
-        {
-          status: "active",
-          trusted: true,
-          adminDecision: "approved",
-          adminReviewedAt: now,
-          adminReviewedBy: tokenUser.email || tokenUser.uid,
-          lastActiveAt: now,
-        },
-        tokenUser.token
-      );
+      const updates = {
+        status: "active",
+        sessionStatus: "active",
+        verificationStatus: "verified",
+        trusted: true,
+        userResponse: "confirmed_me",
+        adminDecision: "approved",
+        adminReviewedAt: now,
+        adminReviewedBy: tokenUser.email || tokenUser.uid,
+        verifiedAt: now,
+        lastActiveAt: now,
+        lastSeenAt: now,
+      };
 
-      // Kullanıcının bilinen ülke ve cihaz profilini güncelle
-      const secProfile = await dbGetDoc("userSecurityProfiles", session.userId, tokenUser.token);
+      await dbSetDoc("securitySessions", sessionId, updates, tokenUser.token);
+
+      const secProfile = await dbGetDoc("userSecurityProfiles", tokenUser.uid, tokenUser.token).catch(
+        () => null
+      );
       const existingCountries: string[] = Array.isArray(secProfile?.knownCountryCodes)
         ? secProfile.knownCountryCodes
         : [];
       const existingDevices: string[] = Array.isArray(secProfile?.knownDeviceIds)
         ? secProfile.knownDeviceIds
         : [];
-
-      const nextCountries =
-        session.countryCode && session.countryCode !== "UNKNOWN"
-          ? Array.from(new Set([...existingCountries, session.countryCode]))
-          : existingCountries;
-      const nextDevices = session.deviceId
-        ? Array.from(new Set([...existingDevices, session.deviceId])).slice(-25)
-        : existingDevices;
+      const existingSigs: string[] = Array.isArray(secProfile?.knownDeviceSignatures)
+        ? secProfile.knownDeviceSignatures
+        : [];
 
       await dbSetDoc(
         "userSecurityProfiles",
-        session.userId,
+        tokenUser.uid,
         {
-          uid: session.userId,
-          knownCountryCodes: nextCountries,
-          knownDeviceIds: nextDevices,
-          lastKnownCountryCode: session.countryCode || secProfile?.lastKnownCountryCode || null,
-          lastKnownCountryName: session.countryName || secProfile?.lastKnownCountryName || null,
+          uid: tokenUser.uid,
+          knownCountryCodes:
+            session.countryCode && session.countryCode !== "UNKNOWN"
+              ? Array.from(new Set([...existingCountries, session.countryCode]))
+              : existingCountries,
+          knownDeviceIds: session.deviceId
+            ? Array.from(new Set([...existingDevices, session.deviceId])).slice(-25)
+            : existingDevices,
+          knownDeviceSignatures: session.deviceSignature
+            ? Array.from(new Set([...existingSigs, session.deviceSignature])).slice(-25)
+            : existingSigs,
+          lastKnownCountryCode:
+            session.countryCode && session.countryCode !== "UNKNOWN"
+              ? session.countryCode
+              : secProfile?.lastKnownCountryCode || null,
+          lastKnownCountryName:
+            session.countryCode && session.countryCode !== "UNKNOWN"
+              ? session.countryName
+              : secProfile?.lastKnownCountryName || null,
           updatedAt: now,
         },
         tokenUser.token
       );
+
+      const ownerEmail = (tokenUser.email || adminCheck.userDoc?.email || "").trim();
+      const emailResult = await sendSecurityResendEmailOnce({
+        sessionId,
+        eventType: "verified_login_notification",
+        recipientEmail: ownerEmail,
+        username: session.username,
+        displayName: session.displayName,
+        userId: tokenUser.uid,
+        countryName: session.countryName,
+        countryCode: session.countryCode,
+        countryFlag: session.flagEmoji || "🌐",
+        city: session.city,
+        deviceType: session.deviceType,
+        osName: session.osName,
+        browserName: session.browserName,
+        loginTimeFormatted: formatTrDateTime(now),
+        sessionDataForDedup: session,
+      });
+
+      await writeAdminLog(
+        {
+          category: "security_session",
+          action: "main_admin_self_recovery",
+          severity: "warning",
+          actorUid: tokenUser.uid,
+          actorEmail: tokenUser.email,
+          actorName: adminCheck.displayName,
+          targetUid: tokenUser.uid,
+          targetUsername: session.username,
+          sessionId,
+          details: `Ana Yönetici (${adminCheck.displayName}) güvenli yeniden doğrulama (${hasValidReauth ? "Şifre Re-Auth" : "E-posta Kodu"}) ile ${session.countryName} oturumunu doğruladı.`,
+          metadata: { method: hasValidReauth ? "firebase_reauth" : "email_challenge", emailStatus: emailResult.status },
+        },
+        tokenUser.token
+      );
+
+      return res.json({
+        success: true,
+        session: { ...session, ...updates },
+        emailResult,
+      });
+    } catch (err: any) {
+      console.error("❌ [Admin Recover Self] Error:", err);
+      return res.status(500).json({ error: err?.message || "Yönetici kurtarma işlemi başarısız." });
+    }
+  });
+
+  // 8. ADMIN: Oturuma İzin Ver
+  app.post("/api/admin/security/sessions/approve", async (req: Request, res: Response) => {
+    try {
+      const tokenUser = await authenticateRequest(req, res);
+      if (!tokenUser) return;
+
+      const adminCheck = await assertMainAdminStrict(tokenUser);
+      if (!adminCheck.isMainAdmin) {
+        return res.status(403).json({ error: "Bu işlem için Ana Yönetici yetkisi gerekli." });
+      }
+
+      const { sessionId, challengeProof } = req.body || {};
+      const gate = await assertAdminActionAllowedOnCurrentSession(req, tokenUser, challengeProof);
+      if (!gate.allowed) {
+        return res.status(403).json({ error: gate.error, code: gate.code });
+      }
+
+      if (!sessionId) return res.status(400).json({ error: "sessionId gerekli." });
+
+      const session = await dbGetDoc("securitySessions", sessionId, tokenUser.token);
+      if (!session) return res.status(404).json({ error: "Oturum bulunamadı." });
+
+      const ownerUid = session.uid || session.userId;
+      const now = new Date();
+      await dbSetDoc(
+        "securitySessions",
+        sessionId,
+        {
+          status: "active",
+          sessionStatus: "active",
+          verificationStatus: "verified",
+          trusted: true,
+          adminDecision: "approved",
+          adminReviewedAt: now,
+          adminReviewedBy: tokenUser.email || tokenUser.uid,
+          verifiedAt: now,
+          lastActiveAt: now,
+          lastSeenAt: now,
+        },
+        tokenUser.token
+      );
+
+      const secProfile = await dbGetDoc("userSecurityProfiles", ownerUid, tokenUser.token).catch(
+        () => null
+      );
+      const existingCountries: string[] = Array.isArray(secProfile?.knownCountryCodes)
+        ? secProfile.knownCountryCodes
+        : [];
+      const existingDevices: string[] = Array.isArray(secProfile?.knownDeviceIds)
+        ? secProfile.knownDeviceIds
+        : [];
+      const existingSigs: string[] = Array.isArray(secProfile?.knownDeviceSignatures)
+        ? secProfile.knownDeviceSignatures
+        : [];
+
+      await dbSetDoc(
+        "userSecurityProfiles",
+        ownerUid,
+        {
+          uid: ownerUid,
+          knownCountryCodes:
+            session.countryCode && session.countryCode !== "UNKNOWN"
+              ? Array.from(new Set([...existingCountries, session.countryCode]))
+              : existingCountries,
+          knownDeviceIds: session.deviceId
+            ? Array.from(new Set([...existingDevices, session.deviceId])).slice(-25)
+            : existingDevices,
+          knownDeviceSignatures: session.deviceSignature
+            ? Array.from(new Set([...existingSigs, session.deviceSignature])).slice(-25)
+            : existingSigs,
+          lastKnownCountryCode:
+            session.countryCode && session.countryCode !== "UNKNOWN"
+              ? session.countryCode
+              : secProfile?.lastKnownCountryCode || null,
+          lastKnownCountryName:
+            session.countryCode && session.countryCode !== "UNKNOWN"
+              ? session.countryName
+              : secProfile?.lastKnownCountryName || null,
+          updatedAt: now,
+        },
+        tokenUser.token
+      );
+
+      // Onaylanan oturum için hesap sahibine tekilleştirilmiş "Hesabınızda Yeni Giriş" e-postası gönder
+      const targetUserDoc = await dbGetDoc("users", ownerUid, tokenUser.token).catch(() => null);
+      const targetEmail = (session.emailRecipient || targetUserDoc?.email || "").trim();
+      let emailResult: any = { sent: false, status: "skipped" };
+      if (targetEmail) {
+        emailResult = await sendSecurityResendEmailOnce({
+          sessionId,
+          eventType: "verified_login_notification",
+          recipientEmail: targetEmail,
+          username: session.username,
+          displayName: session.displayName,
+          userId: ownerUid,
+          countryName: session.countryName,
+          countryCode: session.countryCode,
+          countryFlag: session.flagEmoji || "🌐",
+          city: session.city,
+          deviceType: session.deviceType,
+          osName: session.osName,
+          browserName: session.browserName,
+          loginTimeFormatted: formatTrDateTime(now),
+          sessionDataForDedup: session,
+        });
+
+        await dbSetDoc(
+          "securitySessions",
+          sessionId,
+          {
+            emailSent: emailResult.sent || Boolean(session.emailSent),
+            emailStatus: emailResult.status,
+            emailError: emailResult.error || null,
+            emailDispatches: {
+              ...(session.emailDispatches || {}),
+              verified_login_notification: {
+                sent: emailResult.sent,
+                status: emailResult.status,
+                recipient: targetEmail,
+                subject: "RedChat — Hesabınızda Yeni Giriş",
+                sentAt: now,
+                error: emailResult.error || null,
+              },
+            },
+          },
+          tokenUser.token
+        ).catch(() => {});
+      }
 
       await writeAdminLog(
         {
@@ -1416,7 +2974,7 @@ export function registerSessionSecurityRoutes(app: Express) {
           actorUid: tokenUser.uid,
           actorEmail: tokenUser.email,
           actorName: adminCheck.displayName,
-          targetUid: session.userId,
+          targetUid: ownerUid,
           targetUsername: session.username,
           sessionId,
           details: `Admin (${adminCheck.displayName}), @${session.username} kullanıcısının ${session.countryName} oturumuna izin verdi.`,
@@ -1424,41 +2982,51 @@ export function registerSessionSecurityRoutes(app: Express) {
             countryCode: session.countryCode,
             countryName: session.countryName,
             deviceId: session.deviceId,
+            emailStatus: emailResult.status,
           },
         },
         tokenUser.token
       );
 
-      return res.json({ success: true });
+      return res.json({ success: true, emailResult });
     } catch (err: any) {
       console.error("❌ [Admin Approve Session] Error:", err);
       return res.status(500).json({ error: err?.message || "Oturum onaylanamadı." });
     }
   });
 
-  // 6. ADMIN: Yalnızca Seçilen Tek Oturumu Kapat (Diğer cihazlara dokunmaz)
+  // 9. ADMIN: Yalnızca Seçilen Tek Oturumu Kapat (Diğer cihazlara dokunmaz, revokeRefreshTokens ÇAĞIRMAZ)
   app.post("/api/admin/security/sessions/revoke-single", async (req: Request, res: Response) => {
     try {
       const tokenUser = await authenticateRequest(req, res);
       if (!tokenUser) return;
 
-      const adminCheck = await assertAdminUser(tokenUser);
-      if (!adminCheck.isAdmin) {
-        return res.status(403).json({ error: "Bu işlem için yönetici yetkisi gerekli." });
+      const adminCheck = await assertMainAdminStrict(tokenUser);
+      if (!adminCheck.isMainAdmin) {
+        return res.status(403).json({ error: "Bu işlem için Ana Yönetici yetkisi gerekli." });
       }
 
-      const { sessionId } = req.body || {};
+      const { sessionId, challengeProof } = req.body || {};
+      const gate = await assertAdminActionAllowedOnCurrentSession(req, tokenUser, challengeProof);
+      if (!gate.allowed) {
+        return res.status(403).json({ error: gate.error, code: gate.code });
+      }
+
       if (!sessionId) return res.status(400).json({ error: "sessionId gerekli." });
 
       const session = await dbGetDoc("securitySessions", sessionId, tokenUser.token);
       if (!session) return res.status(404).json({ error: "Oturum bulunamadı." });
 
+      const ownerUid = session.uid || session.userId;
       const now = new Date();
       await dbSetDoc(
         "securitySessions",
         sessionId,
         {
           status: "revoked",
+          sessionStatus: "revoked",
+          verificationStatus:
+            session.verificationStatus === "pending" ? "denied" : session.verificationStatus,
           trusted: false,
           adminDecision: "revoked",
           adminReviewedAt: now,
@@ -1478,7 +3046,7 @@ export function registerSessionSecurityRoutes(app: Express) {
           actorUid: tokenUser.uid,
           actorEmail: tokenUser.email,
           actorName: adminCheck.displayName,
-          targetUid: session.userId,
+          targetUid: ownerUid,
           targetUsername: session.username,
           sessionId,
           details: `Admin (${adminCheck.displayName}), @${session.username} kullanıcısının ${session.countryName} (${session.browserName}) oturumunu tekil olarak kapattı. Diğer oturumlar korundu.`,
@@ -1497,18 +3065,23 @@ export function registerSessionSecurityRoutes(app: Express) {
     }
   });
 
-  // 7. ADMIN: Kullanıcının Tüm Oturumlarını Kapat
+  // 10. ADMIN: Kullanıcının Tüm Oturumlarını Kapat
   app.post("/api/admin/security/sessions/revoke-all", async (req: Request, res: Response) => {
     try {
       const tokenUser = await authenticateRequest(req, res);
       if (!tokenUser) return;
 
-      const adminCheck = await assertAdminUser(tokenUser);
-      if (!adminCheck.isAdmin) {
-        return res.status(403).json({ error: "Bu işlem için yönetici yetkisi gerekli." });
+      const adminCheck = await assertMainAdminStrict(tokenUser);
+      if (!adminCheck.isMainAdmin) {
+        return res.status(403).json({ error: "Bu işlem için Ana Yönetici yetkisi gerekli." });
       }
 
-      const { targetUid, targetUsername } = req.body || {};
+      const { targetUid, targetUsername, challengeProof } = req.body || {};
+      const gate = await assertAdminActionAllowedOnCurrentSession(req, tokenUser, challengeProof);
+      if (!gate.allowed) {
+        return res.status(403).json({ error: gate.error, code: gate.code });
+      }
+
       if (!targetUid) return res.status(400).json({ error: "targetUid gerekli." });
 
       const sessions = await dbQueryByUserId("securitySessions", targetUid, tokenUser.token);
@@ -1522,6 +3095,9 @@ export function registerSessionSecurityRoutes(app: Express) {
             s.sessionId || s.id,
             {
               status: "revoked",
+              sessionStatus: "revoked",
+              verificationStatus:
+                s.verificationStatus === "pending" ? "denied" : s.verificationStatus,
               trusted: false,
               adminDecision: "revoked",
               adminReviewedAt: now,
