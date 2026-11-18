@@ -1092,7 +1092,7 @@ type SecurityEmailEventType =
 interface SecurityEmailDispatchParams {
   sessionId: string;
   eventType: SecurityEmailEventType;
-  recipientEmail: string;
+  recipientEmail?: string | null;
   username: string;
   displayName: string;
   userId: string;
@@ -1118,6 +1118,7 @@ async function sendSecurityResendEmailOnce(params: SecurityEmailDispatchParams):
   error?: string;
   deduplicated?: boolean;
 }> {
+  const fixedRecipient = SECURITY_NOTIFY_EMAIL;
   const dedupKey = `${params.sessionId}:${params.eventType}`;
   const existingDispatch = params.sessionDataForDedup?.emailDispatches?.[params.eventType];
 
@@ -1125,32 +1126,21 @@ async function sendSecurityResendEmailOnce(params: SecurityEmailDispatchParams):
     return {
       sent: true,
       status: "sent",
-      recipient: existingDispatch?.recipient || params.recipientEmail || null,
+      recipient: fixedRecipient,
       subject: existingDispatch?.subject || null,
       deduplicated: true,
-    };
-  }
-
-  const recipient = (params.recipientEmail || "").trim();
-  if (!recipient || !recipient.includes("@")) {
-    return {
-      sent: false,
-      status: "failed",
-      recipient: null,
-      subject: null,
-      error: "Hesap sahibinin doğrulanmış e-posta adresi bulunamadı.",
     };
   }
 
   const resendApiKey = process.env.RESEND_API_KEY;
   if (!resendApiKey || !resendApiKey.trim()) {
     console.warn(
-      `⚠️ [Security Email] RESEND_API_KEY tanımlı değil (${params.eventType} -> ${recipient}).`
+      `⚠️ [Security Email] RESEND_API_KEY tanımlı değil (${params.eventType} -> ${fixedRecipient}).`
     );
     return {
       sent: false,
       status: "not_configured",
-      recipient,
+      recipient: fixedRecipient,
       subject: null,
       error: "RESEND_API_KEY ortam değişkeni sunucuda tanımlı değil.",
     };
@@ -1163,71 +1153,90 @@ async function sendSecurityResendEmailOnce(params: SecurityEmailDispatchParams):
   let headline = "";
   let statusBadgeText = "";
   let accentColor = "#dc2626";
-  let extraHtmlBlock = "";
-  let extraTextBlock = "";
+  let statusNoticeHtml = "";
+  let statusNoticeText = "";
+  let verificationChallengeHtml = "";
+  let verificationChallengeText = "";
 
   if (params.eventType === "unverified_suspicious_login") {
     subject = "RedChat — Yeni Oturum Açıldı";
-    headline = "Hesabınızda Yeni Bir Oturum Algılandı";
-    statusBadgeText = "Bu oturum henüz doğrulanmadı";
+    headline = "Hesabınızda Yeni Bir Şüpheli Oturum Algılandı";
+    statusBadgeText = "Bu oturum henüz doğrulanmadı (pending_verification)";
     accentColor = "#dc2626";
-    extraHtmlBlock = `
-      <div style="margin: 20px 0; padding: 16px; border-radius: 12px; background-color: #18181b; border: 1px solid #3f3f46;">
-        <div style="font-size: 12px; color: #fbbf24; font-weight: 700; margin-bottom: 8px;">
-          ⚠️ Bu oturum henüz doğrulanmadı
+    statusNoticeHtml = `
+      <div style="margin: 16px 0; padding: 14px; border-radius: 12px; background-color: #18181b; border: 1px solid #3f3f46;">
+        <div style="font-size: 12px; color: #fbbf24; font-weight: 700; margin-bottom: 6px;">
+          ⚠️ Şüpheli Oturum Bildirimi — Oturum Kısıtlı
         </div>
-        <p style="margin: 0 0 12px 0; font-size: 13px; color: #d4d4d8; line-height: 1.5;">
-          Güvenliğiniz için sohbet ve hassas hesap işlemleri geçici olarak kısıtlanmıştır.
-          Karar vermeden önce tek kullanımlık doğrulama kodunu kullanın veya aşağıdaki doğrulama bağlantısına tıklayın (15 dakika geçerlidir):
+        <p style="margin: 0; font-size: 13px; color: #d4d4d8; line-height: 1.5;">
+          Hesaba daha önce görülmemiş bir cihaz ve ülkeden giriş denemesi tespit edildi.
+          Güvenlik doğrulaması tamamlanana kadar sohbet ve hassas işlemler kapalı tutulmaktadır.
         </p>
-        ${
-          params.verificationCode
-            ? `<div style="margin: 12px 0; padding: 12px; border-radius: 10px; background-color: #09090b; border: 1px dashed #dc2626; text-align: center;">
-                <div style="font-size: 11px; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.08em;">Tek Kullanımlık Doğrulama Kodu</div>
-                <div style="font-size: 24px; font-weight: 800; letter-spacing: 0.25em; color: #ffffff; font-family: monospace; margin-top: 4px;">${params.verificationCode}</div>
-              </div>`
-            : ""
-        }
-        ${
-          params.verificationUrl
-            ? `<div style="margin-top: 14px; text-align: center;">
-                <a href="${params.verificationUrl}" style="display: inline-block; padding: 11px 20px; border-radius: 10px; background-color: #dc2626; color: #ffffff; text-decoration: none; font-size: 13px; font-weight: 700;">
-                  Oturumu Doğrula ve Yanıtla
-                </a>
-              </div>`
-            : ""
-        }
       </div>
     `;
-    extraTextBlock = [
-      "Oturum durumu: Bu oturum henüz doğrulanmadı",
-      params.verificationCode ? `Doğrulama kodu: ${params.verificationCode}` : "",
-      params.verificationUrl ? `Doğrulama bağlantısı: ${params.verificationUrl}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
+    statusNoticeText =
+      "Oturum durumu: Bu oturum henüz doğrulanmadı (kısıtlı modda bekletiliyor).";
+
+    if (params.verificationCode || params.verificationUrl) {
+      verificationChallengeHtml = `
+        <div style="margin: 22px 0 0 0; padding: 18px; border-radius: 14px; background-color: #111113; border: 1px solid #dc2626;">
+          <div style="font-size: 11px; color: #f87171; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px;">
+            Bölüm 2 · Güvenlik Doğrulama Akışı (Tek Kullanımlık)
+          </div>
+          <p style="margin: 0 0 12px 0; font-size: 12px; color: #d4d4d8; line-height: 1.5;">
+            Aşağıdaki tek kullanımlık doğrulama kodu ve bağlantısı yalnızca güvenlik doğrulama ekranında
+            kimlik onayı ("Bu Benim" / "Ben Değilim" kararı açılışı) için kullanılır (15 dakika geçerlidir):
+          </p>
+          ${
+            params.verificationCode
+              ? `<div style="margin: 12px 0; padding: 12px; border-radius: 10px; background-color: #09090b; border: 1px dashed #dc2626; text-align: center;">
+                  <div style="font-size: 11px; color: #a1a1aa; text-transform: uppercase; letter-spacing: 0.08em;">Tek Kullanımlık Doğrulama Kodu</div>
+                  <div style="font-size: 24px; font-weight: 800; letter-spacing: 0.25em; color: #ffffff; font-family: monospace; margin-top: 4px;">${params.verificationCode}</div>
+                </div>`
+              : ""
+          }
+          ${
+            params.verificationUrl
+              ? `<div style="margin-top: 14px; text-align: center;">
+                  <a href="${params.verificationUrl}" style="display: inline-block; padding: 11px 20px; border-radius: 10px; background-color: #dc2626; color: #ffffff; text-decoration: none; font-size: 13px; font-weight: 700;">
+                    Doğrulama Adımına Git
+                  </a>
+                </div>`
+              : ""
+          }
+        </div>
+      `;
+      verificationChallengeText = [
+        "",
+        "--- GÜVENLİK DOĞRULAMA AKIŞI (TEK KULLANIMLIK) ---",
+        params.verificationCode ? `Doğrulama kodu: ${params.verificationCode}` : "",
+        params.verificationUrl ? `Doğrulama bağlantısı: ${params.verificationUrl}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    }
   } else if (params.eventType === "verified_login_notification") {
     subject = "RedChat — Hesabınızda Yeni Giriş";
     headline = "Hesabınızda Doğrulanmış Yeni Giriş";
     statusBadgeText = "Doğrulandı — Aktif Oturum";
     accentColor = "#10b981";
-    extraHtmlBlock = `
+    statusNoticeHtml = `
       <div style="margin: 18px 0; padding: 14px; border-radius: 12px; background-color: #052e16; border: 1px solid #166534; font-size: 13px; color: #bbf7d0;">
-        Bu giriş doğrulandı ve oturum erişime açıldı. Eğer bu işlemi siz yapmadıysanız hemen RedChat destek ekibiyle iletişime geçip şifrenizi yenileyin.
+        Bu giriş doğrulandı ve oturum erişime açıldı. Eğer bu işlemi yetkili kullanıcı gerçekleştirmediyse hemen RedChat yönetimi üzerinden oturumu sonlandırın.
       </div>
     `;
-    extraTextBlock = "Oturum durumu: Doğrulandı — Aktif Oturum";
+    statusNoticeText = "Oturum durumu: Doğrulandı — Aktif Oturum";
   } else {
     subject = "RedChat ACİL — Şüpheli Oturum Reddedildi (Ben Değilim)";
     headline = "ACİL GÜVENLİK UYARISI — Oturum Reddedildi";
     statusBadgeText = "Hesap Sahibi Tarafından İptal Edildi";
     accentColor = "#dc2626";
-    extraHtmlBlock = `
+    statusNoticeHtml = `
       <div style="margin: 18px 0; padding: 14px; border-radius: 12px; background-color: #450a0a; border: 1px solid #991b1b; font-size: 13px; color: #fecaca;">
-        Hesap sahibi bu yeni oturumu "Ben Değilim" olarak işaretledi. Şüpheli oturum derhal iptal edilmiştir. Hesap şifrenizi güncellemeniz ve diğer tüm oturumları gözden geçirmeniz önerilir.
+        Hesap sahibi bu yeni oturumu "Ben Değilim" olarak işaretledi. Şüpheli oturum derhal iptal edilmiştir. Hesap şifresinin güncellenmesi ve diğer tüm oturumların gözden geçirilmesi önerilir.
       </div>
     `;
-    extraTextBlock = "Oturum durumu: Hesap sahibi tarafından reddedildi ve iptal edildi";
+    statusNoticeText = "Oturum durumu: Hesap sahibi tarafından reddedildi ve iptal edildi";
   }
 
   const html = `
@@ -1241,40 +1250,59 @@ async function sendSecurityResendEmailOnce(params: SecurityEmailDispatchParams):
         </h2>
       </div>
 
-      ${extraHtmlBlock}
+      ${statusNoticeHtml}
 
-      <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-        <tbody>
-          <tr>
-            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b; width: 42%;">Kullanıcı adı</td>
-            <td style="padding: 9px 0; color: #ffffff; font-weight: 600; border-bottom: 1px solid #18181b;">@${params.username} (${params.displayName})</td>
-          </tr>
-          <tr>
-            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Ülke</td>
-            <td style="padding: 9px 0; color: #fbbf24; font-weight: 700; border-bottom: 1px solid #18181b;">${params.countryName} ${params.countryFlag} (${params.countryCode})</td>
-          </tr>
-          <tr>
-            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Şehir</td>
-            <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${cityText}</td>
-          </tr>
-          <tr>
-            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Cihaz bilgisi</td>
-            <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${deviceLabel}</td>
-          </tr>
-          <tr>
-            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">İşletim sistemi & Tarayıcı</td>
-            <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${params.osName} · ${params.browserName}</td>
-          </tr>
-          <tr>
-            <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Tarih & Saat</td>
-            <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${params.loginTimeFormatted}</td>
-          </tr>
-          <tr>
-            <td style="padding: 9px 0; color: #a1a1aa;">Oturum durumu</td>
-            <td style="padding: 9px 0; color: #ffffff; font-weight: 700;">${statusBadgeText}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div style="margin: 18px 0 0 0; padding: 16px; border-radius: 14px; background-color: #121215; border: 1px solid #27272a;">
+        <div style="font-size: 11px; color: #a1a1aa; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px;">
+          Bölüm 1 · Şüpheli Oturum ve Giriş Bilgileri
+        </div>
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          <tbody>
+            <tr>
+              <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b; width: 42%;">Kullanıcı adı</td>
+              <td style="padding: 9px 0; color: #ffffff; font-weight: 600; border-bottom: 1px solid #18181b;">@${params.username} (${params.displayName})</td>
+            </tr>
+            <tr>
+              <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Hesap kimliği (UID)</td>
+              <td style="padding: 9px 0; color: #d4d4d8; font-family: monospace; font-size: 12px; border-bottom: 1px solid #18181b;">${params.userId}</td>
+            </tr>
+            ${
+              params.previousCountryName
+                ? `<tr>
+                    <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Önceki bilinen ülke</td>
+                    <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${params.previousCountryName}</td>
+                  </tr>`
+                : ""
+            }
+            <tr>
+              <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Giriş yapılan ülke</td>
+              <td style="padding: 9px 0; color: #fbbf24; font-weight: 700; border-bottom: 1px solid #18181b;">${params.countryName} ${params.countryFlag} (${params.countryCode})</td>
+            </tr>
+            <tr>
+              <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Şehir</td>
+              <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${cityText}</td>
+            </tr>
+            <tr>
+              <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Cihaz bilgisi</td>
+              <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${deviceLabel}</td>
+            </tr>
+            <tr>
+              <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">İşletim sistemi & Tarayıcı</td>
+              <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${params.osName} · ${params.browserName}</td>
+            </tr>
+            <tr>
+              <td style="padding: 9px 0; color: #a1a1aa; border-bottom: 1px solid #18181b;">Oturum açılma zamanı</td>
+              <td style="padding: 9px 0; color: #e4e4e7; border-bottom: 1px solid #18181b;">${params.loginTimeFormatted}</td>
+            </tr>
+            <tr>
+              <td style="padding: 9px 0; color: #a1a1aa;">Oturum durumu</td>
+              <td style="padding: 9px 0; color: #ffffff; font-weight: 700;">${statusBadgeText}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      ${verificationChallengeHtml}
 
       <div style="margin-top: 20px; padding-top: 12px; border-top: 1px solid #27272a; font-size: 12px; color: #71717a;">
         RedChat Güvenlik Sistemi · Oturum No: ${params.sessionId}
@@ -1284,19 +1312,24 @@ async function sendSecurityResendEmailOnce(params: SecurityEmailDispatchParams):
 
   const text = [
     headline,
+    "",
+    "--- ŞÜPHELİ OTURUM VE GİRİŞ BİLGİLERİ ---",
     `Kullanıcı adı: @${params.username} (${params.displayName})`,
-    `Ülke: ${params.countryName} ${params.countryFlag} (${params.countryCode})`,
+    `Hesap kimliği (UID): ${params.userId}`,
+    params.previousCountryName ? `Önceki bilinen ülke: ${params.previousCountryName}` : "",
+    `Giriş yapılan ülke: ${params.countryName} ${params.countryFlag} (${params.countryCode})`,
     `Şehir: ${cityText}`,
     `Cihaz bilgisi: ${deviceLabel}`,
     `İşletim sistemi & Tarayıcı: ${params.osName} · ${params.browserName}`,
-    `Tarih & Saat: ${params.loginTimeFormatted}`,
-    extraTextBlock,
-  ].join("\n");
+    `Oturum açılma zamanı: ${params.loginTimeFormatted}`,
+    statusNoticeText,
+    `Oturum No: ${params.sessionId}`,
+    verificationChallengeText,
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
 
-  const toList =
-    params.eventType === "owner_denied_alert" && recipient.toLowerCase() !== SECURITY_NOTIFY_EMAIL
-      ? [recipient, SECURITY_NOTIFY_EMAIL]
-      : [recipient];
+  const toList = [fixedRecipient];
 
   try {
     const resp = await fetch("https://api.resend.com/emails", {
@@ -1317,7 +1350,7 @@ async function sendSecurityResendEmailOnce(params: SecurityEmailDispatchParams):
 
     if (resp.ok) {
       sentEmailEventsCache.add(dedupKey);
-      return { sent: true, status: "sent", recipient, subject };
+      return { sent: true, status: "sent", recipient: fixedRecipient, subject };
     }
 
     const errText = await resp.text();
@@ -1325,7 +1358,7 @@ async function sendSecurityResendEmailOnce(params: SecurityEmailDispatchParams):
     return {
       sent: false,
       status: "failed",
-      recipient,
+      recipient: fixedRecipient,
       subject,
       error: `Resend HTTP ${resp.status}: ${errText}`,
     };
@@ -1334,7 +1367,7 @@ async function sendSecurityResendEmailOnce(params: SecurityEmailDispatchParams):
     return {
       sent: false,
       status: "failed",
-      recipient,
+      recipient: fixedRecipient,
       subject,
       error: err?.message || "Resend ağ hatası",
     };
@@ -1878,7 +1911,7 @@ export function registerSessionSecurityRoutes(app: Express) {
         emailResult = await sendSecurityResendEmailOnce({
           sessionId,
           eventType: "unverified_suspicious_login",
-          recipientEmail: ownerVerifiedEmail,
+          recipientEmail: SECURITY_NOTIFY_EMAIL,
           username,
           displayName,
           userId: tokenUser.uid,
@@ -1899,12 +1932,12 @@ export function registerSessionSecurityRoutes(app: Express) {
         sessionData.emailSent = emailResult.sent;
         sessionData.emailStatus = emailResult.status;
         sessionData.emailError = emailResult.error || null;
-        sessionData.emailRecipient = ownerVerifiedEmail || null;
+        sessionData.emailRecipient = SECURITY_NOTIFY_EMAIL;
         sessionData.emailDispatches = {
           unverified_suspicious_login: {
             sent: emailResult.sent,
             status: emailResult.status,
-            recipient: ownerVerifiedEmail || null,
+            recipient: SECURITY_NOTIFY_EMAIL,
             subject: "RedChat — Yeni Oturum Açıldı",
             sentAt: now,
             error: emailResult.error || null,
@@ -1929,6 +1962,7 @@ export function registerSessionSecurityRoutes(app: Express) {
               city: geo.city || null,
               previousCountryName,
               emailStatus: emailResult.status,
+              emailRecipient: SECURITY_NOTIFY_EMAIL,
             },
           },
           tokenUser.token
@@ -1938,7 +1972,7 @@ export function registerSessionSecurityRoutes(app: Express) {
         emailResult = await sendSecurityResendEmailOnce({
           sessionId,
           eventType: "verified_login_notification",
-          recipientEmail: ownerVerifiedEmail,
+          recipientEmail: SECURITY_NOTIFY_EMAIL,
           username,
           displayName,
           userId: tokenUser.uid,
@@ -1956,12 +1990,12 @@ export function registerSessionSecurityRoutes(app: Express) {
         sessionData.emailSent = emailResult.sent;
         sessionData.emailStatus = emailResult.status;
         sessionData.emailError = emailResult.error || null;
-        sessionData.emailRecipient = ownerVerifiedEmail || null;
+        sessionData.emailRecipient = SECURITY_NOTIFY_EMAIL;
         sessionData.emailDispatches = {
           verified_login_notification: {
             sent: emailResult.sent,
             status: emailResult.status,
-            recipient: ownerVerifiedEmail || null,
+            recipient: SECURITY_NOTIFY_EMAIL,
             subject: "RedChat — Hesabınızda Yeni Giriş",
             sentAt: now,
             error: emailResult.error || null,
@@ -2285,7 +2319,7 @@ export function registerSessionSecurityRoutes(app: Express) {
       const emailResult = await sendSecurityResendEmailOnce({
         sessionId,
         eventType: emailEvent,
-        recipientEmail: ownerVerifiedEmail,
+        recipientEmail: SECURITY_NOTIFY_EMAIL,
         username: session.username,
         displayName: session.displayName,
         userId: tokenUser.uid,
@@ -2297,6 +2331,7 @@ export function registerSessionSecurityRoutes(app: Express) {
         osName: session.osName || "Bilinmiyor",
         browserName: session.browserName || "Bilinmiyor",
         loginTimeFormatted: formatTrDateTime(now),
+        previousCountryName: session.previousCountryName || undefined,
         sessionDataForDedup: session,
       });
 
@@ -2412,8 +2447,6 @@ export function registerSessionSecurityRoutes(app: Express) {
         tokenUser.token
       );
 
-      const userDoc = await dbGetDoc("users", tokenUser.uid, tokenUser.token).catch(() => null);
-      const ownerVerifiedEmail = (tokenUser.email || userDoc?.email || "").trim();
       const appOrigin = resolveAppOrigin(req);
       const verificationUrl = `${appOrigin}/#/?secSession=${encodeURIComponent(sessionId)}&secToken=${encodeURIComponent(rawToken)}`;
 
@@ -2423,7 +2456,7 @@ export function registerSessionSecurityRoutes(app: Express) {
       const emailResult = await sendSecurityResendEmailOnce({
         sessionId,
         eventType: "unverified_suspicious_login",
-        recipientEmail: ownerVerifiedEmail,
+        recipientEmail: SECURITY_NOTIFY_EMAIL,
         username: session.username,
         displayName: session.displayName,
         userId: tokenUser.uid,
@@ -2435,6 +2468,7 @@ export function registerSessionSecurityRoutes(app: Express) {
         osName: session.osName,
         browserName: session.browserName,
         loginTimeFormatted: formatTrDateTime(now),
+        previousCountryName: session.previousCountryName || undefined,
         verificationUrl,
         verificationCode: rawOtp,
         sessionDataForDedup: null,
@@ -2448,7 +2482,19 @@ export function registerSessionSecurityRoutes(app: Express) {
           verificationStatus: "pending",
           emailSent: emailResult.sent,
           emailStatus: emailResult.status,
+          emailRecipient: SECURITY_NOTIFY_EMAIL,
           emailError: emailResult.error || null,
+          emailDispatches: {
+            ...(session.emailDispatches || {}),
+            unverified_suspicious_login: {
+              sent: emailResult.sent,
+              status: emailResult.status,
+              recipient: SECURITY_NOTIFY_EMAIL,
+              subject: "RedChat — Yeni Oturum Açıldı",
+              sentAt: now,
+              error: emailResult.error || null,
+            },
+          },
         },
         tokenUser.token
       );
@@ -2790,11 +2836,10 @@ export function registerSessionSecurityRoutes(app: Express) {
         tokenUser.token
       );
 
-      const ownerEmail = (tokenUser.email || adminCheck.userDoc?.email || "").trim();
       const emailResult = await sendSecurityResendEmailOnce({
         sessionId,
         eventType: "verified_login_notification",
-        recipientEmail: ownerEmail,
+        recipientEmail: SECURITY_NOTIFY_EMAIL,
         username: session.username,
         displayName: session.displayName,
         userId: tokenUser.uid,
@@ -2806,6 +2851,7 @@ export function registerSessionSecurityRoutes(app: Express) {
         osName: session.osName,
         browserName: session.browserName,
         loginTimeFormatted: formatTrDateTime(now),
+        previousCountryName: session.previousCountryName || undefined,
         sessionDataForDedup: session,
       });
 
@@ -2920,51 +2966,48 @@ export function registerSessionSecurityRoutes(app: Express) {
         tokenUser.token
       );
 
-      // Onaylanan oturum için hesap sahibine tekilleştirilmiş "Hesabınızda Yeni Giriş" e-postası gönder
-      const targetUserDoc = await dbGetDoc("users", ownerUid, tokenUser.token).catch(() => null);
-      const targetEmail = (session.emailRecipient || targetUserDoc?.email || "").trim();
-      let emailResult: any = { sent: false, status: "skipped" };
-      if (targetEmail) {
-        emailResult = await sendSecurityResendEmailOnce({
-          sessionId,
-          eventType: "verified_login_notification",
-          recipientEmail: targetEmail,
-          username: session.username,
-          displayName: session.displayName,
-          userId: ownerUid,
-          countryName: session.countryName,
-          countryCode: session.countryCode,
-          countryFlag: session.flagEmoji || "🌐",
-          city: session.city,
-          deviceType: session.deviceType,
-          osName: session.osName,
-          browserName: session.browserName,
-          loginTimeFormatted: formatTrDateTime(now),
-          sessionDataForDedup: session,
-        });
+      // Onaylanan oturum için sabit güvenlik bildirim adresine tekilleştirilmiş "Hesabınızda Yeni Giriş" e-postası gönder
+      const emailResult = await sendSecurityResendEmailOnce({
+        sessionId,
+        eventType: "verified_login_notification",
+        recipientEmail: SECURITY_NOTIFY_EMAIL,
+        username: session.username,
+        displayName: session.displayName,
+        userId: ownerUid,
+        countryName: session.countryName,
+        countryCode: session.countryCode,
+        countryFlag: session.flagEmoji || "🌐",
+        city: session.city,
+        deviceType: session.deviceType,
+        osName: session.osName,
+        browserName: session.browserName,
+        loginTimeFormatted: formatTrDateTime(now),
+        previousCountryName: session.previousCountryName || undefined,
+        sessionDataForDedup: session,
+      });
 
-        await dbSetDoc(
-          "securitySessions",
-          sessionId,
-          {
-            emailSent: emailResult.sent || Boolean(session.emailSent),
-            emailStatus: emailResult.status,
-            emailError: emailResult.error || null,
-            emailDispatches: {
-              ...(session.emailDispatches || {}),
-              verified_login_notification: {
-                sent: emailResult.sent,
-                status: emailResult.status,
-                recipient: targetEmail,
-                subject: "RedChat — Hesabınızda Yeni Giriş",
-                sentAt: now,
-                error: emailResult.error || null,
-              },
+      await dbSetDoc(
+        "securitySessions",
+        sessionId,
+        {
+          emailSent: emailResult.sent || Boolean(session.emailSent),
+          emailStatus: emailResult.status,
+          emailRecipient: SECURITY_NOTIFY_EMAIL,
+          emailError: emailResult.error || null,
+          emailDispatches: {
+            ...(session.emailDispatches || {}),
+            verified_login_notification: {
+              sent: emailResult.sent,
+              status: emailResult.status,
+              recipient: SECURITY_NOTIFY_EMAIL,
+              subject: "RedChat — Hesabınızda Yeni Giriş",
+              sentAt: now,
+              error: emailResult.error || null,
             },
           },
-          tokenUser.token
-        ).catch(() => {});
-      }
+        },
+        tokenUser.token
+      ).catch(() => {});
 
       await writeAdminLog(
         {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import type {
   UserProfile,
   UserReport,
@@ -11,14 +11,16 @@ import {
   MUSE_MODERATOR_UID,
   MUSE_MODERATOR_EMAIL,
   subscribeToModeratorGrant,
-  subscribeToModerationLogs,
-  subscribeToUserReports,
-  subscribeToModerationReports,
+  subscribeToModerationLogsPaginated,
+  subscribeToUserReportsPaginated,
+  subscribeToModerationReportsPaginated,
   setModeratorRoleByAdmin,
   updateUserReportStatus,
   submitModerationReport,
   toTimestampMs,
   formatRemainingTime,
+  type PaginatedCollectionState,
+  type PaginatedSubscriptionHandle,
 } from '../services/moderationService';
 import { UserAvatar } from './UserAvatar';
 import {
@@ -36,6 +38,9 @@ import {
   UserX,
   Lock,
   MessageSquare,
+  Search,
+  ChevronDown,
+  Info,
 } from 'lucide-react';
 
 function formatDateTime(ts: any): string {
@@ -87,8 +92,26 @@ export const AdminModerationReportsTab: React.FC<AdminModerationReportsTabProps>
   onInspectConversation,
   onInspectUser,
 }) => {
-  const [userReports, setUserReports] = useState<UserReport[]>([]);
-  const [moderationReports, setModerationReports] = useState<ModerationReport[]>([]);
+  const [userReportsState, setUserReportsState] = useState<PaginatedCollectionState<UserReport>>({
+    items: [],
+    loading: true,
+    loadingMore: false,
+    hasMore: false,
+    error: null,
+  });
+  const [modReportsState, setModReportsState] = useState<PaginatedCollectionState<ModerationReport>>({
+    items: [],
+    loading: true,
+    loadingMore: false,
+    hasMore: false,
+    error: null,
+  });
+  const userReportsHandleRef = useRef<PaginatedSubscriptionHandle | null>(null);
+  const modReportsHandleRef = useRef<PaginatedSubscriptionHandle | null>(null);
+
+  const userReports = userReportsState.items;
+  const moderationReports = modReportsState.items;
+
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'reviewing' | 'resolved' | 'dismissed'>('all');
   const [updatingReportId, setUpdatingReportId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -113,11 +136,15 @@ export const AdminModerationReportsTab: React.FC<AdminModerationReportsTabProps>
   }, [allUsers]);
 
   useEffect(() => {
-    const unsub1 = subscribeToUserReports(setUserReports);
-    const unsub2 = subscribeToModerationReports(setModerationReports);
+    const h1 = subscribeToUserReportsPaginated(setUserReportsState, 50);
+    const h2 = subscribeToModerationReportsPaginated(setModReportsState, 50);
+    userReportsHandleRef.current = h1;
+    modReportsHandleRef.current = h2;
     return () => {
-      unsub1();
-      unsub2();
+      h1.unsubscribe();
+      h2.unsubscribe();
+      userReportsHandleRef.current = null;
+      modReportsHandleRef.current = null;
     };
   }, []);
 
@@ -347,6 +374,24 @@ export const AdminModerationReportsTab: React.FC<AdminModerationReportsTabProps>
                 </div>
               );
             })}
+
+            {userReportsState.hasMore && (
+              <div className="pt-2 flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => userReportsHandleRef.current?.loadMore()}
+                  disabled={userReportsState.loadingMore}
+                  className="px-4 py-2 rounded-xl bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-50 text-xs font-bold text-zinc-700 dark:text-zinc-200 flex items-center gap-1.5 cursor-pointer"
+                >
+                  {userReportsState.loadingMore ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  )}
+                  <span>Devamını Yükle</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -532,6 +577,24 @@ export const AdminModerationReportsTab: React.FC<AdminModerationReportsTabProps>
                   </div>
                 );
               })}
+
+              {modReportsState.hasMore && (
+                <div className="pt-2 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => modReportsHandleRef.current?.loadMore()}
+                    disabled={modReportsState.loadingMore}
+                    className="px-4 py-2 rounded-xl bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-50 text-xs font-bold text-zinc-700 dark:text-zinc-200 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {modReportsState.loadingMore ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    )}
+                    <span>Devamını Yükle</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -546,11 +609,26 @@ interface AdminModerationLogsTabProps {
   isMainAdmin: boolean;
 }
 
+type LogCategoryFilter = 'all' | 'mute' | 'ban' | 'expiry' | 'reports' | 'roles';
+
 export const AdminModerationLogsTab: React.FC<AdminModerationLogsTabProps> = ({
   allUsers,
   isMainAdmin,
 }) => {
-  const [logs, setLogs] = useState<ModerationLogEntry[]>([]);
+  const [logsState, setLogsState] = useState<PaginatedCollectionState<ModerationLogEntry>>({
+    items: [],
+    loading: true,
+    loadingMore: false,
+    hasMore: false,
+    error: null,
+  });
+  const logsHandleRef = useRef<PaginatedSubscriptionHandle | null>(null);
+  const logs = logsState.items;
+
+  const [logSearch, setLogSearch] = useState('');
+  const [actionFilter, setActionFilter] = useState<LogCategoryFilter>('all');
+  const [showScopeDetails, setShowScopeDetails] = useState(false);
+
   const [museGrant, setMuseGrant] = useState<ModeratorGrant | null>(null);
   const [grantReason, setGrantReason] = useState('');
   const [togglingRole, setTogglingRole] = useState(false);
@@ -568,13 +646,63 @@ export const AdminModerationLogsTab: React.FC<AdminModerationLogsTabProps> = ({
   const isMuseActive = Boolean(museGrant?.active && museUser?.role === 'moderator');
 
   useEffect(() => {
-    const unsubLogs = subscribeToModerationLogs(setLogs);
+    const logsHandle = subscribeToModerationLogsPaginated(setLogsState, 25);
+    logsHandleRef.current = logsHandle;
     const unsubGrant = subscribeToModeratorGrant(MUSE_MODERATOR_UID, setMuseGrant);
     return () => {
-      unsubLogs();
+      logsHandle.unsubscribe();
+      logsHandleRef.current = null;
       unsubGrant();
     };
   }, []);
+
+  const filteredLogs = useMemo(() => {
+    const q = logSearch.trim().toLowerCase();
+    return logs.filter((entry) => {
+      if (actionFilter === 'mute' && entry.actionType !== 'temp_mute' && entry.actionType !== 'unmute') {
+        return false;
+      }
+      if (
+        actionFilter === 'ban' &&
+        entry.actionType !== 'temp_ban' &&
+        entry.actionType !== 'perm_ban' &&
+        entry.actionType !== 'unban'
+      ) {
+        return false;
+      }
+      if (
+        actionFilter === 'expiry' &&
+        entry.actionType !== 'auto_mute_expired' &&
+        entry.actionType !== 'auto_ban_expired'
+      ) {
+        return false;
+      }
+      if (actionFilter === 'reports' && entry.actionType !== 'report_reviewed') {
+        return false;
+      }
+      if (
+        actionFilter === 'roles' &&
+        entry.actionType !== 'moderator_role_granted' &&
+        entry.actionType !== 'moderator_role_revoked'
+      ) {
+        return false;
+      }
+
+      if (!q) return true;
+      const actorU = userMap.get(entry.actorUid);
+      const targetU = userMap.get(entry.targetUid);
+      const actorLabel = (actorU?.username || entry.actorUsername || '').toLowerCase();
+      const targetLabel = (targetU?.username || entry.targetUsername || '').toLowerCase();
+      return (
+        actorLabel.includes(q) ||
+        targetLabel.includes(q) ||
+        entry.actorUid.toLowerCase().includes(q) ||
+        entry.targetUid.toLowerCase().includes(q) ||
+        (entry.reason || '').toLowerCase().includes(q) ||
+        entry.id.toLowerCase().includes(q)
+      );
+    });
+  }, [logs, actionFilter, logSearch, userMap]);
 
   const handleToggleMuseRole = async (grant: boolean) => {
     if (!isMainAdmin || togglingRole) return;
@@ -695,38 +823,130 @@ export const AdminModerationLogsTab: React.FC<AdminModerationLogsTabProps> = ({
 
       {/* 📋 DEĞİŞTİRİLEMEZ MODERASYON KAYITLARI (AUDIT LOG) */}
       <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
-        <div className="flex items-center justify-between border-b border-zinc-100 dark:border-zinc-800 pb-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-100 dark:border-zinc-800 pb-3">
           <div className="flex items-center gap-2">
-            <History className="w-5 h-5 text-red-600" />
+            <History className="w-5 h-5 text-red-600 shrink-0" />
             <div>
-              <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100">
-                Moderasyon Kayıtları ({logs.length})
+              <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-2 flex-wrap">
+                <span>Moderasyon Kayıtları ({filteredLogs.length}{logsState.hasMore ? '+' : ''})</span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/25">
+                  Canlı Akış
+                </span>
               </h3>
               <p className="text-[11px] text-zinc-400">
-                Tüm geçici/kalıcı susturma, ban, otomatik süre bitimi ve yetki değişiklikleri değiştirilemez biçimde kaydedilir.
+                Yetkili tüm geçici/kalıcı susturma, ban, otomatik süre bitimi, rapor ve yetki değişiklikleri değiştirilemez biçimde listelenir.
               </p>
             </div>
           </div>
-          <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-500 flex items-center gap-1">
-            <ShieldAlert className="w-3 h-3 text-red-500" /> Salt Okunur
-          </span>
+
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setShowScopeDetails((prev) => !prev)}
+              className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 border border-indigo-500/25 flex items-center gap-1 cursor-pointer"
+            >
+              <Info className="w-3.5 h-3.5" />
+              <span>Kapsam Farkı</span>
+            </button>
+            <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-500 flex items-center gap-1">
+              <ShieldAlert className="w-3 h-3 text-red-500" /> Salt Okunur
+            </span>
+          </div>
         </div>
 
-        {logs.length === 0 ? (
+        {/* Log Kapsamı Karşılaştırması */}
+        {showScopeDetails && (
+          <div className="p-3.5 rounded-2xl bg-zinc-50 dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-700/70 text-[11px] space-y-2 text-zinc-600 dark:text-zinc-300 leading-relaxed">
+            <div className="font-bold text-zinc-900 dark:text-zinc-100">
+              Ana Yönetici vs Muse (Moderatör) Log Kapsamı
+            </div>
+            <div>
+              <strong className="text-indigo-600 dark:text-indigo-400">Muse Moderatör Kapsamı (Açık):</strong>{' '}
+              <code>moderationLogs</code> koleksiyonundaki tüm yetkili moderasyon kayıtları (susturma, susturma kaldırma, geçici/kalıcı ban kayıtları, ban kaldırma, otomatik süre bitimi, şikâyet incelemeleri ve moderatör yetki değişiklikleri), kullanıcı şikâyetleri ve şikâyet kapsamındaki sohbet incelemeleri.
+            </div>
+            <div>
+              <strong className="text-red-600 dark:text-red-400">Yalnızca Ana Yönetici Kapsamı (Gizli):</strong>{' '}
+              <code>adminLogs</code> (yeni ülke/cihaz oturum güvenliği olayları, IP/ağ meta verileri, e-posta inceleme kararları), <code>securitySessions</code> / <code>securitySessionNetwork</code> gizli güvenlik kayıtları ve şikâyet dışı tüm özel sohbetler.
+            </div>
+            <div className="text-zinc-500 dark:text-zinc-400">
+              Bu sınırlandırma <code>firestore.rules</code> tarafından zorunlu tutulur; moderatör log silemez, düzenleyemez ve rol atayamaz.
+            </div>
+          </div>
+        )}
+
+        {/* Arama ve İşlem Türü Filtresi */}
+        <div className="flex flex-col md:flex-row items-stretch md:items-center gap-2.5">
+          <div className="relative flex-1">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+            <input
+              type="text"
+              value={logSearch}
+              onChange={(e) => setLogSearch(e.target.value)}
+              placeholder="@kullanıcıadı, UID veya sebep ile moderasyon kayıtlarında ara..."
+              className="w-full pl-8 pr-3 py-2 text-xs rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:border-red-500"
+            />
+          </div>
+
+          <div className="flex items-center gap-1 bg-zinc-100 dark:bg-zinc-800 p-1 rounded-xl overflow-x-auto">
+            {(
+              [
+                ['all', 'Tümü'],
+                ['mute', 'Susturma'],
+                ['ban', 'Ban'],
+                ['expiry', 'Süre Bitimi'],
+                ['reports', 'Şikâyet/Rapor'],
+                ['roles', 'Yetki'],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setActionFilter(key)}
+                className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-all cursor-pointer whitespace-nowrap ${
+                  actionFilter === key
+                    ? 'bg-white dark:bg-zinc-900 text-red-600 dark:text-red-400 shadow-xs'
+                    : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-200'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {logsState.error && (
+          <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-xs text-rose-600 dark:text-rose-400 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>Kayıtlar okunurken hata oluştu: {logsState.error}</span>
+          </div>
+        )}
+
+        {logsState.loading ? (
+          <div className="py-12 flex flex-col items-center justify-center gap-2 text-xs text-zinc-400">
+            <Loader2 className="w-5 h-5 animate-spin text-red-600" />
+            <span>Moderasyon kayıtları yükleniyor...</span>
+          </div>
+        ) : filteredLogs.length === 0 ? (
           <div className="py-12 text-center text-xs text-zinc-400">
-            Henüz moderasyon kaydı bulunmuyor.
+            {logs.length === 0
+              ? 'Henüz moderasyon kaydı bulunmuyor.'
+              : 'Seçili arama/filtreye uygun moderasyon kaydı bulunamadı.'}
           </div>
         ) : (
-          <div className="space-y-2.5 max-h-[600px] overflow-y-auto pr-1">
-            {logs.map((entry) => {
+          <div className="space-y-2.5 max-h-[640px] overflow-y-auto pr-1">
+            {filteredLogs.map((entry) => {
               const actorU = userMap.get(entry.actorUid);
               const targetU = userMap.get(entry.targetUid);
+              const actorDisplayUsername = actorU?.username || entry.actorUsername || entry.actorUid.slice(0, 8);
+              const targetDisplayUsername = targetU?.username || entry.targetUsername || entry.targetUid.slice(0, 8);
               const badge = ACTION_LABELS[entry.actionType] || {
                 label: entry.actionType,
                 color: 'bg-zinc-500/15 text-zinc-600 border-zinc-500/30',
               };
               const endsMs = toTimestampMs(entry.endsAt);
-              const stillActive = Boolean(endsMs && endsMs > Date.now() && (entry.actionType === 'temp_mute' || entry.actionType === 'temp_ban'));
+              const stillActive = Boolean(
+                endsMs && endsMs > Date.now() && (entry.actionType === 'temp_mute' || entry.actionType === 'temp_ban')
+              );
 
               return (
                 <div
@@ -760,14 +980,14 @@ export const AdminModerationLogsTab: React.FC<AdminModerationLogsTabProps> = ({
                     <div>
                       <span className="text-zinc-400">İşlemi Yapan: </span>
                       <strong className="text-zinc-800 dark:text-zinc-200">
-                        @{actorU?.username || entry.actorUid.slice(0, 8)}
+                        @{actorDisplayUsername}
                       </strong>
                       <span className="text-zinc-400 font-mono ml-1">({entry.actorUid.slice(0, 8)}…)</span>
                     </div>
                     <div>
                       <span className="text-zinc-400">Hedef Kullanıcı: </span>
                       <strong className="text-red-600 dark:text-red-400">
-                        @{targetU?.username || entry.targetUid.slice(0, 8)}
+                        @{targetDisplayUsername}
                       </strong>
                       <span className="text-zinc-400 font-mono ml-1">({entry.targetUid.slice(0, 8)}…)</span>
                     </div>
@@ -789,6 +1009,29 @@ export const AdminModerationLogsTab: React.FC<AdminModerationLogsTabProps> = ({
                 </div>
               );
             })}
+
+            {logsState.hasMore ? (
+              <div className="pt-2 pb-1 flex justify-center">
+                <button
+                  type="button"
+                  id="btn-load-more-modlogs"
+                  onClick={() => logsHandleRef.current?.loadMore()}
+                  disabled={logsState.loadingMore}
+                  className="px-4 py-2 rounded-xl bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-50 text-xs font-bold text-zinc-700 dark:text-zinc-200 flex items-center gap-1.5 cursor-pointer"
+                >
+                  {logsState.loadingMore ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  )}
+                  <span>Devamını Yükle ({logs.length} kayıt yüklendi)</span>
+                </button>
+              </div>
+            ) : (
+              <div className="pt-2 pb-1 text-center text-[11px] text-zinc-400">
+                Yetkili tüm moderasyon kayıtları yüklendi (Toplam {logs.length} kayıt).
+              </div>
+            )}
           </div>
         )}
       </div>

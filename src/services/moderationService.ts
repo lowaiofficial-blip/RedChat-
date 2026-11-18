@@ -5,9 +5,13 @@ import {
   query,
   orderBy,
   limit,
+  getDocs,
+  startAfter,
   setDoc,
   updateDoc,
   serverTimestamp,
+  type QueryDocumentSnapshot,
+  type DocumentData,
 } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { getActiveSessionHeaders } from './sessionSecurityService';
@@ -412,6 +416,174 @@ export function subscribeToModeratorGrant(
       callback(null);
     }
   );
+}
+
+export interface PaginatedCollectionState<T> {
+  items: T[];
+  loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  error: string | null;
+}
+
+export interface PaginatedSubscriptionHandle {
+  unsubscribe: () => void;
+  loadMore: () => Promise<void>;
+}
+
+function createLivePaginatedSubscription<T extends { id: string; createdAt?: any }>(
+  collectionName: string,
+  pageSize: number,
+  onState: (state: PaginatedCollectionState<T>) => void
+): PaginatedSubscriptionHandle {
+  if (!db) {
+    onState({ items: [], loading: false, loadingMore: false, hasMore: false, error: null });
+    return {
+      unsubscribe: () => {},
+      loadMore: async () => {},
+    };
+  }
+
+  let disposed = false;
+  let headItems: T[] = [];
+  let retainedItems: T[] = [];
+  let olderItems: T[] = [];
+  let headLastDoc: QueryDocumentSnapshot<DocumentData> | null = null;
+  let olderCursor: QueryDocumentSnapshot<DocumentData> | null = null;
+  let hasLoadedMoreOnce = false;
+  let loading = true;
+  let loadingMore = false;
+  let hasMore = false;
+  let error: string | null = null;
+
+  const emit = () => {
+    if (disposed) return;
+    const mergedMap = new Map<string, T>();
+    for (const item of headItems) mergedMap.set(item.id, item);
+    for (const item of retainedItems) {
+      if (!mergedMap.has(item.id)) mergedMap.set(item.id, item);
+    }
+    for (const item of olderItems) {
+      if (!mergedMap.has(item.id)) mergedMap.set(item.id, item);
+    }
+
+    const sorted = Array.from(mergedMap.values()).sort((a, b) => {
+      const aMs = toTimestampMs(a.createdAt) ?? 0;
+      const bMs = toTimestampMs(b.createdAt) ?? 0;
+      return bMs - aMs;
+    });
+
+    onState({
+      items: sorted,
+      loading,
+      loadingMore,
+      hasMore,
+      error,
+    });
+  };
+
+  const headQuery = query(
+    collection(db, collectionName),
+    orderBy('createdAt', 'desc'),
+    limit(pageSize)
+  );
+
+  const unsub = onSnapshot(
+    headQuery,
+    (snap) => {
+      headItems = snap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as Omit<T, 'id'>),
+      })) as T[];
+      headLastDoc = snap.docs.length > 0 ? snap.docs[snap.docs.length - 1] : null;
+      if (!hasLoadedMoreOnce) {
+        hasMore = snap.docs.length >= pageSize;
+      }
+      loading = false;
+      error = null;
+      emit();
+    },
+    (err) => {
+      logFirestoreError('list', collectionName, err);
+      loading = false;
+      error = err instanceof Error ? err.message : 'Kayıtlar yüklenemedi.';
+      emit();
+    }
+  );
+
+  const loadMore = async () => {
+    if (disposed || loadingMore || !db) return;
+    const cursor = hasLoadedMoreOnce ? olderCursor : headLastDoc;
+    if (!cursor) {
+      hasMore = false;
+      emit();
+      return;
+    }
+
+    if (!hasLoadedMoreOnce) {
+      retainedItems = [...headItems];
+    }
+
+    loadingMore = true;
+    emit();
+
+    try {
+      const nextQuery = query(
+        collection(db, collectionName),
+        orderBy('createdAt', 'desc'),
+        startAfter(cursor),
+        limit(pageSize)
+      );
+      const snap = await getDocs(nextQuery);
+      const batch = snap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as Omit<T, 'id'>),
+      })) as T[];
+
+      hasLoadedMoreOnce = true;
+      olderItems = [...olderItems, ...batch];
+      if (snap.docs.length > 0) {
+        olderCursor = snap.docs[snap.docs.length - 1];
+      }
+      hasMore = snap.docs.length >= pageSize;
+      error = null;
+    } catch (err) {
+      logFirestoreError('list', collectionName, err);
+      error = err instanceof Error ? err.message : 'Ek kayıtlar yüklenemedi.';
+    } finally {
+      loadingMore = false;
+      emit();
+    }
+  };
+
+  return {
+    unsubscribe: () => {
+      disposed = true;
+      unsub();
+    },
+    loadMore,
+  };
+}
+
+export function subscribeToModerationLogsPaginated(
+  onState: (state: PaginatedCollectionState<ModerationLogEntry>) => void,
+  pageSize: number = 25
+): PaginatedSubscriptionHandle {
+  return createLivePaginatedSubscription<ModerationLogEntry>('moderationLogs', pageSize, onState);
+}
+
+export function subscribeToUserReportsPaginated(
+  onState: (state: PaginatedCollectionState<UserReport>) => void,
+  pageSize: number = 50
+): PaginatedSubscriptionHandle {
+  return createLivePaginatedSubscription<UserReport>('userReports', pageSize, onState);
+}
+
+export function subscribeToModerationReportsPaginated(
+  onState: (state: PaginatedCollectionState<ModerationReport>) => void,
+  pageSize: number = 50
+): PaginatedSubscriptionHandle {
+  return createLivePaginatedSubscription<ModerationReport>('moderationReports', pageSize, onState);
 }
 
 export function subscribeToModerationLogs(

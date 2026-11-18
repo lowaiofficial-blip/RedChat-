@@ -123,7 +123,7 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
     e.preventDefault();
     const cleanCode = otpInput.trim().toUpperCase();
     if (cleanCode.length < 4) {
-      setErrorMsg('Lütfen e-postanıza gönderilen tek kullanımlık doğrulama kodunu girin.');
+      setErrorMsg('Lütfen güvenlik bildirimi ile iletilen tek kullanımlık doğrulama kodunu girin.');
       return;
     }
 
@@ -147,7 +147,7 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
     try {
       const res = await resendSecurityChallenge(session.sessionId);
       if (res.sent) {
-        setResendMessage('Yeni tek kullanımlık doğrulama kodu ve bağlantısı e-postanıza gönderildi.');
+        setResendMessage('Yeni tek kullanımlık doğrulama kodu ve bağlantısı güvenlik e-posta adresine (redchatbusiness@outlook.com) gönderildi.');
       } else {
         setErrorMsg(
           res.error ||
@@ -399,8 +399,8 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
               <div className="p-3 rounded-xl bg-zinc-950/70 border border-zinc-800 text-xs text-zinc-300 flex items-start gap-2.5">
                 <Mail className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                 <span>
-                  Doğrulanmış e-posta adresinize tek kullanımlık doğrulama kodu ve bağlantısı gönderildi.
-                  Karar verebilmek için önce kimliğinizi doğrulayın.
+                  Tek kullanımlık doğrulama kodu ve bağlantısı güvenlik bildirim adresine (<span className="font-mono text-zinc-100">redchatbusiness@outlook.com</span>) gönderildi.
+                  Karar verebilmek için önce doğrulama adımını tamamlayın.
                 </span>
               </div>
             )}

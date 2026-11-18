@@ -258,24 +258,55 @@ async function dbSetDoc(
 async function dbListCollection(
   colPath: string,
   idToken?: string,
-  pageSize = 300
+  pageSize = 300,
+  maxDocs = 1500
 ): Promise<Record<string, any>[]> {
   if (getApps().length > 0) {
-    const snap = await getFirestore().collection(colPath).limit(pageSize).get();
-    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const results: Record<string, any>[] = [];
+    let lastDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+    while (results.length < maxDocs) {
+      let q: FirebaseFirestore.Query = getFirestore()
+        .collection(colPath)
+        .limit(Math.min(pageSize, maxDocs - results.length));
+      if (lastDoc) {
+        q = q.startAfter(lastDoc);
+      }
+      const snap = await q.get();
+      if (snap.empty) break;
+      for (const d of snap.docs) {
+        results.push({ id: d.id, ...d.data() });
+      }
+      if (snap.docs.length < pageSize) break;
+      lastDoc = snap.docs[snap.docs.length - 1];
+    }
+    return results;
   }
 
-  const resp = await fetch(`${FIRESTORE_BASE}/${colPath}?pageSize=${pageSize}`, {
-    headers: idToken ? { Authorization: `Bearer ${idToken}` } : {},
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`Firestore REST list failed (${resp.status}): ${errText}`);
+  const results: Record<string, any>[] = [];
+  let pageToken: string | undefined = undefined;
+  while (results.length < maxDocs) {
+    const remaining = Math.min(pageSize, maxDocs - results.length);
+    const qs = new URLSearchParams({ pageSize: String(remaining) });
+    if (pageToken) qs.set("pageToken", pageToken);
+
+    const resp = await fetch(`${FIRESTORE_BASE}/${colPath}?${qs.toString()}`, {
+      headers: idToken ? { Authorization: `Bearer ${idToken}` } : {},
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`Firestore REST list failed (${resp.status}): ${errText}`);
+    }
+    const json: any = await resp.json();
+    const docs = Array.isArray(json.documents) ? json.documents : [];
+    for (const raw of docs) {
+      const parsed = fromRestDoc(raw);
+      if (parsed) results.push(parsed);
+    }
+    if (!json.nextPageToken || docs.length === 0) break;
+    pageToken = String(json.nextPageToken);
   }
-  const json: any = await resp.json();
-  const docs = Array.isArray(json.documents) ? json.documents : [];
-  return docs.map(fromRestDoc).filter(Boolean) as Record<string, any>[];
+  return results;
 }
 
 async function dbListConversationMessages(
