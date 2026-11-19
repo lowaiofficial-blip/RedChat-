@@ -339,6 +339,7 @@ export function subscribeToModeratorScopedConversationTriggers(
     );
   };
 
+  const unsubs = [
     attachTriggerQuery(
       query(collection(db, 'conversations'), orderBy('updatedAt', 'desc'), limit(30)),
       'conversations_updatedAt_trigger'
