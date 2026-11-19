@@ -10,12 +10,15 @@ import {
   where,
   orderBy,
   limit,
+  startAfter,
   onSnapshot,
   serverTimestamp,
   increment,
   runTransaction,
   writeBatch,
   type Unsubscribe,
+  type QueryDocumentSnapshot,
+  type DocumentData,
 } from 'firebase/firestore';
 import { db } from './firebase';
 import type {
@@ -580,6 +583,116 @@ export async function fetchChannelPosts(channelId: string): Promise<ChannelPost[
   }
 }
 
+export interface LatestChannelPostsSnapshot {
+  posts: ChannelPost[];
+  oldestDoc: QueryDocumentSnapshot<DocumentData> | null;
+  hasMore: boolean;
+}
+
+/**
+ * 📝 Kanalın En Yeni N (varsayılan 30) Gönderisini Gerçek Zamanlı Dinle
+ */
+export function subscribeToLatestChannelPosts(
+  channelId: string,
+  pageSize: number = 30,
+  callback: (payload: LatestChannelPostsSnapshot) => void
+): Unsubscribe {
+  if (!db || !channelId) {
+    callback({ posts: [], oldestDoc: null, hasMore: false });
+    return () => {};
+  }
+
+  const q = query(
+    collection(db, 'channels', channelId, 'posts'),
+    orderBy('createdAt', 'desc'),
+    limit(pageSize + 1)
+  );
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const hasMore = snapshot.docs.length > pageSize;
+      const sliceDocs = snapshot.docs.slice(0, pageSize);
+      const oldestDoc = sliceDocs.length > 0 ? sliceDocs[sliceDocs.length - 1] : null;
+      const posts: ChannelPost[] = sliceDocs
+        .map((docSnap) => ({
+          ...(docSnap.data({ serverTimestamps: 'estimate' }) as ChannelPost),
+          id: docSnap.id,
+          channelId,
+        }))
+        .reverse();
+
+      if (channelId && db) {
+        const channelRef = doc(db, 'channels', channelId);
+        if (posts.length > 0) {
+          const latestPost = posts[posts.length - 1];
+          const latestHasVideo = Boolean(latestPost.videoUrl);
+          const latestHasImage = Boolean(latestPost.imageUrl);
+          const latestText = latestPost.text || (latestHasVideo ? 'Video' : latestHasImage ? 'Fotoğraf' : null);
+          const latestTimestamp = latestPost.createdAt || null;
+          updateDoc(channelRef, {
+            lastPostText: latestText,
+            lastPostHasVideo: latestHasVideo,
+            lastPostVideoUrl: latestPost.videoUrl || null,
+            lastPostHasImage: latestHasImage,
+            lastPostImageUrl: latestPost.imageUrl || null,
+            lastPostTimestamp: latestTimestamp,
+          }).catch(() => {});
+        } else {
+          updateDoc(channelRef, {
+            postCount: 0,
+            lastPostText: null,
+            lastPostHasVideo: false,
+            lastPostVideoUrl: null,
+            lastPostHasImage: false,
+            lastPostImageUrl: null,
+            lastPostTimestamp: null,
+          }).catch(() => {});
+        }
+      }
+
+      callback({ posts, oldestDoc, hasMore });
+    },
+    (error) => {
+      console.warn('Kanal gönderileri dinlenirken hata:', error);
+      callback({ posts: [], oldestDoc: null, hasMore: false });
+    }
+  );
+}
+
+/**
+ * 📝 Kanal için İmleçten Daha Eski En Fazla pageSize (30) Gönderiyi Getir
+ */
+export async function fetchOlderChannelPosts(
+  channelId: string,
+  cursorDoc: QueryDocumentSnapshot<DocumentData>,
+  pageSize: number = 30
+): Promise<LatestChannelPostsSnapshot> {
+  if (!db || !channelId || !cursorDoc) {
+    return { posts: [], oldestDoc: null, hasMore: false };
+  }
+
+  const q = query(
+    collection(db, 'channels', channelId, 'posts'),
+    orderBy('createdAt', 'desc'),
+    startAfter(cursorDoc),
+    limit(pageSize + 1)
+  );
+  const snapshot = await getDocs(q);
+  const hasMore = snapshot.docs.length > pageSize;
+  const sliceDocs = snapshot.docs.slice(0, pageSize);
+  const oldestDoc = sliceDocs.length > 0 ? sliceDocs[sliceDocs.length - 1] : null;
+  const posts: ChannelPost[] = sliceDocs
+    .map((docSnap) => ({
+      ...(docSnap.data({ serverTimestamps: 'estimate' }) as ChannelPost),
+      id: docSnap.id,
+      channelId,
+    }))
+    .reverse();
+
+  return { posts, oldestDoc, hasMore };
+}
+
 /**
  * 📝 Kanal Gönderilerini Gerçek Zamanlı Dinle (Eski üstte, Yeni altta - Mesajlaşma Sırası)
  */
@@ -797,7 +910,11 @@ export async function createChannelPost(
 /**
  * 🗑️ Kanal Gönderisini Sil (Kurucu veya Admin)
  */
-export async function deleteChannelPost(channelId: string, postId: string): Promise<void> {
+export async function deleteChannelPost(
+  channelId: string,
+  postId: string,
+  actor?: UserProfile | null
+): Promise<void> {
   if (!db || !channelId || !postId) return;
 
   // 1. Gönderi dokümanını sil
@@ -834,6 +951,18 @@ export async function deleteChannelPost(channelId: string, postId: string): Prom
     });
   } catch (err) {
     console.warn('Gönderi silindikten sonra kanal son mesajı güncellenemedi:', err);
+  }
+
+  if (actor && (actor.role === 'admin' || actor.role === 'moderator')) {
+    try {
+      const { recordModerationAuditLogClient } = await import('./adminService');
+      await recordModerationAuditLogClient({
+        actor,
+        targetUid: channelId,
+        actionType: 'post_deleted',
+        reason: `Kanal gönderisi silindi (Gönderi: ${postId})`,
+      });
+    } catch {}
   }
 }
 
@@ -900,7 +1029,12 @@ export async function updateChannelInfo(
 /**
  * 🗑️ Kanalı Sil (Kurucu veya Admin)
  */
-export async function deleteChannel(channelId: string, ownerUid?: string): Promise<void> {
+export async function deleteChannel(
+  channelId: string,
+  ownerUid?: string,
+  actor?: UserProfile | null,
+  channelName?: string
+): Promise<void> {
   if (!db || !channelId) return;
 
   // 1. Ana kanal dokümanını sil
@@ -928,6 +1062,19 @@ export async function deleteChannel(channelId: string, ownerUid?: string): Promi
       deleteDoc(d.ref).catch(() => {});
     });
   } catch {}
+
+  if (actor && (actor.role === 'admin' || actor.role === 'moderator')) {
+    try {
+      const { recordModerationAuditLogClient } = await import('./adminService');
+      await recordModerationAuditLogClient({
+        actor,
+        targetUid: channelId,
+        targetUsername: channelName || channelId,
+        actionType: 'channel_deleted',
+        reason: `Kanal yönetici tarafından silindi: ${channelName || channelId}`,
+      });
+    } catch {}
+  }
 }
 
 // ==========================================
@@ -939,7 +1086,9 @@ export async function deleteChannel(channelId: string, ownerUid?: string): Promi
  */
 export async function setChannelVerification(
   channelId: string,
-  isVerified: boolean
+  isVerified: boolean,
+  actor?: UserProfile | null,
+  channelName?: string
 ): Promise<void> {
   if (!db || !channelId) return;
 
@@ -947,6 +1096,21 @@ export async function setChannelVerification(
     isVerified,
     updatedAt: serverTimestamp(),
   });
+
+  if (actor && (actor.role === 'admin' || actor.role === 'moderator')) {
+    try {
+      const { recordModerationAuditLogClient } = await import('./adminService');
+      await recordModerationAuditLogClient({
+        actor,
+        targetUid: channelId,
+        targetUsername: channelName || channelId,
+        actionType: isVerified ? 'verification_approved' : 'verification_rejected',
+        reason: isVerified
+          ? `Kanala mavi tik verildi: ${channelName || channelId}`
+          : `Kanalın mavi tiki kaldırıldı: ${channelName || channelId}`,
+      });
+    } catch {}
+  }
 }
 
 /**
@@ -954,7 +1118,9 @@ export async function setChannelVerification(
  */
 export async function setChannelDisabled(
   channelId: string,
-  disabled: boolean
+  disabled: boolean,
+  actor?: UserProfile | null,
+  channelName?: string
 ): Promise<void> {
   if (!db || !channelId) return;
 
@@ -962,6 +1128,21 @@ export async function setChannelDisabled(
     disabled,
     updatedAt: serverTimestamp(),
   });
+
+  if (actor && (actor.role === 'admin' || actor.role === 'moderator')) {
+    try {
+      const { recordModerationAuditLogClient } = await import('./adminService');
+      await recordModerationAuditLogClient({
+        actor,
+        targetUid: channelId,
+        targetUsername: channelName || channelId,
+        actionType: disabled ? 'channel_disabled' : 'channel_enabled',
+        reason: disabled
+          ? `Kanal devre dışı bırakıldı: ${channelName || channelId}`
+          : `Kanal yeniden etkinleştirildi: ${channelName || channelId}`,
+      });
+    } catch {}
+  }
 }
 
 /**

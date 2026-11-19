@@ -255,7 +255,7 @@ export const ChannelManageModal: React.FC<ChannelManageModalProps> = ({
     try {
       setDeleting(true);
       setError(null);
-      await deleteChannel(channel.id, currentUser.uid);
+      await deleteChannel(channel.id, currentUser.uid, currentUser, channel.name);
       onChannelDeleted();
     } catch (err: any) {
       setError(err?.message || 'Kanal silinirken hata oluştu.');

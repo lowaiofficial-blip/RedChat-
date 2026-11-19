@@ -15,7 +15,10 @@ import {
   getDocs,
   increment,
   limit,
+  startAfter,
   deleteField,
+  type QueryDocumentSnapshot,
+  type DocumentData,
 } from 'firebase/firestore';
 import { db } from './firebase';
 import type { Conversation, ChatMessage, UserProfile, ChatReplyReference, GroupRole } from '../types';
@@ -789,6 +792,82 @@ export function subscribeToConversations(
       console.error('Conversations onSnapshot error:', error);
     }
   );
+}
+
+export interface LatestMessagesSnapshot {
+  messages: ChatMessage[];
+  oldestDoc: QueryDocumentSnapshot<DocumentData> | null;
+  hasMore: boolean;
+}
+
+/**
+ * Seçilen sohbetin en yeni N (varsayılan 30) mesajını gerçek zamanlı dinler.
+ * Sayfalama için en eski belgenin imlecini ve daha eski mesaj olup olmadığını döner.
+ */
+export function subscribeToLatestMessages(
+  conversationId: string,
+  pageSize: number = 30,
+  callback: (payload: LatestMessagesSnapshot) => void
+): () => void {
+  if (!db || !conversationId) {
+    callback({ messages: [], oldestDoc: null, hasMore: false });
+    return () => {};
+  }
+
+  const messagesCol = collection(db, 'conversations', conversationId, 'messages');
+  const q = query(messagesCol, orderBy('createdAt', 'desc'), limit(pageSize + 1));
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const hasMore = snapshot.docs.length > pageSize;
+      const sliceDocs = snapshot.docs.slice(0, pageSize);
+      const oldestDoc = sliceDocs.length > 0 ? sliceDocs[sliceDocs.length - 1] : null;
+      const messages: ChatMessage[] = sliceDocs
+        .map((docSnap) => ({
+          id: docSnap.id,
+          ...(docSnap.data({ serverTimestamps: 'estimate' }) as Omit<ChatMessage, 'id'>),
+        }))
+        .reverse();
+      callback({ messages, oldestDoc, hasMore });
+    },
+    (error) => {
+      console.error('Latest messages onSnapshot error:', error);
+    }
+  );
+}
+
+/**
+ * Verilen imleçten (oldestDoc) daha eski en fazla pageSize (varsayılan 30) mesajı getirir.
+ */
+export async function fetchOlderMessages(
+  conversationId: string,
+  cursorDoc: QueryDocumentSnapshot<DocumentData>,
+  pageSize: number = 30
+): Promise<LatestMessagesSnapshot> {
+  if (!db || !conversationId || !cursorDoc) {
+    return { messages: [], oldestDoc: null, hasMore: false };
+  }
+
+  const messagesCol = collection(db, 'conversations', conversationId, 'messages');
+  const q = query(
+    messagesCol,
+    orderBy('createdAt', 'desc'),
+    startAfter(cursorDoc),
+    limit(pageSize + 1)
+  );
+  const snapshot = await getDocs(q);
+  const hasMore = snapshot.docs.length > pageSize;
+  const sliceDocs = snapshot.docs.slice(0, pageSize);
+  const oldestDoc = sliceDocs.length > 0 ? sliceDocs[sliceDocs.length - 1] : null;
+  const messages: ChatMessage[] = sliceDocs
+    .map((docSnap) => ({
+      id: docSnap.id,
+      ...(docSnap.data({ serverTimestamps: 'estimate' }) as Omit<ChatMessage, 'id'>),
+    }))
+    .reverse();
+
+  return { messages, oldestDoc, hasMore };
 }
 
 /**

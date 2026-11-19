@@ -16,7 +16,7 @@ import {
   orderBy,
 } from 'firebase/firestore';
 import { auth, db } from './firebase';
-import type { AppSettings, UserProfile, Conversation, ChatMessage, BannedDevice } from '../types';
+import type { AppSettings, UserProfile, Conversation, ChatMessage, BannedDevice, ModerationActionType } from '../types';
 import { getDeterministicConversationId } from './chatService';
 import { REDCHAT_AI_UID } from './aiService';
 
@@ -199,6 +199,104 @@ export async function setUserVerificationStatus(
     isVerified,
     updatedAt: serverTimestamp(),
   });
+
+  await recordModerationAuditLogClient({
+    actor: adminUser,
+    targetUid,
+    actionType: isVerified ? 'user_verified' : 'user_unverified',
+    reason: isVerified
+      ? 'Yönetici tarafından kullanıcıya mavi tik verildi'
+      : 'Yönetici tarafından kullanıcının mavi tiki kaldırıldı',
+  });
+}
+
+function sanitizeModerationLogText(raw: string): string {
+  return (raw || '')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[gizli-ağ]')
+    .replace(/\bHWID[:\s-]*[A-Za-z0-9_-]{4,}\b/gi, '[gizli-cihaz]')
+    .trim();
+}
+
+/**
+ * Moderasyon işlemlerini hem moderationLogs hem de adminLogs koleksiyonlarına değiştirilemez denetim kaydı olarak yazar.
+ */
+export async function recordModerationAuditLogClient(params: {
+  actor?: UserProfile | null;
+  targetUid: string;
+  targetUsername?: string | null;
+  actionType: ModerationActionType;
+  reason: string;
+  durationMinutes?: number | null;
+  endsAt?: any;
+}) {
+  if (!db) return;
+  const now = serverTimestamp();
+  const logId = `modlog_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+  const actorUid = params.actor?.uid || auth?.currentUser?.uid || 'system';
+  const actorEmail = params.actor?.email || auth?.currentUser?.email || null;
+  const actorUsername =
+    params.actor?.username ||
+    params.actor?.displayName ||
+    auth?.currentUser?.displayName ||
+    auth?.currentUser?.email ||
+    'Admin';
+  const actorRole: 'admin' | 'moderator' | 'system' = params.actor
+    ? isUserAdmin(params.actor)
+      ? 'admin'
+      : 'moderator'
+    : actorEmail && ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(actorEmail.toLowerCase())
+    ? 'admin'
+    : 'moderator';
+
+  const safeReason = sanitizeModerationLogText(params.reason) || 'Moderasyon işlemi';
+
+  try {
+    const modRef = doc(db, 'moderationLogs', logId);
+    await setDoc(modRef, {
+      id: logId,
+      actorUid,
+      actorEmail,
+      actorUsername,
+      actorRole,
+      targetUid: params.targetUid,
+      targetUsername: params.targetUsername ?? null,
+      actionType: params.actionType,
+      reason: safeReason,
+      startsAt: now,
+      endsAt: params.endsAt || null,
+      durationMinutes: params.durationMinutes ?? null,
+      reportId: null,
+      createdAt: now,
+    });
+  } catch (err) {
+    console.warn('[AdminService] moderationLogs write failed:', err);
+  }
+
+  try {
+    const adminLogId = `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const adminLogRef = doc(db, 'adminLogs', adminLogId);
+    await setDoc(adminLogRef, {
+      id: adminLogId,
+      category: 'moderation',
+      action: params.actionType,
+      severity: params.actionType.includes('ban') ? 'critical' : params.actionType.includes('mute') ? 'warning' : 'info',
+      actorUid,
+      actorEmail,
+      actorName: actorUsername,
+      targetUid: params.targetUid,
+      targetUsername: params.targetUsername ?? null,
+      sessionId: null,
+      details: `[${actorRole.toUpperCase()}] @${params.targetUsername || params.targetUid} -> ${params.actionType}: ${safeReason}`,
+      metadata: {
+        actionType: params.actionType,
+        durationMinutes: params.durationMinutes ?? null,
+      },
+      createdAt: now,
+    });
+  } catch (err) {
+    console.warn('[AdminService] adminLogs write failed:', err);
+  }
 }
 
 /**
@@ -229,6 +327,13 @@ export async function banUser(
     },
     { merge: true }
   );
+
+  await recordModerationAuditLogClient({
+    actor: adminUser,
+    targetUid,
+    actionType: 'perm_ban',
+    reason: reason.trim(),
+  });
 }
 
 /**
@@ -258,6 +363,13 @@ export async function unbanUser(
     },
     { merge: true }
   );
+
+  await recordModerationAuditLogClient({
+    actor: adminUser,
+    targetUid,
+    actionType: 'unban',
+    reason: 'Admin tarafından ban kaldırıldı',
+  });
 }
 
 /**
@@ -291,6 +403,15 @@ export async function setUserEmailInReview(
   }
 
   await setDoc(userDocRef, updateData, { merge: true });
+
+  await recordModerationAuditLogClient({
+    actor: adminUser,
+    targetUid,
+    actionType: isInReview ? 'email_in_review' : 'email_review_released',
+    reason: isInReview
+      ? 'Yönetici tarafından şüpheli e-posta incelemesine alındı'
+      : 'Yönetici tarafından e-posta incelemesi kaldırıldı',
+  });
 }
 
 
@@ -315,6 +436,13 @@ export async function muteUser(
     mutedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
+
+  await recordModerationAuditLogClient({
+    actor: adminUser,
+    targetUid,
+    actionType: 'perm_mute',
+    reason: reason.trim(),
+  });
 }
 
 /**
@@ -338,6 +466,13 @@ export async function unmuteUser(
     muteExpiresAt: null,
     mutedByUid: null,
     updatedAt: serverTimestamp(),
+  });
+
+  await recordModerationAuditLogClient({
+    actor: adminUser,
+    targetUid,
+    actionType: 'unmute',
+    reason: 'Admin tarafından susturma kaldırıldı',
   });
 }
 
@@ -406,6 +541,14 @@ export async function banDeviceAndIp(
     }
   }
 
+  await recordModerationAuditLogClient({
+    actor: adminUser,
+    targetUid: params.targetUid || `device_${docRef.id}`,
+    targetUsername: params.targetUsername || params.targetDisplayName || null,
+    actionType: 'perm_ban',
+    reason: sanitizeModerationLogText(banRecord.reason) || 'Kalıcı cihaz/hesap erişim engeli',
+  });
+
   return docRef.id;
 }
 
@@ -445,6 +588,13 @@ export async function unbanDeviceAndIp(
       console.warn('Hedef kullanıcının hesabı güncellenemedi:', err);
     }
   }
+
+  await recordModerationAuditLogClient({
+    actor: adminUser,
+    targetUid: targetUid || `device_${banId}`,
+    actionType: 'unban',
+    reason: 'Admin tarafından cihaz/hesap engeli kaldırıldı',
+  });
 }
 
 /**

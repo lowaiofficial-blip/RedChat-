@@ -1169,7 +1169,7 @@ async function sendSecurityResendEmailOnce(params: SecurityEmailDispatchParams):
           ⚠️ Şüpheli Oturum Bildirimi — Oturum Kısıtlı
         </div>
         <p style="margin: 0; font-size: 13px; color: #d4d4d8; line-height: 1.5;">
-          Hesaba daha önce görülmemiş bir cihaz ve ülkeden giriş denemesi tespit edildi.
+          Hesaba daha önce doğrulanmamış veya tanınmayan bir cihazdan giriş denemesi tespit edildi.
           Güvenlik doğrulaması tamamlanana kadar sohbet ve hassas işlemler kapalı tutulmaktadır.
         </p>
       </div>
@@ -1752,8 +1752,9 @@ export function registerSessionSecurityRoutes(app: Express) {
         matchesSignedCookie || matchesServerSignature || legacyCompatMatch;
       const isNewDevice = !isKnownTrustedDevice;
 
-      // KRİTİK KURAL: Şüpheli giriş YALNIZCA yeni cihaz VE yeni ülke birlikteyse tetiklenir!
-      const shouldTriggerCheck = hasBaseline && isNewCountry && isNewDevice;
+      // KRİTİK KURAL: Şüpheli giriş doğrulaması yeni/tanınmayan cihaz tespit edildiğinde tetiklenir.
+      // Tanınan (kayıtlı çerez veya sunucu imzası eşleşen) cihazlarda yeni ülke olsa dahi e-posta gönderilmez.
+      const shouldTriggerCheck = hasBaseline && isNewDevice;
 
       const sessionId = `sess_${crypto.randomBytes(12).toString("hex")}`;
       const sessionProof = buildSessionProof(sessionId, tokenUser.uid, attestedDeviceId);
@@ -1824,7 +1825,7 @@ export function registerSessionSecurityRoutes(app: Express) {
         updatedAt: now,
       };
 
-      // İlk baseline veya bilinen ülkeden yeni cihaz -> güvenilen cihaza ekle
+      // İlk baseline veya tanınan cihazla yeni ülkeden giriş -> profil bilgisini güvenli biçimde güncelle
       if (!hasBaseline) {
         await dbSetDoc(
           "userSecurityProfiles",
@@ -1841,20 +1842,22 @@ export function registerSessionSecurityRoutes(app: Express) {
           },
           tokenUser.token
         );
-      } else if (!shouldTriggerCheck && isNewDevice && !isNewCountry) {
-        const nextDevices = Array.from(new Set([...knownDeviceIds, attestedDeviceId])).slice(-25);
-        const nextSigs = Array.from(new Set([...knownDeviceSignatures, deviceSignature])).slice(-25);
+      } else if (!shouldTriggerCheck && hasBaseline && isNewCountry && detectedCode !== "UNKNOWN") {
+        const nextCountries = Array.from(new Set([...knownCountryCodes, detectedCode])).slice(-30);
         await dbSetDoc(
           "userSecurityProfiles",
           tokenUser.uid,
           {
             uid: tokenUser.uid,
-            knownDeviceIds: nextDevices,
-            knownDeviceSignatures: nextSigs,
+            knownCountryCodes: nextCountries,
+            lastKnownCountryCode: detectedCode,
+            lastKnownCountryName: geo.countryName,
             updatedAt: now,
           },
           tokenUser.token
-        );
+        ).catch((err) => {
+          console.warn("[Security Register] knownCountryCodes update skipped:", err?.message || err);
+        });
       }
 
       let emailResult: {
@@ -1947,7 +1950,7 @@ export function registerSessionSecurityRoutes(app: Express) {
         await writeAdminLog(
           {
             category: "security_session",
-            action: "new_country_detected",
+            action: isNewCountry ? "new_country_detected" : "new_device_detected",
             severity: "warning",
             actorUid: tokenUser.uid,
             actorEmail: ownerVerifiedEmail || tokenUser.email,
@@ -1955,52 +1958,22 @@ export function registerSessionSecurityRoutes(app: Express) {
             targetUid: tokenUser.uid,
             targetUsername: username,
             sessionId,
-            details: `Yeni cihaz ve yeni ülkeden giriş algılandı: ${geo.countryName} (${geo.countryCode}). Oturum 'pending_verification' durumuna alındı.`,
+            details: isNewCountry
+              ? `Yeni cihaz ve yeni ülkeden giriş algılandı: ${geo.countryName} (${geo.countryCode}). Oturum 'pending_verification' durumuna alındı.`
+              : `Yeni/tanınmayan cihazdan giriş algılandı: ${geo.countryName} (${geo.countryCode}). Oturum 'pending_verification' durumuna alındı.`,
             metadata: {
               countryCode: geo.countryCode,
               countryName: geo.countryName,
               city: geo.city || null,
               previousCountryName,
+              isNewCountry,
+              isNewDevice,
               emailStatus: emailResult.status,
               emailRecipient: SECURITY_NOTIFY_EMAIL,
             },
           },
           tokenUser.token
         );
-      } else if (isFreshLogin && hasBaseline) {
-        // Yalnızca gerçek taze normal doğrulanmış girişte (reload değil!) "Hesabınızda Yeni Giriş" e-postası gönder
-        emailResult = await sendSecurityResendEmailOnce({
-          sessionId,
-          eventType: "verified_login_notification",
-          recipientEmail: SECURITY_NOTIFY_EMAIL,
-          username,
-          displayName,
-          userId: tokenUser.uid,
-          countryName: geo.countryName,
-          countryCode: geo.countryCode,
-          countryFlag: geo.flagEmoji,
-          city: geo.city,
-          deviceType: uaInfo.deviceType,
-          osName: uaInfo.osName,
-          browserName: uaInfo.browserName,
-          loginTimeFormatted: formatTrDateTime(now),
-          sessionDataForDedup: sessionData,
-        });
-
-        sessionData.emailSent = emailResult.sent;
-        sessionData.emailStatus = emailResult.status;
-        sessionData.emailError = emailResult.error || null;
-        sessionData.emailRecipient = SECURITY_NOTIFY_EMAIL;
-        sessionData.emailDispatches = {
-          verified_login_notification: {
-            sent: emailResult.sent,
-            status: emailResult.status,
-            recipient: SECURITY_NOTIFY_EMAIL,
-            subject: "RedChat — Hesabınızda Yeni Giriş",
-            sentAt: now,
-            error: emailResult.error || null,
-          },
-        };
       }
 
       await dbSetDoc("securitySessions", sessionId, sessionData, tokenUser.token);

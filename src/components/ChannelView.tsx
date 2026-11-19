@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
+import type { QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
 import type { Channel, ChannelPost, UserProfile } from '../types';
 import {
-  subscribeToChannelPosts,
+  subscribeToLatestChannelPosts,
+  fetchOlderChannelPosts,
   createChannelPost,
   deleteChannelPost,
   deleteChannel,
@@ -136,6 +138,16 @@ interface ChannelViewProps {
   onDeleteSuccess?: () => void;
 }
 
+const CHANNEL_PAGE_SIZE = 30;
+
+function getPostTimeMs(post: { createdAt?: any }): number {
+  if (!post?.createdAt) return 0;
+  if (typeof post.createdAt?.toMillis === 'function') return post.createdAt.toMillis();
+  if (typeof post.createdAt?.seconds === 'number') return post.createdAt.seconds * 1000;
+  const parsed = new Date(post.createdAt).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
 export const ChannelView: React.FC<ChannelViewProps> = ({
   channel,
   currentUser,
@@ -148,9 +160,21 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
   onOpenManage,
   onDeleteSuccess,
 }) => {
-  const [posts, setPosts] = useState<ChannelPost[]>([]);
+  const [livePosts, setLivePosts] = useState<ChannelPost[]>([]);
+  const [olderPosts, setOlderPosts] = useState<ChannelPost[]>([]);
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [loadingPosts, setLoadingPosts] = useState(true);
   const [showChannelProfile, setShowChannelProfile] = useState(false);
+
+  const posts = useMemo(() => {
+    const merged = new Map<string, ChannelPost>();
+    for (const p of olderPosts) merged.set(p.id, p);
+    for (const p of livePosts) merged.set(p.id, p);
+    return Array.from(merged.values()).sort(
+      (a, b) => getPostTimeMs(a) - getPostTimeMs(b)
+    );
+  }, [olderPosts, livePosts]);
 
   // Yeni gönderi state'leri (Kurucu / Admin için)
   const [postText, setPostText] = useState('');
@@ -186,14 +210,42 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
   const postsContainerRef = useRef<HTMLDivElement>(null);
   const postsEndRef = useRef<HTMLDivElement>(null);
   const viewedPostIdsRef = useRef<Set<string>>(new Set());
+  const olderCursorRef = useRef<QueryDocumentSnapshot<DocumentData> | null>(null);
+  const prevLivePostsRef = useRef<ChannelPost[]>([]);
+  const olderFetchInFlightRef = useRef(false);
+  const initialScrollDoneRef = useRef(false);
+  const wasNearBottomRef = useRef(true);
+  const pendingScrollRestoreRef = useRef<{ prevScrollHeight: number; prevScrollTop: number } | null>(null);
+  const activeChannelIdRef = useRef<string>(channel.id);
 
-  // Otomatik en alta (en yeni gönderiye) kaydırma
   useEffect(() => {
-    if (posts.length > 0) {
-      // İlk yüklemede ve yeni mesaj geldiğinde sohbet gibi en alta kaydır
+    activeChannelIdRef.current = channel.id;
+  }, [channel.id]);
+
+  // Eski gönderi eklenince scroll konumunu koru; yeni gönderide yalnızca en alttaysa kaydır
+  useLayoutEffect(() => {
+    const el = postsContainerRef.current;
+    if (!el) return;
+
+    if (pendingScrollRestoreRef.current) {
+      const { prevScrollHeight, prevScrollTop } = pendingScrollRestoreRef.current;
+      pendingScrollRestoreRef.current = null;
+      const heightDelta = el.scrollHeight - prevScrollHeight;
+      el.scrollTop = prevScrollTop + heightDelta;
+      return;
+    }
+
+    if (!initialScrollDoneRef.current && posts.length > 0 && !loadingPosts) {
+      el.scrollTop = el.scrollHeight;
+      initialScrollDoneRef.current = true;
+      wasNearBottomRef.current = true;
+      return;
+    }
+
+    if (initialScrollDoneRef.current && wasNearBottomRef.current) {
       postsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [posts.length, channel.id]);
+  }, [posts.length, loadingPosts]);
 
   // Takip Et / Takipten Çık Tıklama İşleyicisi (Spam ve Hızlı Tıklama Korumalı)
   const handleFollowClick = async () => {
@@ -276,24 +328,140 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
     };
   }, [channel?.id, currentUser?.uid]);
 
-  // Gönderileri canlı dinle
+  // Gönderileri 30'ar kayıtlık kademeli ve canlı dinle
   useEffect(() => {
+    setLivePosts([]);
+    setOlderPosts([]);
+    setHasMoreOlder(false);
+    setLoadingOlder(false);
     setLoadingPosts(true);
-    const unsubscribe = subscribeToChannelPosts(channel.id, (fetchedPosts) => {
-      setPosts(fetchedPosts);
-      setLoadingPosts(false);
+    olderCursorRef.current = null;
+    prevLivePostsRef.current = [];
+    olderFetchInFlightRef.current = false;
+    initialScrollDoneRef.current = false;
+    wasNearBottomRef.current = true;
+    pendingScrollRestoreRef.current = null;
 
-      // Otomatik görüntülenme sayımı (Her gönderiye bir kez Firestore üzerinden yazılır)
-      fetchedPosts.forEach((p) => {
-        if (!viewedPostIdsRef.current.has(p.id)) {
-          viewedPostIdsRef.current.add(p.id);
-          recordPostView(channel.id, p.id, currentUser.uid);
+    const chId = channel.id;
+    const unsubscribe = subscribeToLatestChannelPosts(
+      chId,
+      CHANNEL_PAGE_SIZE,
+      ({ posts: fetchedPosts, oldestDoc, hasMore }) => {
+        if (activeChannelIdRef.current !== chId) return;
+
+        const prevLive = prevLivePostsRef.current;
+        if (prevLive.length > 0 && fetchedPosts.length >= CHANNEL_PAGE_SIZE) {
+          const oldestIncomingTime =
+            fetchedPosts.length > 0 ? getPostTimeMs(fetchedPosts[0]) : Number.POSITIVE_INFINITY;
+          const incomingIds = new Set(fetchedPosts.map((p) => p.id));
+          const slidOut = prevLive.filter(
+            (p) => !incomingIds.has(p.id) && getPostTimeMs(p) <= oldestIncomingTime
+          );
+          if (slidOut.length > 0) {
+            setOlderPosts((prevOlder) => {
+              const map = new Map<string, ChannelPost>();
+              for (const p of prevOlder) map.set(p.id, p);
+              for (const p of slidOut) {
+                if (!map.has(p.id)) map.set(p.id, p);
+              }
+              return Array.from(map.values()).sort(
+                (a, b) => getPostTimeMs(a) - getPostTimeMs(b)
+              );
+            });
+          }
         }
-      });
-    });
+
+        prevLivePostsRef.current = fetchedPosts;
+        if (!olderCursorRef.current && oldestDoc) {
+          olderCursorRef.current = oldestDoc;
+          setHasMoreOlder(hasMore);
+        } else if (!olderCursorRef.current && !oldestDoc) {
+          setHasMoreOlder(false);
+        }
+
+        setLivePosts(fetchedPosts);
+        setLoadingPosts(false);
+
+        // Otomatik görüntülenme sayımı (Her gönderiye bir kez Firestore üzerinden yazılır)
+        fetchedPosts.forEach((p) => {
+          if (!viewedPostIdsRef.current.has(p.id)) {
+            viewedPostIdsRef.current.add(p.id);
+            recordPostView(chId, p.id, currentUser.uid);
+          }
+        });
+      }
+    );
 
     return () => unsubscribe();
   }, [channel.id, currentUser.uid]);
+
+  const loadOlderPosts = useCallback(async () => {
+    const chId = channel.id;
+    const cursor = olderCursorRef.current;
+    if (!chId || !cursor || !hasMoreOlder || olderFetchInFlightRef.current) return;
+
+    olderFetchInFlightRef.current = true;
+    setLoadingOlder(true);
+
+    try {
+      const result = await fetchOlderChannelPosts(chId, cursor, CHANNEL_PAGE_SIZE);
+      if (activeChannelIdRef.current !== chId) return;
+
+      const el = postsContainerRef.current;
+      if (el && result.posts.length > 0) {
+        pendingScrollRestoreRef.current = {
+          prevScrollHeight: el.scrollHeight,
+          prevScrollTop: el.scrollTop,
+        };
+      }
+
+      if (result.posts.length > 0) {
+        setOlderPosts((prevOlder) => {
+          const map = new Map<string, ChannelPost>();
+          for (const p of result.posts) map.set(p.id, p);
+          for (const p of prevOlder) map.set(p.id, p);
+          return Array.from(map.values()).sort(
+            (a, b) => getPostTimeMs(a) - getPostTimeMs(b)
+          );
+        });
+        result.posts.forEach((p) => {
+          if (!viewedPostIdsRef.current.has(p.id)) {
+            viewedPostIdsRef.current.add(p.id);
+            recordPostView(chId, p.id, currentUser.uid);
+          }
+        });
+      }
+
+      if (result.oldestDoc) {
+        olderCursorRef.current = result.oldestDoc;
+      }
+      setHasMoreOlder(result.hasMore && result.posts.length > 0);
+    } catch (err) {
+      console.error('Eski kanal gönderileri yüklenirken hata:', err);
+    } finally {
+      olderFetchInFlightRef.current = false;
+      if (activeChannelIdRef.current === chId) {
+        setLoadingOlder(false);
+      }
+    }
+  }, [channel.id, currentUser.uid, hasMoreOlder]);
+
+  const handlePostsScroll = useCallback(() => {
+    const el = postsContainerRef.current;
+    if (!el) return;
+    wasNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140;
+
+    if (
+      initialScrollDoneRef.current &&
+      el.scrollTop <= 56 &&
+      hasMoreOlder &&
+      !loadingOlder &&
+      !olderFetchInFlightRef.current &&
+      olderCursorRef.current
+    ) {
+      void loadOlderPosts();
+    }
+  }, [hasMoreOlder, loadingOlder, loadOlderPosts]);
 
   // Media (Fotoğraf veya Video) seçimi
   const handleMediaSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -465,9 +633,12 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
     let videoFileToSend = selectedVideoFile;
     let videoDurationToSend = selectedVideoDuration || draftMedia?.duration || 0;
 
-    // Eğer bellek File nesnesi yoksa ama IndexedDB'de kayıtlıysa yükle
-    if (!fileToSend && !videoFileToSend && channel?.id) {
-      const saved = await getMediaDraftFile(channel.id);
+    // Eğer bellek File nesnesi yoksa ama IndexedDB'de kayıtlıysa zaman aşımı korumasıyla yükle
+    if (!fileToSend && !videoFileToSend && channel?.id && (mediaToSend?.type === 'image' || mediaToSend?.type === 'video')) {
+      const saved = await Promise.race([
+        getMediaDraftFile(channel.id).catch(() => null),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+      ]);
       if (saved) {
         if (saved.mediaType === 'image') {
           fileToSend = saved.file;
@@ -581,7 +752,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
     if (!postToDelete) return;
     try {
       setDeletingPost(true);
-      await deleteChannelPost(channel.id, postToDelete);
+      await deleteChannelPost(channel.id, postToDelete, currentUser);
       setPostToDelete(null);
     } catch (err: any) {
       console.error('Gönderi silinemedi:', err);
@@ -598,7 +769,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
   const handleConfirmDeleteChannel = async () => {
     try {
       setDeletingChannel(true);
-      await deleteChannel(channel.id, currentUser.uid);
+      await deleteChannel(channel.id, currentUser.uid, currentUser, channel.name);
       setShowDeleteChannelModal(false);
       onDeleteSuccess?.();
     } catch (err: any) {
@@ -676,7 +847,7 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
               </span>
               <span>•</span>
               <span className="text-[11px] text-zinc-400">
-                {posts.length} gönderi
+                {channel.postCount ?? posts.length} gönderi
               </span>
             </div>
           </div>
@@ -772,9 +943,15 @@ export const ChannelView: React.FC<ChannelViewProps> = ({
       {/* 3. GÖNDERİLER LİSTESİ (FEED) */}
       <div
         ref={postsContainerRef}
+        onScroll={handlePostsScroll}
         id="channel-posts-feed"
         className="flex-1 overflow-y-auto p-4 space-y-4 max-w-2xl w-full mx-auto"
       >
+        {loadingOlder && (
+          <div className="flex items-center justify-center py-2.5">
+            <Loader2 className="w-5 h-5 animate-spin text-red-500" />
+          </div>
+        )}
         {loadingPosts ? (
           <div className="py-16 flex flex-col items-center justify-center text-zinc-400">
             <Loader2 className="w-7 h-7 animate-spin mb-2.5 text-red-600" />

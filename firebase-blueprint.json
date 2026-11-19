@@ -333,6 +333,21 @@
         "messageCountReviewed": { "type": "number", "description": "Count of inspected messages" },
         "createdAt": { "type": "timestamp", "description": "Creation timestamp" }
       }
+    },
+    "ModerationAccessLog": {
+      "path": "moderationAccessLogs/{logId}",
+      "fields": {
+        "id": { "type": "string", "description": "Unique audit log ID" },
+        "moderatorUid": { "type": "string", "description": "Actor moderator UID" },
+        "moderatorEmail": { "type": "string", "description": "Actor moderator email" },
+        "moderatorUsername": { "type": "string", "description": "Actor moderator username" },
+        "action": { "type": "string", "description": "view_conversation_messages | view_channel_posts" },
+        "targetType": { "type": "string", "description": "conversation | channel" },
+        "targetId": { "type": "string", "description": "Target conversation or channel ID" },
+        "targetName": { "type": "string", "description": "Target conversation or channel display title" },
+        "readOnly": { "type": "boolean", "description": "Always true for verified read access" },
+        "accessedAt": { "type": "timestamp", "description": "Access timestamp" }
+      }
     }
   }
 }

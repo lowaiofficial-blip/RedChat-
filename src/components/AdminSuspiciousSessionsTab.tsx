@@ -441,7 +441,7 @@ export const AdminSuspiciousSessionsTab: React.FC<AdminSuspiciousSessionsTabProp
                 Bu filtrede oturum kaydı bulunmuyor
               </p>
               <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                Yeni bir cihaz ve ülkeden giriş algılandığında kayıtlar burada gerçek zamanlı olarak listelenir.
+                Yeni veya tanınmayan bir cihazdan giriş algılandığında kayıtlar burada gerçek zamanlı olarak listelenir.
               </p>
             </div>
           ) : (

@@ -492,6 +492,7 @@ export interface ModeratorGrant {
 
 export type ModerationActionType =
   | 'temp_mute'
+  | 'perm_mute'
   | 'unmute'
   | 'temp_ban'
   | 'unban'
@@ -500,7 +501,18 @@ export type ModerationActionType =
   | 'auto_ban_expired'
   | 'moderator_role_granted'
   | 'moderator_role_revoked'
-  | 'report_reviewed';
+  | 'report_reviewed'
+  | 'email_in_review'
+  | 'email_review_released'
+  | 'verification_rejected'
+  | 'verification_approved'
+  | 'user_verified'
+  | 'user_unverified'
+  | 'abusive_chat_flagged'
+  | 'channel_disabled'
+  | 'channel_enabled'
+  | 'channel_deleted'
+  | 'post_deleted';
 
 export interface ModerationLogEntry {
   id: string;
@@ -561,6 +573,19 @@ export interface ModerationReport {
   recommendedAction?: string | null;
   messageCountReviewed?: number;
   createdAt: any;
+}
+
+export interface ModerationAccessLog {
+  id: string;
+  moderatorUid: string;
+  moderatorEmail?: string | null;
+  moderatorUsername?: string | null;
+  action: 'view_conversation_messages' | 'view_channel_posts';
+  targetType: 'conversation' | 'channel';
+  targetId: string;
+  targetName?: string | null;
+  readOnly: boolean;
+  accessedAt: any;
 }
 
 

@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
+import type { QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
 import type { Conversation, ChatMessage, UserProfile, UserReportCategory } from '../types';
 import {
-  subscribeToMessages,
+  subscribeToLatestMessages,
+  fetchOlderMessages,
   sendMessage,
   markMessagesAsRead,
   editMessage,
@@ -109,6 +111,12 @@ interface ChatWindowProps {
   onUnblockUser?: (userId: string) => void;
 }
 
+const CHAT_PAGE_SIZE = 30;
+
+function getMessageTimeMs(msg: { createdAt?: any }): number {
+  return toTimestampMs(msg.createdAt) ?? 0;
+}
+
 export const ChatWindow: React.FC<ChatWindowProps> = ({
   conversation,
   currentUser,
@@ -120,9 +128,26 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   onOpenProfile,
   onUnblockUser,
 }) => {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [liveMessages, setLiveMessages] = useState<ChatMessage[]>([]);
+  const [olderMessages, setOlderMessages] = useState<ChatMessage[]>([]);
+  const [optimisticMessages, setOptimisticMessages] = useState<ChatMessage[]>([]);
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [initialLoadingMessages, setInitialLoadingMessages] = useState(true);
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
+
+  const messages = useMemo(() => {
+    const merged = new Map<string, ChatMessage>();
+    for (const m of olderMessages) merged.set(m.id, m);
+    for (const m of liveMessages) merged.set(m.id, m);
+    for (const m of optimisticMessages) {
+      if (!merged.has(m.id)) merged.set(m.id, m);
+    }
+    return Array.from(merged.values()).sort(
+      (a, b) => getMessageTimeMs(a) - getMessageTimeMs(b)
+    );
+  }, [olderMessages, liveMessages, optimisticMessages]);
 
 
 
@@ -177,7 +202,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   // 😀 Emoji Seçici (Composer) & Hızlı Tepkiler
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [hoveredReactionMessageId, setHoveredReactionMessageId] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
 
   const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
@@ -303,10 +328,22 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const [mentionQuery, setMentionQuery] = useState('');
   const mentionSuggestionsRef = useRef<HTMLDivElement>(null);
 
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const olderCursorRef = useRef<QueryDocumentSnapshot<DocumentData> | null>(null);
+  const prevLiveMessagesRef = useRef<ChatMessage[]>([]);
+  const olderFetchInFlightRef = useRef(false);
+  const initialScrollDoneRef = useRef(false);
+  const wasNearBottomRef = useRef(true);
+  const pendingScrollRestoreRef = useRef<{ prevScrollHeight: number; prevScrollTop: number } | null>(null);
+  const activeConvIdRef = useRef<string | undefined>(conversation?.id);
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isLongPressActiveRef = useRef(false);
   const sendLockRef = useRef(false);
+
+  useEffect(() => {
+    activeConvIdRef.current = conversation?.id;
+  }, [conversation?.id]);
 
   // Karşıdaki kullanıcının bilgileri
   const otherParticipantId = useMemo(
@@ -528,19 +565,140 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     };
   }, [conversation?.id, currentUser?.uid]);
 
-  // Mesajları dinle
+  // Mesajları kademeli (30'ar) dinle + sayfalama imleci & sohbet değişim sıfırlaması
   useEffect(() => {
+    sendLockRef.current = false;
+    setSending(false);
+    setIsUploadingImage(false);
+    setIsUploadingVideo(false);
+    setImageUploadError(null);
+    setLiveMessages([]);
+    setOlderMessages([]);
+    setOptimisticMessages([]);
+    setHasMoreOlder(false);
+    setLoadingOlder(false);
+    olderCursorRef.current = null;
+    prevLiveMessagesRef.current = [];
+    olderFetchInFlightRef.current = false;
+    initialScrollDoneRef.current = false;
+    wasNearBottomRef.current = true;
+    pendingScrollRestoreRef.current = null;
+
     if (!conversation?.id) {
-      setMessages([]);
+      setInitialLoadingMessages(false);
       return;
     }
 
-    const unsubscribe = subscribeToMessages(conversation.id, (fetchedMessages) => {
-      setMessages(fetchedMessages);
-    });
+    setInitialLoadingMessages(true);
+    const convId = conversation.id;
+
+    const unsubscribe = subscribeToLatestMessages(
+      convId,
+      CHAT_PAGE_SIZE,
+      ({ messages: incoming, oldestDoc, hasMore }) => {
+        if (activeConvIdRef.current !== convId) return;
+
+        // Yeni mesajlar gelip 30'luk canlı pencere ileri kaydığında,
+        // pencereden çıkan en eski mesajları silme; geçmiş tamponunda koru.
+        const prevLive = prevLiveMessagesRef.current;
+        if (prevLive.length > 0 && incoming.length >= CHAT_PAGE_SIZE) {
+          const oldestIncomingTime =
+            incoming.length > 0 ? getMessageTimeMs(incoming[0]) : Number.POSITIVE_INFINITY;
+          const incomingIds = new Set(incoming.map((m) => m.id));
+          const slidOut = prevLive.filter(
+            (m) => !incomingIds.has(m.id) && getMessageTimeMs(m) <= oldestIncomingTime
+          );
+          if (slidOut.length > 0) {
+            setOlderMessages((prevOlder) => {
+              const map = new Map<string, ChatMessage>();
+              for (const m of prevOlder) map.set(m.id, m);
+              for (const m of slidOut) {
+                if (!map.has(m.id)) map.set(m.id, m);
+              }
+              return Array.from(map.values()).sort(
+                (a, b) => getMessageTimeMs(a) - getMessageTimeMs(b)
+              );
+            });
+          }
+        }
+
+        prevLiveMessagesRef.current = incoming;
+        if (!olderCursorRef.current && oldestDoc) {
+          olderCursorRef.current = oldestDoc;
+          setHasMoreOlder(hasMore);
+        } else if (!olderCursorRef.current && !oldestDoc) {
+          setHasMoreOlder(false);
+        }
+
+        setLiveMessages(incoming);
+        setInitialLoadingMessages(false);
+      }
+    );
 
     return () => unsubscribe();
   }, [conversation?.id]);
+
+  const loadOlderMessages = useCallback(async () => {
+    const convId = conversation?.id;
+    const cursor = olderCursorRef.current;
+    if (!convId || !cursor || !hasMoreOlder || olderFetchInFlightRef.current) return;
+
+    olderFetchInFlightRef.current = true;
+    setLoadingOlder(true);
+
+    try {
+      const result = await fetchOlderMessages(convId, cursor, CHAT_PAGE_SIZE);
+      if (activeConvIdRef.current !== convId) return;
+
+      const el = messagesContainerRef.current;
+      if (el && result.messages.length > 0) {
+        pendingScrollRestoreRef.current = {
+          prevScrollHeight: el.scrollHeight,
+          prevScrollTop: el.scrollTop,
+        };
+      }
+
+      if (result.messages.length > 0) {
+        setOlderMessages((prevOlder) => {
+          const map = new Map<string, ChatMessage>();
+          for (const m of result.messages) map.set(m.id, m);
+          for (const m of prevOlder) map.set(m.id, m);
+          return Array.from(map.values()).sort(
+            (a, b) => getMessageTimeMs(a) - getMessageTimeMs(b)
+          );
+        });
+      }
+
+      if (result.oldestDoc) {
+        olderCursorRef.current = result.oldestDoc;
+      }
+      setHasMoreOlder(result.hasMore && result.messages.length > 0);
+    } catch (err) {
+      console.error('Eski mesajlar yüklenirken hata:', err);
+    } finally {
+      olderFetchInFlightRef.current = false;
+      if (activeConvIdRef.current === convId) {
+        setLoadingOlder(false);
+      }
+    }
+  }, [conversation?.id, hasMoreOlder]);
+
+  const handleMessagesScroll = useCallback(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    wasNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140;
+
+    if (
+      initialScrollDoneRef.current &&
+      el.scrollTop <= 56 &&
+      hasMoreOlder &&
+      !loadingOlder &&
+      !olderFetchInFlightRef.current &&
+      olderCursorRef.current
+    ) {
+      void loadOlderMessages();
+    }
+  }, [hasMoreOlder, loadingOlder, loadOlderMessages]);
 
   // Sohbet açıldığında unreadCount varsa anında sıfırla
   useEffect(() => {
@@ -603,10 +761,30 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     };
   }, [conversation?.id, conversation?.isGroup, conversation?.unreadCounts, messages, currentUser.uid]);
 
-  // Otomatik aşağı kaydırma
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, activeAiStream?.text, activeAiStream?.isThinking]);
+  // Eski mesaj eklenince kaydırma konumunu koru; yeni mesajda yalnızca en alttaysa kaydır
+  useLayoutEffect(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+
+    if (pendingScrollRestoreRef.current) {
+      const { prevScrollHeight, prevScrollTop } = pendingScrollRestoreRef.current;
+      pendingScrollRestoreRef.current = null;
+      const heightDelta = el.scrollHeight - prevScrollHeight;
+      el.scrollTop = prevScrollTop + heightDelta;
+      return;
+    }
+
+    if (!initialScrollDoneRef.current && messages.length > 0 && !initialLoadingMessages) {
+      el.scrollTop = el.scrollHeight;
+      initialScrollDoneRef.current = true;
+      wasNearBottomRef.current = true;
+      return;
+    }
+
+    if (initialScrollDoneRef.current && wasNearBottomRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages.length, initialLoadingMessages, activeAiStream?.text, activeAiStream?.isThinking]);
 
   // Fotoğraf ve Video Seçimi (Galeri)
   const handleMediaSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -858,7 +1036,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   }, [allUsers, aiProfilePhotoUrl, conversation, currentUser.uid, mentionQuery, showMentionSuggestions]);
 
   // 💬 Input Metni Değişimi & Mention Algılama & Yazıyor Bildirimi
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setInputText(val);
 
@@ -997,8 +1175,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   }, []);
 
   // Mesaj Gönderme (Metin, Fotoğraf, GIF, Video, Açıklamalı Medya veya Yanıt)
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSend = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     if (!conversation?.id || sending || isUploadingImage || isUploadingVideo || sendLockRef.current) return;
 
     if (isUserEffectivelyBanned(currentUser)) {
@@ -1051,15 +1229,19 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       return;
     }
 
-    const textToSend = inputText.trim();
+    const rawInput = inputRef.current?.value ?? inputText;
+    const textToSend = rawInput.trim();
     const mediaToSend = draftMedia;
     let fileToSend = selectedImageFile;
     let videoFileToSend = selectedVideoFile;
     let videoDurationToSend = selectedVideoDuration || draftMedia?.duration || 0;
 
-    // Eğer bellek File nesnesi yoksa ama IndexedDB'de kayıtlıysa yükle
-    if (!fileToSend && !videoFileToSend && conversation?.id) {
-      const saved = await getMediaDraftFile(conversation.id);
+    // IndexedDB medya taslağı kontrolünü zaman aşımı korumasıyla yap (hiçbir zaman gönderimi kilitlemez)
+    if (!fileToSend && !videoFileToSend && conversation?.id && (mediaToSend?.type === 'image' || mediaToSend?.type === 'video')) {
+      const saved = await Promise.race([
+        getMediaDraftFile(conversation.id).catch(() => null),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+      ]);
       if (saved) {
         if (saved.mediaType === 'image') {
           fileToSend = saved.file;
@@ -1083,8 +1265,10 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     sendLockRef.current = true;
     setSending(true);
     setImageUploadError(null);
+    wasNearBottomRef.current = true;
 
     const currentReplyTo = replyingToMessage;
+    let optimisticTempId: string | null = null;
 
     try {
       let uploadedImageUrl: string | null = null;
@@ -1148,6 +1332,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
       // Anlık Optimistic Mesaj Ekleme (Arayüz anında güncellenir)
       const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      optimisticTempId = tempId;
       const optimisticMsg: ChatMessage = {
         id: tempId,
         senderId: currentUser.uid,
@@ -1164,7 +1349,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         replyTo: replyRef,
       };
 
-      setMessages((prev) => {
+      setOptimisticMessages((prev) => {
         if (prev.some((m) => m.id === tempId)) return prev;
         return [...prev, optimisticMsg];
       });
@@ -1176,9 +1361,12 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         participantIds: conversation.participantIds,
       });
 
+      setOptimisticMessages((prev) => prev.filter((m) => m.id !== tempId));
+
       // ✅ GÖNDERİM BAŞARILI: Taslağı ve girdi alanlarını şimdi temizle!
       setInputText('');
       setReplyingToMessage(null);
+      setShowMentionSuggestions(false);
       setDraftMedia(null);
       setSelectedImageFile(null);
       setImagePreviewUrl(null);
@@ -1444,11 +1632,17 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       }
     } catch (err: any) {
       console.error('Mesaj gönderim hatası:', err);
+      if (optimisticTempId) {
+        setOptimisticMessages((prev) => prev.filter((m) => m.id !== optimisticTempId));
+      }
       setImageUploadError(err?.message || 'Mesaj gönderilemedi. Lütfen tekrar deneyin.');
     } finally {
       setIsUploadingImage(false);
       setSending(false);
       sendLockRef.current = false;
+      requestAnimationFrame(() => {
+        inputRef.current?.focus();
+      });
     }
   };
 
@@ -1799,8 +1993,21 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       </div>
 
       {/* Messages Scroll Area */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full min-w-0 px-2 sm:px-3 py-1.5 space-y-1">
-        {messages.length === 0 ? (
+      <div
+        ref={messagesContainerRef}
+        onScroll={handleMessagesScroll}
+        className="flex-1 overflow-y-auto overflow-x-hidden w-full max-w-full min-w-0 px-2 sm:px-3 py-1.5 space-y-1"
+      >
+        {loadingOlder && (
+          <div className="flex items-center justify-center py-2.5">
+            <Loader2 className="w-5 h-5 animate-spin text-red-500" />
+          </div>
+        )}
+        {initialLoadingMessages && messages.length === 0 ? (
+          <div className="h-full flex items-center justify-center">
+            <Loader2 className="w-6 h-6 animate-spin text-red-500" />
+          </div>
+        ) : messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center p-6 text-zinc-400">
             <div className="w-10 h-10 rounded-full bg-zinc-200 dark:bg-zinc-800 flex items-center justify-center mb-2">
               <MessageSquare className="w-5 h-5" />
@@ -2865,17 +3072,41 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               </button>
 
               {/* Metin / Açıklama Inputu */}
-              <input
+              <textarea
+                id="chat-message-input"
                 ref={inputRef}
-                type="text"
+                rows={1}
                 value={inputText}
                 onChange={handleInputChange}
+                onPaste={() => {
+                  const convId = conversation?.id;
+                  const uid = currentUser?.uid;
+                  requestAnimationFrame(() => {
+                    const pastedVal = inputRef.current?.value;
+                    if (typeof pastedVal === 'string') {
+                      setInputText(pastedVal);
+                      if (convId && uid) {
+                        saveDraft(uid, convId, {
+                          text: pastedVal,
+                          mediaType: draftMedia?.type || (selectedImageFile ? 'image' : imagePreviewUrl ? 'gif' : null),
+                          mediaUrl: draftMedia?.url || imagePreviewUrl || null,
+                          videoDuration: draftMedia?.duration || selectedVideoDuration || null,
+                        }, 'conversation');
+                      }
+                    }
+                  });
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Escape') {
                     setShowMentionSuggestions(false);
+                    return;
+                  }
+                  if (e.key === 'Enter' && !e.shiftKey && !(e.nativeEvent as any)?.isComposing) {
+                    e.preventDefault();
+                    void handleSend();
                   }
                 }}
-                disabled={sending || isUploadingImage}
+                readOnly={sending || isUploadingImage || isUploadingVideo}
                 placeholder={
                   selectedImageFile
                     ? 'Bir açıklama yaz... (isteğe bağlı)'
@@ -2885,12 +3116,13 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                     ? `${conversation.name || 'Grup'} grubuna mesaj yaz...`
                     : `${displayName} ile mesajlaş...`
                 }
-                className="flex-1 min-w-0 px-4 py-2.5 text-xs bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 disabled:opacity-60"
+                className="flex-1 min-w-0 px-4 py-2.5 text-xs bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 read-only:opacity-60 resize-none min-h-[38px] max-h-32 leading-relaxed overflow-y-auto"
               />
 
               {/* Gönder Butonu */}
               <button
                 type="submit"
+                onMouseDown={(e) => e.preventDefault()}
                 disabled={
                   (!inputText.trim() && !selectedImageFile && !imagePreviewUrl && !draftMedia?.url && !selectedVideoFile) ||
                   sending ||

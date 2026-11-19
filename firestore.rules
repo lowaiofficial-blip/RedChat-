@@ -221,12 +221,10 @@ service cloud.firestore {
       
       // Kullanıcı kendi profil bilgilerini (durum, bio, avatar, son görülme),
       // süresi dolmuş kendi geçici cezasının temizlenmesini,
-      // moderatör yalnızca geçici ban/susturma alanlarını,
-      // admin ise tüm kullanıcı alanlarını güncelleyebilir
+      // admin ise tüm kullanıcı alanlarını güncelleyebilir.
+      // Moderatör kullanıcı banlayamaz, susturamaz veya profillerini değiştiremez (yalnızca okuma yetkilidir).
       allow update: if isAuthenticated() && (
         isAdmin() ||
-        moderatorBanUpdateValid(userId) ||
-        moderatorMuteUpdateValid(userId) ||
         ownerExpiredPenaltyClear(userId) || (
           isOwner(userId) &&
           !request.resource.data.diff(resource.data).affectedKeys().hasAny([
@@ -309,12 +307,12 @@ service cloud.firestore {
       // Sohbet listesini dinleme (where participantIds contains) ve doğrudan sohbet getDoc sorgusu
       allow read: if isAuthenticated();
       
-      // Yeni birebir sohbet, grup sohbeti veya RedChat AI sohbeti başlatma
-      allow create: if isAuthenticated();
+      // Yeni birebir sohbet, grup sohbeti veya RedChat AI sohbeti başlatma (Moderatör salt okunurdur, sohbet başlatamaz)
+      allow create: if isAuthenticated() && !isModerator();
       
       // Son mesaj metni, son mesaj zamanı, okunmamış sayaçları (unreadCounts), grup üyeleri güncelleme
-      // Sonlandırılmış (terminated) oturumun durumunu normal kullanıcılar tekrar aktife çekemez
-      allow update: if isAuthenticated() && (
+      // Sonlandırılmış (terminated) oturumun durumunu normal kullanıcılar tekrar aktife çekemez (Moderatör sohbet güncelleyemez)
+      allow update: if isAuthenticated() && !isModerator() && (
         resource.data.get('securityStatus', 'active') != 'terminated' ||
         request.resource.data.get('securityStatus', 'terminated') == 'terminated' ||
         isAdmin()
@@ -327,11 +325,12 @@ service cloud.firestore {
       // 📨 SOHBET İÇİ MESAJLAR (/conversations/{conversationId}/messages/{messageId})
       // =======================================================================
       match /messages/{messageId} {
-        // Sohbetteki tüm mesajları gerçek zamanlı dinleme ve okuma
+        // Sohbetteki tüm mesajları gerçek zamanlı dinleme ve okuma (Moderatör ve kullanıcılar okuyabilir)
         allow read: if isAuthenticated();
         
-        // Yeni mesaj gönderme (Banlı, susturulmuş veya e-posta incelemesindeki kullanıcı mesaj atamaz)
+        // Yeni mesaj gönderme (Moderatör mesaj gönderemez; banlı, susturulmuş veya e-posta incelemesindeki kullanıcı mesaj atamaz)
         allow create: if isAuthenticated() &&
+          !isModerator() &&
           (isAdmin() || (!isEmailInReview() && !isUserBanned() && !isUserMuted())) && (
           (
             // Grup sohbeti veya engeli olmayan birebir sohbet
@@ -346,8 +345,8 @@ service cloud.firestore {
           )
         );
         
-        // Mesaj düzenleme (isEdited: true) ve emoji reaksiyonları ekleme/kaldırma
-        allow update: if isAuthenticated() && (!isModerator() || resource.data.senderId == request.auth.uid);
+        // Mesaj düzenleme (isEdited: true) ve emoji reaksiyonları ekleme/kaldırma (Moderatör mesaj düzenleyemez)
+        allow update: if isAuthenticated() && !isModerator() && resource.data.senderId == request.auth.uid;
         
         // Mesaj silme işlemi (Moderatör mesaj silemez)
         allow delete: if isAuthenticated() && !isModerator();
@@ -380,18 +379,19 @@ service cloud.firestore {
       // Kanalları tüm oturum açmış kullanıcılar listeleyebilir ve okuyabilir
       allow read: if isAuthenticated();
 
-      // Kanal oluşturma
-      allow create: if isAuthenticated();
+      // Kanal oluşturma (Moderatör kanal oluşturamaz)
+      allow create: if isAuthenticated() && !isModerator();
 
       // Güncelleme: Kurucu veya Admin her şeyi güncelleyebilir; normal kullanıcılar takipçi sayısını artırıp azaltabilir
-      allow update: if isAuthenticated();
+      allow update: if isAuthenticated() && !isModerator();
 
-      // Kanalı silme işlemi
-      allow delete: if isAuthenticated();
+      // Kanalı silme işlemi (Moderatör kanal silemez)
+      allow delete: if isAuthenticated() && !isModerator();
 
       // 🔐 KURUCU GİZLİLİĞİ DOKÜMANI (/channels/{channelId}/private/owner)
       match /private/owner {
-        allow read, write: if isAuthenticated();
+        allow read: if isAdmin() || (isAuthenticated() && !isModerator() && resource.data.ownerId == request.auth.uid);
+        allow write: if isAdmin() || (isAuthenticated() && !isModerator() && request.auth.uid == request.resource.data.ownerId);
       }
 
       // 👥 TAKİPÇİLER (/channels/{channelId}/followers/{followerUid})
@@ -402,8 +402,8 @@ service cloud.firestore {
       // 📝 GÖNDERİLER (/channels/{channelId}/posts/{postId})
       match /posts/{postId} {
         allow read: if isAuthenticated();
-        // Create is blocked if the user is muted, banned, or in email review
-        allow create: if isAuthenticated() && (isAdmin() || (!isUserMuted() && !isUserBanned() && !isEmailInReview()));
+        // Create is blocked if the user is muted, banned, or in email review (Moderatör kanal gönderisi paylaşamaz)
+        allow create: if isAuthenticated() && !isModerator() && (isAdmin() || (!isUserMuted() && !isUserBanned() && !isEmailInReview()));
         // Update/Delete (Moderatör kanal gönderisi silemez)
         allow update: if isAuthenticated() && !isModerator();
         allow delete: if isAuthenticated() && !isModerator();
@@ -667,6 +667,22 @@ service cloud.firestore {
         isModerator() &&
         request.resource.data.authorUid == request.auth.uid &&
         request.resource.data.authorRole == 'moderator'
+      );
+      allow update, delete: if false;
+    }
+
+    // =========================================================================
+    // 👁️ MODERASYON ERİŞİM VE İNCELEME DENETİM KAYITLARI (/moderationAccessLogs/{logId})
+    // =========================================================================
+    // Muse veya diğer moderatörlerin hangi sohbetleri veya kanalları okuduğu burada denetlenir.
+    // Bu denetim kayıtlarını YALNIZCA Ana Yönetici okuyabilir.
+    match /moderationAccessLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin() || (
+        isModerator() &&
+        request.resource.data.moderatorUid == request.auth.uid &&
+        request.resource.data.action in ['view_conversation_messages', 'view_channel_posts'] &&
+        request.resource.data.readOnly == true
       );
       allow update, delete: if false;
     }

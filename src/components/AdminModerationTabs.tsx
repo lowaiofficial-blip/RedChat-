@@ -6,6 +6,7 @@ import type {
   ModerationLogEntry,
   ModeratorGrant,
   Conversation,
+  ModerationAccessLog,
 } from '../types';
 import {
   MUSE_MODERATOR_UID,
@@ -14,6 +15,7 @@ import {
   subscribeToModerationLogsPaginated,
   subscribeToUserReportsPaginated,
   subscribeToModerationReportsPaginated,
+  subscribeToModerationAccessLogsPaginated,
   setModeratorRoleByAdmin,
   updateUserReportStatus,
   submitModerationReport,
@@ -41,6 +43,8 @@ import {
   Search,
   ChevronDown,
   Info,
+  Eye,
+  Radio,
 } from 'lucide-react';
 
 function formatDateTime(ts: any): string {
@@ -75,6 +79,17 @@ const ACTION_LABELS: Record<string, { label: string; color: string }> = {
   moderator_role_granted: { label: 'Moderatör Yetkisi Verildi', color: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border-indigo-500/30' },
   moderator_role_revoked: { label: 'Moderatör Yetkisi Alındı', color: 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-300 border-zinc-500/30' },
   report_reviewed: { label: 'Şikâyet / Rapor İşlendi', color: 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-500/30' },
+  email_in_review: { label: 'E-posta İncelemeye Alındı', color: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30' },
+  email_review_released: { label: 'E-posta İncelemesi Kaldırıldı', color: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30' },
+  verification_approved: { label: 'Mavi Tik Başvurusu Onaylandı', color: 'bg-sky-500/15 text-sky-600 dark:text-sky-400 border-sky-500/30' },
+  verification_rejected: { label: 'Mavi Tik Başvurusu Reddedildi', color: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30' },
+  user_verified: { label: 'Kullanıcı Mavi Tik Verildi', color: 'bg-sky-500/15 text-sky-600 dark:text-sky-400 border-sky-500/30' },
+  user_unverified: { label: 'Kullanıcı Mavi Tik Kaldırıldı', color: 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-300 border-zinc-500/30' },
+  abusive_chat_flagged: { label: 'AI Güvenlik İhlali Bayrağı', color: 'bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30' },
+  channel_disabled: { label: 'Kanal Devre Dışı Bırakıldı', color: 'bg-orange-500/15 text-orange-600 dark:text-orange-400 border-orange-500/30' },
+  channel_enabled: { label: 'Kanal Etkinleştirildi', color: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30' },
+  channel_deleted: { label: 'Kanal Silindi', color: 'bg-red-600/20 text-red-600 dark:text-red-400 border-red-500/40' },
+  post_deleted: { label: 'Kanal Gönderisi Silindi', color: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30' },
 };
 
 interface AdminModerationReportsTabProps {
@@ -609,7 +624,7 @@ interface AdminModerationLogsTabProps {
   isMainAdmin: boolean;
 }
 
-type LogCategoryFilter = 'all' | 'mute' | 'ban' | 'expiry' | 'reports' | 'roles';
+type LogCategoryFilter = 'all' | 'mute' | 'ban' | 'expiry' | 'reports' | 'roles' | 'other';
 
 export const AdminModerationLogsTab: React.FC<AdminModerationLogsTabProps> = ({
   allUsers,
@@ -645,21 +660,48 @@ export const AdminModerationLogsTab: React.FC<AdminModerationLogsTabProps> = ({
   const museUser = userMap.get(MUSE_MODERATOR_UID);
   const isMuseActive = Boolean(museGrant?.active && museUser?.role === 'moderator');
 
+  const [activeSubTab, setActiveSubTab] = useState<'moderation' | 'access_audit'>('moderation');
+  const [accessLogsState, setAccessLogsState] = useState<PaginatedCollectionState<ModerationAccessLog>>({
+    items: [],
+    loading: true,
+    loadingMore: false,
+    hasMore: false,
+    error: null,
+  });
+  const accessLogsHandleRef = useRef<PaginatedSubscriptionHandle | null>(null);
+
   useEffect(() => {
-    const logsHandle = subscribeToModerationLogsPaginated(setLogsState, 25);
+    const logsHandle = subscribeToModerationLogsPaginated(setLogsState, 10);
     logsHandleRef.current = logsHandle;
     const unsubGrant = subscribeToModeratorGrant(MUSE_MODERATOR_UID, setMuseGrant);
+
+    let unsubAccessLogs = () => {};
+    if (isMainAdmin) {
+      const accessHandle = subscribeToModerationAccessLogsPaginated(setAccessLogsState, 30);
+      accessLogsHandleRef.current = accessHandle;
+      unsubAccessLogs = () => {
+        accessHandle.unsubscribe();
+        accessLogsHandleRef.current = null;
+      };
+    }
+
     return () => {
       logsHandle.unsubscribe();
       logsHandleRef.current = null;
       unsubGrant();
+      unsubAccessLogs();
     };
-  }, []);
+  }, [isMainAdmin]);
 
   const filteredLogs = useMemo(() => {
     const q = logSearch.trim().toLowerCase();
     return logs.filter((entry) => {
-      if (actionFilter === 'mute' && entry.actionType !== 'temp_mute' && entry.actionType !== 'unmute') {
+      if (
+        actionFilter === 'mute' &&
+        entry.actionType !== 'temp_mute' &&
+        entry.actionType !== 'perm_mute' &&
+        entry.actionType !== 'unmute'
+      ) {
         return false;
       }
       if (
@@ -684,6 +726,22 @@ export const AdminModerationLogsTab: React.FC<AdminModerationLogsTabProps> = ({
         actionFilter === 'roles' &&
         entry.actionType !== 'moderator_role_granted' &&
         entry.actionType !== 'moderator_role_revoked'
+      ) {
+        return false;
+      }
+      if (
+        actionFilter === 'other' &&
+        entry.actionType !== 'email_in_review' &&
+        entry.actionType !== 'email_review_released' &&
+        entry.actionType !== 'verification_approved' &&
+        entry.actionType !== 'verification_rejected' &&
+        entry.actionType !== 'user_verified' &&
+        entry.actionType !== 'user_unverified' &&
+        entry.actionType !== 'abusive_chat_flagged' &&
+        entry.actionType !== 'channel_disabled' &&
+        entry.actionType !== 'channel_enabled' &&
+        entry.actionType !== 'channel_deleted' &&
+        entry.actionType !== 'post_deleted'
       ) {
         return false;
       }
@@ -821,8 +879,127 @@ export const AdminModerationLogsTab: React.FC<AdminModerationLogsTabProps> = ({
         </div>
       )}
 
-      {/* 📋 DEĞİŞTİRİLEMEZ MODERASYON KAYITLARI (AUDIT LOG) */}
+      {/* 📋 DEĞİŞTİRİLEMEZ MODERASYON KAYITLARI & ERİŞİM DENETİM GÜNLÜĞÜ */}
       <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl p-4 sm:p-5 shadow-xs space-y-4">
+        {isMainAdmin && (
+          <div className="flex items-center gap-2 border-b border-zinc-100 dark:border-zinc-800 pb-3">
+            <button
+              type="button"
+              onClick={() => setActiveSubTab('moderation')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeSubTab === 'moderation'
+                  ? 'bg-red-600 text-white shadow-xs'
+                  : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900'
+              }`}
+            >
+              <History className="w-3.5 h-3.5" />
+              <span>Moderasyon İşlem Günlüğü</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveSubTab('access_audit')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeSubTab === 'access_audit'
+                  ? 'bg-indigo-600 text-white shadow-xs'
+                  : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:text-zinc-900'
+              }`}
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>Muse Sohbet Erişim Denetimi ({accessLogsState.items.length}{accessLogsState.hasMore ? '+' : ''})</span>
+            </button>
+          </div>
+        )}
+
+        {activeSubTab === 'access_audit' && isMainAdmin ? (
+          <div className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-100 dark:border-zinc-800 pb-3">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0" />
+                <div>
+                  <h3 className="text-sm font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-2">
+                    <span>Muse Moderatör Erişim Denetim Günlüğü</span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/25">
+                      Salt Okunur Denetim
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-zinc-400">
+                    Moderatör Muse tarafından görüntülenen özel sohbetler, grup sohbetleri ve kanal gönderilerinin zaman damgalı erişim izleri.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {accessLogsState.loading && accessLogsState.items.length === 0 ? (
+              <div className="p-12 text-center text-zinc-400 text-xs flex flex-col items-center justify-center gap-2">
+                <Loader2 className="w-5 h-5 animate-spin text-indigo-600" />
+                <span>Erişim kayıtları yükleniyor...</span>
+              </div>
+            ) : accessLogsState.items.length === 0 ? (
+              <div className="p-12 text-center text-zinc-400 text-xs bg-zinc-50 dark:bg-zinc-800/40 rounded-2xl border border-zinc-100 dark:border-zinc-800">
+                Henüz kayıtlı bir sohbet veya kanal inceleme erişimi bulunmuyor.
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {accessLogsState.items.map((acc) => (
+                  <div
+                    key={acc.id}
+                    className="p-3.5 rounded-2xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-800 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-900/50 flex items-center justify-center shrink-0">
+                        {acc.targetType === 'channel' ? <Radio className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-bold text-zinc-900 dark:text-zinc-100 truncate flex items-center gap-2">
+                          <span>{acc.targetName || acc.targetId}</span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-900/50">
+                            Salt Okunur
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-zinc-400 flex items-center gap-2 mt-0.5 flex-wrap">
+                          <span className="font-medium text-zinc-600 dark:text-zinc-300">@{acc.moderatorUsername || 'muse'}</span>
+                          <span>•</span>
+                          <span className="font-mono text-[10px]">Hedef: {acc.targetId}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-zinc-200/80 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-300">
+                        {acc.action === 'view_conversation_messages' ? 'Sohbet Mesajları' : 'Kanal Gönderileri'}
+                      </span>
+                      <span className="text-[11px] font-mono text-zinc-400">
+                        {formatDateTime(acc.accessedAt)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+
+                {accessLogsState.hasMore ? (
+                  <div className="pt-2 pb-1 flex justify-center">
+                    <button
+                      type="button"
+                      onClick={() => accessLogsHandleRef.current?.loadMore()}
+                      disabled={accessLogsState.loadingMore}
+                      className="px-4 py-2 rounded-xl bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-50 text-xs font-bold text-zinc-700 dark:text-zinc-200 flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {accessLogsState.loadingMore ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      )}
+                      <span>Devamını Yükle ({accessLogsState.items.length} kayıt yüklendi)</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="pt-2 pb-1 text-center text-[11px] text-zinc-400">
+                    Tüm erişim kayıtları listelendi (Toplam {accessLogsState.items.length} kayıt).
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-100 dark:border-zinc-800 pb-3">
           <div className="flex items-center gap-2">
             <History className="w-5 h-5 text-red-600 shrink-0" />
@@ -896,6 +1073,7 @@ export const AdminModerationLogsTab: React.FC<AdminModerationLogsTabProps> = ({
                 ['expiry', 'Süre Bitimi'],
                 ['reports', 'Şikâyet/Rapor'],
                 ['roles', 'Yetki'],
+                ['other', 'Doğrulama & Kanal'],
               ] as const
             ).map(([key, label]) => (
               <button
@@ -1033,6 +1211,8 @@ export const AdminModerationLogsTab: React.FC<AdminModerationLogsTabProps> = ({
               </div>
             )}
           </div>
+        )}
+          </>
         )}
       </div>
     </div>

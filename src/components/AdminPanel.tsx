@@ -27,10 +27,12 @@ import {
   verifyModeratorAuthority,
   fetchScopedConversationsForModeration,
   fetchScopedMessagesForModeration,
+  subscribeToModeratorScopedConversationTriggers,
   submitModerationReport,
   isUserEffectivelyBanned,
   isUserEffectivelyMuted,
   formatRemainingTime,
+  toTimestampMs,
 } from '../services/moderationService';
 import {
   fetchAllChannelsForAdmin,
@@ -87,6 +89,7 @@ import {
   History,
   Clock,
   Lock,
+  ChevronDown,
 } from 'lucide-react';
 
 interface AdminPanelProps {
@@ -244,7 +247,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setProcessingChannelId(channel.id);
     const newStatus = !channel.isVerified;
     try {
-      await setChannelVerification(channel.id, newStatus);
+      await setChannelVerification(channel.id, newStatus, currentUser, channel.name);
       setAdminChannels((prev) =>
         prev.map((c) => (c.id === channel.id ? { ...c, isVerified: newStatus } : c))
       );
@@ -263,7 +266,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setProcessingChannelId(channel.id);
     const newDisabled = !channel.disabled;
     try {
-      await setChannelDisabled(channel.id, newDisabled);
+      await setChannelDisabled(channel.id, newDisabled, currentUser, channel.name);
       setAdminChannels((prev) =>
         prev.map((c) => (c.id === channel.id ? { ...c, disabled: newDisabled } : c))
       );
@@ -286,7 +289,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     setProcessingChannelId(channel.id);
     try {
-      await deleteChannel(channel.id);
+      await deleteChannel(channel.id, undefined, currentUser, channel.name);
       setAdminChannels((prev) => prev.filter((c) => c.id !== channel.id));
       setChannelActionMsg({ type: 'success', text: `✓ ${channel.name} kanalı tamamen silindi.` });
       if (inspectingChannel?.id === channel.id) {
@@ -320,7 +323,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (!confirmed) return;
 
     try {
-      await deleteChannelPost(inspectingChannel.id, postId);
+      await deleteChannelPost(inspectingChannel.id, postId, currentUser);
       setChannelPosts((prev) => prev.filter((p) => p.id !== postId));
       setAdminChannels((prev) =>
         prev.map((c) =>
@@ -374,8 +377,44 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // 📋 SOHBET LOGLARI STATE'LERİ
   const [allConversations, setAllConversations] = useState<Conversation[]>([]);
   const [loadingConversations, setLoadingConversations] = useState(false);
+  const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
+  const [convHasMore, setConvHasMore] = useState(false);
+  const [convNextCursor, setConvNextCursor] = useState<string | null>(null);
+  const [convTotalCount, setConvTotalCount] = useState(0);
   const [chatLogFilter, setChatLogFilter] = useState<'all' | 'direct' | 'group'>('all');
   const [chatLogSearch, setChatLogSearch] = useState('');
+
+  const mainScrollRef = useRef<HTMLElement>(null);
+  const chatLogsSentinelRef = useRef<HTMLDivElement>(null);
+  const loadingMoreConvRef = useRef(false);
+  const convNextCursorRef = useRef<string | null>(null);
+  const convHasMoreRef = useRef(false);
+
+  const mergeUniqueConversations = (
+    existing: Conversation[],
+    incoming: Conversation[],
+    mode: 'prepend_head' | 'append_page'
+  ): Conversation[] => {
+    const map = new Map<string, Conversation>();
+    if (mode === 'prepend_head') {
+      for (const c of incoming) {
+        if (c?.id) map.set(c.id, c);
+      }
+      for (const c of existing) {
+        if (c?.id && !map.has(c.id)) {
+          map.set(c.id, c);
+        }
+      }
+    } else {
+      for (const c of existing) {
+        if (c?.id) map.set(c.id, c);
+      }
+      for (const c of incoming) {
+        if (c?.id) map.set(c.id, c);
+      }
+    }
+    return Array.from(map.values());
+  };
 
   // Açık olan sohbet logu modalı
   const [activeLogConversation, setActiveLogConversation] = useState<Conversation | null>(null);
@@ -417,7 +456,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // Sohbetleri çekme fonksiyonu (Admin: tümü, Moderatör: yalnızca yetkili kapsam)
+  // Sohbetleri çekme fonksiyonu (Admin: tümü, Moderatör: ilk 30 kapsamlı sohbet + sayfalama)
   const loadConversations = async () => {
     if (!hasPanelAccess) return;
     setLoadingConversations(true);
@@ -425,14 +464,73 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (isAdmin) {
         const convs = await fetchAllConversationsForAdmin(currentUser);
         setAllConversations(convs);
+        setConvTotalCount(convs.length);
+        setConvHasMore(false);
+        setConvNextCursor(null);
+        convHasMoreRef.current = false;
+        convNextCursorRef.current = null;
       } else if (isModerator) {
-        const res = await fetchScopedConversationsForModeration();
-        setAllConversations(res.conversations as Conversation[]);
+        const res = await fetchScopedConversationsForModeration({ limit: 30 });
+        const list = mergeUniqueConversations([], res.conversations as Conversation[], 'prepend_head');
+        setAllConversations(list);
+        setConvTotalCount(res.totalCount);
+        setConvHasMore(res.hasMore);
+        setConvNextCursor(res.nextCursor);
+        convHasMoreRef.current = res.hasMore;
+        convNextCursorRef.current = res.nextCursor;
       }
     } catch (err) {
       console.error('Sohbetler yüklenemedi:', err);
     } finally {
       setLoadingConversations(false);
+    }
+  };
+
+  const refreshScopedConversationsHead = async () => {
+    if (!isModerator) return;
+    try {
+      const res = await fetchScopedConversationsForModeration({ limit: 30 });
+      setConvTotalCount(res.totalCount);
+      setAllConversations((prev) =>
+        mergeUniqueConversations(prev, res.conversations as Conversation[], 'prepend_head')
+      );
+      if (!convNextCursorRef.current && res.nextCursor) {
+        setConvNextCursor(res.nextCursor);
+        convNextCursorRef.current = res.nextCursor;
+      }
+      if (res.hasMore && !convHasMoreRef.current) {
+        setConvHasMore(true);
+        convHasMoreRef.current = true;
+      }
+    } catch (err) {
+      console.error('Sohbetler gerçek zamanlı yenilenemedi:', err);
+    }
+  };
+
+  const loadMoreConversations = async () => {
+    if (!isModerator || loadingMoreConvRef.current || !convHasMoreRef.current || !convNextCursorRef.current) {
+      return;
+    }
+    loadingMoreConvRef.current = true;
+    setLoadingMoreConversations(true);
+    try {
+      const res = await fetchScopedConversationsForModeration({
+        limit: 30,
+        cursor: convNextCursorRef.current,
+      });
+      setAllConversations((prev) =>
+        mergeUniqueConversations(prev, res.conversations as Conversation[], 'append_page')
+      );
+      setConvTotalCount(res.totalCount);
+      setConvHasMore(res.hasMore);
+      setConvNextCursor(res.nextCursor);
+      convHasMoreRef.current = res.hasMore;
+      convNextCursorRef.current = res.nextCursor;
+    } catch (err) {
+      console.error('Sonraki sohbet sayfası yüklenemedi:', err);
+    } finally {
+      loadingMoreConvRef.current = false;
+      setLoadingMoreConversations(false);
     }
   };
 
@@ -444,6 +542,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       loadConversations();
     }
   }, [isAdmin, isModerator]);
+
+  // Moderatör için yeni şikâyet / moderasyon işareti oluştuğunda gerçek zamanlı liste güncellemesi
+  useEffect(() => {
+    if (!isModerator) return;
+    const unsub = subscribeToModeratorScopedConversationTriggers(() => {
+      void refreshScopedConversationsHead();
+    });
+    return () => unsub();
+  }, [isModerator]);
+
+  // Moderatör Sohbet İnceleme listesi aşağı kaydırıldığında sonraki 30 sohbeti otomatik yükle
+  useEffect(() => {
+    if (!isModerator || activeTab !== 'chatlogs' || !convHasMore) return;
+    const sentinel = chatLogsSentinelRef.current;
+    const root = mainScrollRef.current;
+    if (!sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void loadMoreConversations();
+        }
+      },
+      {
+        root: root || null,
+        rootMargin: '220px',
+        threshold: 0.05,
+      }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [isModerator, activeTab, convHasMore, convNextCursor, allConversations.length]);
 
   // ObjectURL bellek temizliği
   useEffect(() => {
@@ -1213,7 +1344,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <button
               onClick={() => {
                 setActiveTab('chatlogs');
-                loadConversations();
+                if (allConversations.length === 0) {
+                  void loadConversations();
+                } else if (isModerator) {
+                  void refreshScopedConversationsHead();
+                }
               }}
               className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                 activeTab === 'chatlogs'
@@ -1222,7 +1357,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               }`}
             >
               <FileText className="w-3.5 h-3.5" />
-              <span>{isAdmin ? `Sohbet Logları (${allConversations.length})` : `Sohbet İnceleme (${allConversations.length})`}</span>
+              <span>
+                {isAdmin
+                  ? `Sohbet Logları (${allConversations.length})`
+                  : `Sohbet İnceleme (${convTotalCount || allConversations.length})`}
+              </span>
             </button>
 
             <button
@@ -1344,7 +1483,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       </header>
 
       {/* 📱💻 ANA İÇERİK ALANI */}
-      <main className="flex-1 w-full overflow-y-auto overflow-x-hidden p-3 sm:p-5 md:p-8">
+      <main
+        ref={mainScrollRef}
+        onScroll={(e) => {
+          if (!isModerator || activeTab !== 'chatlogs' || !convHasMoreRef.current || loadingMoreConvRef.current) {
+            return;
+          }
+          const el = e.currentTarget;
+          if (el.scrollHeight - el.scrollTop - el.clientHeight < 260) {
+            void loadMoreConversations();
+          }
+        }}
+        className="flex-1 w-full overflow-y-auto overflow-x-hidden p-3 sm:p-5 md:p-8"
+      >
         <div className="max-w-7xl mx-auto space-y-6">
           {/* TAB: ŞÜPHELİ OTURUMLAR (Yalnızca Ana Yönetici) */}
           {isAdmin && activeTab === 'suspicious_sessions' && (
@@ -1398,7 +1549,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           )}
 
           {/* TAB 1: KULLANICI YÖNETİMİ & MODERASYON */}
-          {isAdmin && activeTab === 'verifications' && <AdminVerificationTab />}
+          {isAdmin && activeTab === 'verifications' && <AdminVerificationTab currentUser={currentUser} />}
 
           {activeTab === 'users' && (
             <div className="space-y-5">
@@ -2027,7 +2178,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           : 'text-zinc-500 hover:text-zinc-900'
                       }`}
                     >
-                      Tümü ({allConversations.length})
+                      Tümü ({isModerator && convTotalCount > allConversations.length ? `${allConversations.length}/${convTotalCount}` : allConversations.length})
                     </button>
                     <button
                       onClick={() => setChatLogFilter('direct')}
@@ -2092,15 +2243,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       };
                     });
 
-                    let timeFormatted = '—';
-                    if (conv.lastMessageTimestamp?.toDate) {
-                      timeFormatted = conv.lastMessageTimestamp.toDate().toLocaleDateString('tr-TR', {
-                        day: '2-digit',
-                        month: '2-digit',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      });
-                    }
+                    const convTsMs = toTimestampMs(
+                      conv.lastMessageTimestamp || conv.updatedAt || (conv as any).createdAt
+                    );
+                    const timeFormatted = convTsMs
+                      ? new Date(convTsMs).toLocaleDateString('tr-TR', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })
+                      : '—';
 
                     return (
                       <div
@@ -2214,9 +2367,41 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             <span>→</span>
                           </span>
                         </div>
+                        {!isAdmin && (conv as any).scopeReason && (
+                          <div className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-lg truncate">
+                            {(conv as any).scopeReason}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
+                </div>
+              )}
+
+              {/* Moderatör Sayfalı Yükleme Alt Alanı & Kaydırma İşaretçisi */}
+              {isModerator && !loadingConversations && allConversations.length > 0 && (
+                <div ref={chatLogsSentinelRef} className="pt-2 pb-4 flex flex-col items-center justify-center gap-2">
+                  {loadingMoreConversations ? (
+                    <div className="flex items-center gap-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400 py-2">
+                      <Loader2 className="w-4 h-4 animate-spin text-red-600" />
+                      <span>Sonraki 30 sohbet yükleniyor...</span>
+                    </div>
+                  ) : convHasMore ? (
+                    <button
+                      type="button"
+                      onClick={() => void loadMoreConversations()}
+                      className="px-4 py-2 rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 hover:border-red-500/50 text-xs font-bold text-zinc-700 dark:text-zinc-200 flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+                    >
+                      <ChevronDown className="w-4 h-4 text-red-600" />
+                      <span>
+                        Daha Fazla Sohbet Yükle ({allConversations.length} / {convTotalCount})
+                      </span>
+                    </button>
+                  ) : (
+                    <div className="text-[11px] text-zinc-400 font-medium py-1">
+                      Tüm yetkili sohbetler yüklendi ({allConversations.length} / {convTotalCount || allConversations.length})
+                    </div>
+                  )}
                 </div>
               )}
             </div>

@@ -1,9 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { subscribeToAllVerificationRequests, updateVerificationRequestStatus } from '../services/verificationService';
-import type { VerificationRequest } from '../types';
+import type { VerificationRequest, UserProfile } from '../types';
 import { Loader2, CheckCircle, XCircle, Search, ShieldCheck, User, Tv } from 'lucide-react';
 
-export const AdminVerificationTab: React.FC = () => {
+interface AdminVerificationTabProps {
+  currentUser?: UserProfile | null;
+}
+
+export const AdminVerificationTab: React.FC<AdminVerificationTabProps> = ({ currentUser }) => {
   const [requests, setRequests] = useState<VerificationRequest[]>([]);
   const [loading, setLoading] = useState(true);
   
@@ -35,7 +39,7 @@ export const AdminVerificationTab: React.FC = () => {
 
     setProcessingId(id);
     try {
-      await updateVerificationRequestStatus(id, action, reason);
+      await updateVerificationRequestStatus(id, action, reason, currentUser);
     } catch (err: any) {
       alert(err.message || 'Bir hata oluştu.');
     } finally {

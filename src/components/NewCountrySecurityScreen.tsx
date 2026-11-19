@@ -329,7 +329,7 @@ export const NewCountrySecurityScreen: React.FC<NewCountrySecurityScreenProps> =
               </h1>
 
               <p className="text-sm text-[#8696a0] leading-relaxed">
-                Hesabınıza daha önce görülmemiş bir cihaz ve ülkeden erişim algılandı.
+                Hesabınızda daha önce doğrulanmamış veya tanınmayan bir cihazdan erişim algılandı.
                 <strong className="block text-amber-400 mt-1">
                   Bu oturum henüz doğrulanmadı.
                 </strong>

@@ -259,15 +259,17 @@ async function dbListCollection(
   colPath: string,
   idToken?: string,
   pageSize = 300,
-  maxDocs = 1500
+  maxDocs = 50000
 ): Promise<Record<string, any>[]> {
   if (getApps().length > 0) {
     const results: Record<string, any>[] = [];
     let lastDoc: FirebaseFirestore.QueryDocumentSnapshot | null = null;
     while (results.length < maxDocs) {
+      const take = Math.min(pageSize, maxDocs - results.length);
+      if (take <= 0) break;
       let q: FirebaseFirestore.Query = getFirestore()
         .collection(colPath)
-        .limit(Math.min(pageSize, maxDocs - results.length));
+        .limit(take);
       if (lastDoc) {
         q = q.startAfter(lastDoc);
       }
@@ -276,7 +278,7 @@ async function dbListCollection(
       for (const d of snap.docs) {
         results.push({ id: d.id, ...d.data() });
       }
-      if (snap.docs.length < pageSize) break;
+      if (snap.docs.length < take) break;
       lastDoc = snap.docs[snap.docs.length - 1];
     }
     return results;
@@ -284,8 +286,11 @@ async function dbListCollection(
 
   const results: Record<string, any>[] = [];
   let pageToken: string | undefined = undefined;
+  const seenPageTokens = new Set<string>();
+
   while (results.length < maxDocs) {
     const remaining = Math.min(pageSize, maxDocs - results.length);
+    if (remaining <= 0) break;
     const qs = new URLSearchParams({ pageSize: String(remaining) });
     if (pageToken) qs.set("pageToken", pageToken);
 
@@ -304,7 +309,10 @@ async function dbListCollection(
       if (parsed) results.push(parsed);
     }
     if (!json.nextPageToken || docs.length === 0) break;
-    pageToken = String(json.nextPageToken);
+    const nextTk = String(json.nextPageToken);
+    if (seenPageTokens.has(nextTk) || nextTk === pageToken) break;
+    seenPageTokens.add(nextTk);
+    pageToken = nextTk;
   }
   return results;
 }
@@ -312,7 +320,7 @@ async function dbListCollection(
 async function dbListConversationMessages(
   conversationId: string,
   idToken?: string,
-  limitCount = 200
+  maxMessages = 10000
 ): Promise<Record<string, any>[]> {
   if (getApps().length > 0) {
     const snap = await getFirestore()
@@ -320,35 +328,24 @@ async function dbListConversationMessages(
       .doc(conversationId)
       .collection("messages")
       .orderBy("createdAt", "asc")
-      .limitToLast(limitCount)
+      .limit(maxMessages)
       .get();
     return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   }
 
-  const resp = await fetch(`${FIRESTORE_BASE}/conversations/${encodeURIComponent(conversationId)}:runQuery`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
-    },
-    body: JSON.stringify({
-      structuredQuery: {
-        from: [{ collectionId: "messages" }],
-        orderBy: [{ field: { fieldPath: "createdAt" }, direction: "ASCENDING" }],
-        limit: limitCount,
-      },
-    }),
-    signal: AbortSignal.timeout(8000),
+  const rawDocs = await dbListCollection(
+    `conversations/${encodeURIComponent(conversationId)}/messages`,
+    idToken,
+    300,
+    maxMessages
+  );
+
+  return rawDocs.sort((a, b) => {
+    const aMs = toTimestampMs(a.createdAt) ?? 0;
+    const bMs = toTimestampMs(b.createdAt) ?? 0;
+    if (aMs !== bMs) return aMs - bMs;
+    return compareDocIds(String(a.id || ""), String(b.id || ""));
   });
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`Firestore REST messages query failed (${resp.status}): ${errText}`);
-  }
-  const rows = (await resp.json()) as any[];
-  return rows
-    .filter((r) => r.document)
-    .map((r) => fromRestDoc(r.document))
-    .filter(Boolean) as Record<string, any>[];
 }
 
 function toTimestampMs(val: any): number | null {
@@ -416,6 +413,7 @@ async function writeModerationLog(
     targetUsername?: string | null;
     actionType:
       | "temp_mute"
+      | "perm_mute"
       | "unmute"
       | "temp_ban"
       | "unban"
@@ -424,7 +422,18 @@ async function writeModerationLog(
       | "auto_ban_expired"
       | "moderator_role_granted"
       | "moderator_role_revoked"
-      | "report_reviewed";
+      | "report_reviewed"
+      | "email_in_review"
+      | "email_review_released"
+      | "verification_rejected"
+      | "verification_approved"
+      | "user_verified"
+      | "user_unverified"
+      | "abusive_chat_flagged"
+      | "channel_disabled"
+      | "channel_enabled"
+      | "channel_deleted"
+      | "post_deleted";
     reason: string;
     startsAt: Date;
     endsAt: Date | null;
@@ -494,6 +503,39 @@ async function writeModerationLog(
   }
 
   return logId;
+}
+
+async function recordModerationAccessLog(
+  authority: VerifiedAuthority,
+  entry: {
+    action: "view_conversation_messages" | "view_channel_posts";
+    targetType: "conversation" | "channel";
+    targetId: string;
+    targetName?: string | null;
+  },
+  idToken?: string
+): Promise<void> {
+  const logId = `acc_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+  const now = new Date();
+  await dbSetDoc(
+    "moderationAccessLogs",
+    logId,
+    {
+      id: logId,
+      moderatorUid: authority.uid,
+      moderatorEmail: authority.email || null,
+      moderatorUsername: authority.username || null,
+      action: entry.action,
+      targetType: entry.targetType,
+      targetId: entry.targetId,
+      targetName: entry.targetName || null,
+      readOnly: true,
+      accessedAt: now,
+    },
+    idToken
+  ).catch((err) => {
+    console.warn("[ModerationAccessLog] Access audit log write error:", err?.message || err);
+  });
 }
 
 function isTargetMainAdmin(targetDoc: Record<string, any> | null, targetUid: string): boolean {
@@ -587,43 +629,189 @@ async function expireUserPenaltiesIfDue(
   return { banExpired, muteExpired };
 }
 
-async function computeModeratorAllowedConversationIds(
-  idToken?: string
-): Promise<Map<string, string>> {
-  const scopeReasons = new Map<string, string>();
-  const [reports, conversations] = await Promise.all([
-    dbListCollection("userReports", idToken, 300).catch(() => []),
-    dbListCollection("conversations", idToken, 300).catch(() => []),
-  ]);
+const IGNORED_SCOPE_UIDS = new Set(["system_redchat_ai"]);
 
-  const reportedUids = new Set<string>();
-  for (const r of reports) {
+function compareDocIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+interface ModeratorScopeEntry {
+  reason: string;
+  signalMs: number;
+}
+
+function getConversationSortTimestampMs(conv: Record<string, any>, signalMs: number = 0): number {
+  const lastMsgMs = toTimestampMs(conv.lastMessageTimestamp) ?? 0;
+  const updatedMs = toTimestampMs(conv.updatedAt) ?? 0;
+  const createdMs = toTimestampMs(conv.createdAt) ?? 0;
+  return Math.max(lastMsgMs, updatedMs, createdMs, signalMs);
+}
+
+async function computeModeratorConversationScope(
+  idToken?: string,
+  preloadedConversations?: Record<string, any>[]
+): Promise<{
+  scopeEntries: Map<string, ModeratorScopeEntry>;
+  conversations: Record<string, any>[];
+}> {
+  const scopeEntries = new Map<string, ModeratorScopeEntry>();
+
+  const setScope = (cid: string, reason: string, signalMs: number, overwrite: boolean = false) => {
+    if (!cid) return;
+    const prev = scopeEntries.get(cid);
+    if (!prev) {
+      scopeEntries.set(cid, { reason, signalMs });
+    } else {
+      scopeEntries.set(cid, {
+        reason: overwrite ? reason : prev.reason,
+        signalMs: Math.max(prev.signalMs, signalMs),
+      });
+    }
+  };
+
+  const safeList = (col: string) =>
+    dbListCollection(col, idToken, 300, 10000).catch((err) => {
+      console.warn(`[ModerationScope] ${col} list warning:`, err?.message || err);
+      return [] as Record<string, any>[];
+    });
+
+  const [userReports, moderationReports, usersList, bannedDevicesList, conversations] =
+    await Promise.all([
+      safeList("userReports"),
+      safeList("moderationReports"),
+      safeList("users"),
+      safeList("banned_devices"),
+      preloadedConversations ? Promise.resolve(preloadedConversations) : safeList("conversations"),
+    ]);
+
+  const reportedUids = new Map<string, number>();
+  for (const r of userReports) {
     if (r.status === "dismissed") continue;
+    const sigMs = toTimestampMs(r.updatedAt || r.createdAt) ?? 0;
     if (r.conversationId) {
-      scopeReasons.set(r.conversationId, `Şikâyet Kapsamı (#${String(r.id || "").slice(-6)})`);
+      setScope(
+        String(r.conversationId),
+        `Şikâyet Kapsamı (#${String(r.id || "").slice(-6)})`,
+        sigMs,
+        true
+      );
     }
-    if (r.reportedUid) {
-      reportedUids.add(r.reportedUid);
+    const repUid = String(r.reportedUid || "").trim();
+    if (repUid && !IGNORED_SCOPE_UIDS.has(repUid)) {
+      reportedUids.set(repUid, Math.max(reportedUids.get(repUid) ?? 0, sigMs));
     }
+  }
+
+  const modReportedUids = new Map<string, number>();
+  for (const mr of moderationReports) {
+    const sigMs = toTimestampMs(mr.createdAt) ?? 0;
+    if (mr.conversationId) {
+      setScope(
+        String(mr.conversationId),
+        `Moderasyon Raporu (#${String(mr.id || "").slice(-6)})`,
+        sigMs
+      );
+    }
+    const targetUid = String(mr.targetUid || "").trim();
+    if (targetUid && !IGNORED_SCOPE_UIDS.has(targetUid)) {
+      modReportedUids.set(targetUid, Math.max(modReportedUids.get(targetUid) ?? 0, sigMs));
+    }
+  }
+
+  const moderatedUserSignals = new Map<string, number>();
+  const aiBlockedUserSignals = new Map<string, number>();
+  const protectedStaffUids = new Set<string>();
+
+  for (const u of usersList) {
+    const uid = String(u.id || u.uid || "").trim();
+    if (!uid || IGNORED_SCOPE_UIDS.has(uid)) continue;
+    const emailLower = String(u.email || "").trim().toLowerCase();
+    if (
+      u.role === "admin" ||
+      u.role === "moderator" ||
+      MAIN_ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(emailLower)
+    ) {
+      protectedStaffUids.add(uid);
+      continue;
+    }
+    if (
+      u.isBanned === true ||
+      u.isMuted === true ||
+      u.isEmailInReview === true ||
+      u.securityStatus === "terminated"
+    ) {
+      const sigMs =
+        toTimestampMs(u.bannedAt || u.mutedAt || u.emailInReviewAt || u.terminatedAt || u.updatedAt) ??
+        0;
+      moderatedUserSignals.set(uid, Math.max(moderatedUserSignals.get(uid) ?? 0, sigMs));
+    } else if (u.aiAccess === "blocked") {
+      const sigMs = toTimestampMs(u.aiAccessUpdatedAt || u.updatedAt) ?? 0;
+      aiBlockedUserSignals.set(uid, Math.max(aiBlockedUserSignals.get(uid) ?? 0, sigMs));
+    }
+  }
+
+  for (const b of bannedDevicesList) {
+    if (b.isActive === false) continue;
+    const targetUid = String(b.targetUid || "").trim();
+    if (!targetUid || IGNORED_SCOPE_UIDS.has(targetUid) || protectedStaffUids.has(targetUid)) {
+      continue;
+    }
+    const sigMs = toTimestampMs(b.bannedAt || b.createdAt) ?? 0;
+    moderatedUserSignals.set(targetUid, Math.max(moderatedUserSignals.get(targetUid) ?? 0, sigMs));
   }
 
   for (const c of conversations) {
-    const cid = c.id;
+    const cid = String(c.id || "").trim();
     if (!cid) continue;
-    if (c.securityStatus === "terminated" || (Number(c.abusiveCount) || 0) > 0) {
-      if (!scopeReasons.has(cid)) {
-        scopeReasons.set(cid, "Güvenlik İhlali / Kötüye Kullanım Bayrağı");
-      }
-      continue;
+
+    if (
+      c.securityStatus === "terminated" ||
+      (Number(c.abusiveCount) || 0) > 0 ||
+      Boolean(c.terminatedReason)
+    ) {
+      const flagMs = toTimestampMs(c.terminatedAt || c.updatedAt || c.lastMessageTimestamp) ?? 0;
+      setScope(cid, "Güvenlik İhlali / Kötüye Kullanım Bayrağı", flagMs);
     }
-    const pIds: string[] = Array.isArray(c.participantIds) ? c.participantIds : [];
-    const matchedReported = pIds.find((uid) => reportedUids.has(uid));
-    if (matchedReported && !scopeReasons.has(cid)) {
-      scopeReasons.set(cid, "Şikâyet Edilen Kullanıcı Kapsamı");
+
+    const participantUnion = new Set<string>();
+    if (Array.isArray(c.participantIds)) {
+      for (const pid of c.participantIds) {
+        if (typeof pid === "string" && pid.trim()) participantUnion.add(pid.trim());
+      }
+    }
+    if (c.participants && typeof c.participants === "object") {
+      for (const pid of Object.keys(c.participants)) {
+        if (pid.trim()) participantUnion.add(pid.trim());
+      }
+    }
+
+    const hasAiParticipant = participantUnion.has("system_redchat_ai");
+    for (const uid of participantUnion) {
+      if (!uid || IGNORED_SCOPE_UIDS.has(uid)) continue;
+      if (reportedUids.has(uid)) {
+        setScope(cid, "Şikâyet Edilen Kullanıcı Kapsamı", reportedUids.get(uid) ?? 0);
+      } else if (modReportedUids.has(uid)) {
+        setScope(cid, "Moderasyon Raporlu Kullanıcı Kapsamı", modReportedUids.get(uid) ?? 0);
+      } else if (moderatedUserSignals.has(uid)) {
+        setScope(cid, "Cezalı / İncelemedeki Kullanıcı Kapsamı", moderatedUserSignals.get(uid) ?? 0);
+      } else if (hasAiParticipant && aiBlockedUserSignals.has(uid)) {
+        setScope(cid, "AI Erişimi Kısıtlı Kullanıcı Kapsamı", aiBlockedUserSignals.get(uid) ?? 0);
+      }
     }
   }
 
-  return scopeReasons;
+  return { scopeEntries, conversations };
+}
+
+async function computeModeratorAllowedConversationIds(
+  idToken?: string
+): Promise<Map<string, string>> {
+  const { scopeEntries } = await computeModeratorConversationScope(idToken);
+  const reasons = new Map<string, string>();
+  scopeEntries.forEach((entry, cid) => {
+    reasons.set(cid, entry.reason);
+  });
+  return reasons;
 }
 
 function sanitizeConversationForModerator(conv: Record<string, any>, scopeReason: string) {
@@ -642,13 +830,17 @@ function sanitizeConversationForModerator(conv: Record<string, any>, scopeReason
     id: conv.id,
     isGroup: Boolean(conv.isGroup),
     name: conv.name || null,
+    photoURL: conv.photoURL || null,
     participantIds: Array.isArray(conv.participantIds) ? conv.participantIds : [],
     participants: sanitizedParticipants,
     lastMessageText: conv.lastMessageText || "",
+    lastMessageHasImage: Boolean(conv.lastMessageHasImage),
+    lastMessageHasVideo: Boolean(conv.lastMessageHasVideo),
     lastMessageTimestamp: conv.lastMessageTimestamp || null,
     securityStatus: conv.securityStatus || "active",
     abusiveCount: conv.abusiveCount || 0,
     updatedAt: conv.updatedAt || null,
+    createdAt: conv.createdAt || null,
     scopeReason,
   };
 }
@@ -661,6 +853,9 @@ export function registerModerationRoutes(app: Express) {
       if (!tokenUser) return;
 
       const authority = await resolveVerifiedAuthority(tokenUser);
+      if (authority.isMainAdmin || authority.isModerator) {
+        void ensureHistoricalModerationSynced(tokenUser.token, authority.isMainAdmin).catch(() => {});
+      }
       return res.json({
         uid: authority.uid,
         email: authority.email,
@@ -671,8 +866,8 @@ export function registerModerationRoutes(app: Express) {
         verifiedAt: new Date().toISOString(),
         permissions: {
           canViewUsers: authority.isMainAdmin || authority.isModerator,
-          canTempMute: authority.isMainAdmin || authority.isModerator,
-          canTempBan: authority.isMainAdmin || authority.isModerator,
+          canTempMute: authority.isMainAdmin,
+          canTempBan: authority.isMainAdmin,
           canPermBan: authority.isMainAdmin,
           canManageRoles: authority.isMainAdmin,
           canDeleteUsers: authority.isMainAdmin,
@@ -680,7 +875,8 @@ export function registerModerationRoutes(app: Express) {
           canManageSecuritySessions: authority.isMainAdmin,
           canManageSystemSettings: authority.isMainAdmin,
           canInspectScopedChats: authority.isMainAdmin || authority.isModerator,
-          canInspectAllPrivateChats: authority.isMainAdmin,
+          canInspectAllPrivateChats: authority.isMainAdmin || authority.isModerator,
+          canInspectChannels: authority.isMainAdmin || authority.isModerator,
         },
       });
     } catch (err: any) {
@@ -812,8 +1008,10 @@ export function registerModerationRoutes(app: Express) {
       if (!secGate.ok) return;
 
       const authority = await resolveVerifiedAuthority(tokenUser);
-      if (!authority.isMainAdmin && !authority.isModerator) {
-        return res.status(403).json({ error: "Bu işlem için moderatör veya yönetici yetkisi gerekli." });
+      if (!authority.isMainAdmin) {
+        return res.status(403).json({
+          error: "Bu işlem yalnızca Ana Yönetici yetkisindedir. Muse moderatör hesabı salt okunur inceleme yetkisine sahiptir.",
+        });
       }
 
       const { targetUid, reason, durationMinutes, muteType } = req.body || {};
@@ -919,8 +1117,10 @@ export function registerModerationRoutes(app: Express) {
       if (!secGate.ok) return;
 
       const authority = await resolveVerifiedAuthority(tokenUser);
-      if (!authority.isMainAdmin && !authority.isModerator) {
-        return res.status(403).json({ error: "Bu işlem için moderatör veya yönetici yetkisi gerekli." });
+      if (!authority.isMainAdmin) {
+        return res.status(403).json({
+          error: "Bu işlem yalnızca Ana Yönetici yetkisindedir. Muse moderatör hesabı salt okunur inceleme yetkisine sahiptir.",
+        });
       }
 
       const { targetUid, reason } = req.body || {};
@@ -992,8 +1192,10 @@ export function registerModerationRoutes(app: Express) {
       if (!secGate.ok) return;
 
       const authority = await resolveVerifiedAuthority(tokenUser);
-      if (!authority.isMainAdmin && !authority.isModerator) {
-        return res.status(403).json({ error: "Bu işlem için moderatör veya yönetici yetkisi gerekli." });
+      if (!authority.isMainAdmin) {
+        return res.status(403).json({
+          error: "Bu işlem yalnızca Ana Yönetici yetkisindedir. Muse moderatör hesabı salt okunur inceleme yetkisine sahiptir.",
+        });
       }
 
       const { targetUid, reason, durationMinutes, banType } = req.body || {};
@@ -1100,8 +1302,10 @@ export function registerModerationRoutes(app: Express) {
       if (!secGate.ok) return;
 
       const authority = await resolveVerifiedAuthority(tokenUser);
-      if (!authority.isMainAdmin && !authority.isModerator) {
-        return res.status(403).json({ error: "Bu işlem için moderatör veya yönetici yetkisi gerekli." });
+      if (!authority.isMainAdmin) {
+        return res.status(403).json({
+          error: "Bu işlem yalnızca Ana Yönetici yetkisindedir. Muse moderatör hesabı salt okunur inceleme yetkisine sahiptir.",
+        });
       }
 
       const { targetUid, reason } = req.body || {};
@@ -1212,23 +1416,107 @@ export function registerModerationRoutes(app: Express) {
         return res.status(403).json({ error: "Yetkisiz erişim." });
       }
 
-      const conversations = await dbListCollection("conversations", tokenUser.token, 300);
+      const parsedLimit = Number(req.query.limit);
+      const pageLimit =
+        Number.isFinite(parsedLimit) && parsedLimit >= 1
+          ? Math.min(Math.floor(parsedLimit), 100)
+          : 30;
 
-      if (authority.isMainAdmin) {
-        return res.json({
-          scope: "all",
-          conversations: conversations.map((c) => sanitizeConversationForModerator(c, "Tam Yönetici Erişimi")),
-        });
+      const rawCursor = typeof req.query.cursor === "string" ? req.query.cursor.trim() : "";
+      let cursorSortMs: number | null = null;
+      let cursorId: string | null = null;
+      if (rawCursor.includes("::")) {
+        const sepIdx = rawCursor.indexOf("::");
+        const msPart = Number(rawCursor.slice(0, sepIdx));
+        const idPart = rawCursor.slice(sepIdx + 2).trim();
+        if (Number.isFinite(msPart) && idPart) {
+          cursorSortMs = msPart;
+          cursorId = idPart;
+        }
       }
 
-      const scopeMap = await computeModeratorAllowedConversationIds(tokenUser.token);
-      const scopedList = conversations
-        .filter((c) => scopeMap.has(c.id))
-        .map((c) => sanitizeConversationForModerator(c, scopeMap.get(c.id)!));
+      const paginateScoped = (
+        entries: Array<{ conv: Record<string, any>; reason: string; sortMs: number }>
+      ) => {
+        const dedupedMap = new Map<string, { conv: Record<string, any>; reason: string; sortMs: number }>();
+        for (const item of entries) {
+          const cid = String(item.conv?.id || "").trim();
+          if (!cid) continue;
+          const prev = dedupedMap.get(cid);
+          if (!prev || item.sortMs > prev.sortMs) {
+            dedupedMap.set(cid, item);
+          }
+        }
 
+        const ordered = Array.from(dedupedMap.values()).sort((a, b) => {
+          if (b.sortMs !== a.sortMs) return b.sortMs - a.sortMs;
+          return compareDocIds(String(a.conv.id), String(b.conv.id));
+        });
+
+        const afterCursor =
+          cursorSortMs !== null && cursorId !== null
+            ? ordered.filter(
+                (item) =>
+                  item.sortMs < cursorSortMs! ||
+                  (item.sortMs === cursorSortMs! &&
+                    compareDocIds(String(item.conv.id), cursorId!) > 0)
+              )
+            : ordered;
+
+        const pageSlice = afterCursor.slice(0, pageLimit);
+        const hasMore = afterCursor.length > pageSlice.length;
+        const lastItem = pageSlice.length > 0 ? pageSlice[pageSlice.length - 1] : null;
+        const nextCursor =
+          hasMore && lastItem ? `${lastItem.sortMs}::${String(lastItem.conv.id)}` : null;
+
+        return {
+          totalCount: ordered.length,
+          hasMore,
+          nextCursor,
+          conversations: pageSlice.map((item) =>
+            sanitizeConversationForModerator(item.conv, item.reason)
+          ),
+        };
+      };
+
+      const conversations = await dbListCollection("conversations", tokenUser.token, 300, 50000);
+      const mapped = conversations.map((c) => {
+        let reason = "Birebir DM Sohbeti";
+        if (
+          c.securityStatus === "terminated" ||
+          (Number(c.abusiveCount) || 0) > 0 ||
+          Boolean(c.terminatedReason)
+        ) {
+          reason = "Güvenlik İhlali / Kötüye Kullanım Bayrağı";
+        } else {
+          const participantUnion = new Set<string>();
+          if (Array.isArray(c.participantIds)) {
+            for (const pid of c.participantIds) {
+              if (typeof pid === "string" && pid.trim()) participantUnion.add(pid.trim());
+            }
+          }
+          if (c.participants && typeof c.participants === "object") {
+            for (const pid of Object.keys(c.participants)) {
+              if (pid.trim()) participantUnion.add(pid.trim());
+            }
+          }
+          if (participantUnion.has("system_redchat_ai")) {
+            reason = "DeepRed AI Sohbeti";
+          } else if (Boolean(c.isGroup)) {
+            reason = `Özel Grup Sohbeti (${c.name || "Grup"})`;
+          }
+        }
+        return {
+          conv: c,
+          reason: authority.isMainAdmin ? "Tam Yönetici Erişimi" : reason,
+          sortMs: getConversationSortTimestampMs(c, 0),
+        };
+      });
+
+      const page = paginateScoped(mapped);
       return res.json({
-        scope: "moderation_only",
-        conversations: scopedList,
+        scope: authority.isMainAdmin ? "all" : "full_moderator_inspection",
+        ...page,
       });
     } catch (err: any) {
       console.error("❌ [Scoped Conversations] Error:", err);
@@ -1236,7 +1524,7 @@ export function registerModerationRoutes(app: Express) {
     }
   });
 
-  // 9. GİZLİLİK-SINIRLI MESAJ İNCELEME (Moderatör yalnızca kapsam içi sohbetin mesajlarını okuyabilir)
+  // 9. MESAJ İNCELEME (Moderatör & Admin tüm mesajları okuyabilir; moderatör erişimi denetim günlüğüne kaydedilir)
   app.get("/api/moderation/scoped-messages/:conversationId", async (req: Request, res: Response) => {
     try {
       const tokenUser = await authenticateRequest(req, res);
@@ -1257,19 +1545,26 @@ export function registerModerationRoutes(app: Express) {
         return res.status(400).json({ error: "conversationId gerekli." });
       }
 
-      if (authority.isModerator) {
-        const scopeMap = await computeModeratorAllowedConversationIds(tokenUser.token);
-        if (!scopeMap.has(conversationId)) {
-          return res.status(403).json({
-            error: "Gizlilik sınırı: Bu özel sohbet aktif şikâyet veya güvenlik moderasyon kapsamınızda değil.",
-          });
-        }
+      // Denetlenebilir erişim kaydı (canlı yenilemelerde çift kayıt yazılmaması için refresh !== 1 kontrol edilir)
+      if (authority.isModerator && req.query.refresh !== "1") {
+        const convDoc = await dbGetDoc("conversations", conversationId, tokenUser.token).catch(() => null);
+        const convTitle = convDoc?.isGroup ? convDoc?.name || "Grup Sohbeti" : convDoc?.id || conversationId;
+        await recordModerationAccessLog(
+          authority,
+          {
+            action: "view_conversation_messages",
+            targetType: "conversation",
+            targetId: conversationId,
+            targetName: convTitle,
+          },
+          tokenUser.token
+        );
       }
 
       const rawMessages = await dbListConversationMessages(
         conversationId,
         tokenUser.token,
-        authority.isMainAdmin ? 500 : 120
+        10000
       );
 
       const safeMessages = rawMessages.map((m) => ({
@@ -1280,14 +1575,19 @@ export function registerModerationRoutes(app: Express) {
         text: m.text || "",
         imageUrl: m.imageUrl || null,
         videoUrl: m.videoUrl || null,
+        videoDuration: m.videoDuration ?? null,
+        replyTo: m.replyTo || null,
+        reactions: m.reactions || null,
+        isEdited: Boolean(m.isEdited),
         isSystemMessage: Boolean(m.isSystemMessage),
         isSecurityWarning: Boolean(m.isSecurityWarning),
+        systemType: m.systemType || null,
         createdAt: m.createdAt || null,
       }));
 
       return res.json({
         conversationId,
-        scope: authority.isMainAdmin ? "full" : "moderation_scoped",
+        scope: "full",
         messages: safeMessages,
       });
     } catch (err: any) {
@@ -1403,6 +1703,605 @@ export function registerModerationRoutes(app: Express) {
       return res.status(500).json({ error: err?.message || "Moderasyon raporu kaydedilemedi." });
     }
   });
+
+  // 11. KANALLAR LİSTESİ (Moderatör & Admin salt okunur / yönetim amaçlı)
+  app.get("/api/moderation/channels", async (req: Request, res: Response) => {
+    try {
+      const tokenUser = await authenticateRequest(req, res);
+      if (!tokenUser) return;
+      const authority = await resolveVerifiedAuthority(tokenUser);
+      if (!authority.isMainAdmin && !authority.isModerator) {
+        return res.status(403).json({ error: "Yetkisiz erişim." });
+      }
+      const channels = await dbListCollection("channels", tokenUser.token, 300, 2000);
+      const safeChannels = channels.map((c) => ({
+        id: c.id,
+        name: c.name || "Kanal",
+        description: c.description || "",
+        photoURL: c.photoURL || null,
+        bannerUrl: c.bannerUrl || null,
+        isVerified: Boolean(c.isVerified),
+        disabled: Boolean(c.disabled),
+        followerCount: Number(c.followerCount) || 0,
+        postCount: Number(c.postCount) || 0,
+        createdAt: c.createdAt || null,
+        updatedAt: c.updatedAt || null,
+      }));
+      return res.json({ channels: safeChannels });
+    } catch (err: any) {
+      console.error("❌ [Moderation Channels] Error:", err);
+      return res.status(500).json({ error: err?.message || "Kanallar listelenemedi." });
+    }
+  });
+
+  // 12. KANAL GÖNDERİLERİ İNCELEME (Moderatör için erişim kaydı tutulur)
+  app.get("/api/moderation/channel-posts/:channelId", async (req: Request, res: Response) => {
+    try {
+      const tokenUser = await authenticateRequest(req, res);
+      if (!tokenUser) return;
+      const authority = await resolveVerifiedAuthority(tokenUser);
+      if (!authority.isMainAdmin && !authority.isModerator) {
+        return res.status(403).json({ error: "Yetkisiz erişim." });
+      }
+      const channelId = String(req.params.channelId || "").trim();
+      if (!channelId) {
+        return res.status(400).json({ error: "channelId gerekli." });
+      }
+      const channelDoc = await dbGetDoc("channels", channelId, tokenUser.token).catch(() => null);
+      if (authority.isModerator && req.query.refresh !== "1") {
+        await recordModerationAccessLog(
+          authority,
+          {
+            action: "view_channel_posts",
+            targetType: "channel",
+            targetId: channelId,
+            targetName: channelDoc?.name || channelId,
+          },
+          tokenUser.token
+        );
+      }
+      const rawPosts = await dbListCollection(
+        `channels/${encodeURIComponent(channelId)}/posts`,
+        tokenUser.token,
+        300,
+        2000
+      );
+      const sorted = rawPosts.sort((a, b) => {
+        const aMs = toTimestampMs(a.createdAt) ?? 0;
+        const bMs = toTimestampMs(b.createdAt) ?? 0;
+        return aMs - bMs;
+      });
+      const safePosts = sorted.map((p) => ({
+        id: p.id,
+        channelId: p.channelId || channelId,
+        text: p.text || "",
+        imageUrl: p.imageUrl || null,
+        videoUrl: p.videoUrl || null,
+        videoDuration: p.videoDuration ?? null,
+        createdAt: p.createdAt || null,
+        reactions: p.reactions || null,
+        viewCount: p.viewCount || 0,
+      }));
+      return res.json({ channelId, posts: safePosts });
+    } catch (err: any) {
+      console.error("❌ [Moderation Channel Posts] Error:", err);
+      return res.status(500).json({ error: err?.message || "Kanal gönderileri okunamadı." });
+    }
+  });
+
+  // 13. MODERASYON ERİŞİM GÜNLÜĞÜ (Yalnızca Ana Yönetici denetimi için)
+  app.get("/api/admin/moderation/access-logs", async (req: Request, res: Response) => {
+    try {
+      const tokenUser = await authenticateRequest(req, res);
+      if (!tokenUser) return;
+      const authority = await resolveVerifiedAuthority(tokenUser);
+      if (!authority.isMainAdmin) {
+        return res.status(403).json({ error: "Bu kayıtları yalnızca Ana Yönetici inceleyebilir." });
+      }
+      const logs = await dbListCollection("moderationAccessLogs", tokenUser.token, 100, 2000);
+      const sorted = logs.sort((a, b) => {
+        const aMs = toTimestampMs(a.accessedAt) ?? 0;
+        const bMs = toTimestampMs(b.accessedAt) ?? 0;
+        return bMs - aMs;
+      });
+      return res.json({ logs: sorted });
+    } catch (err: any) {
+      console.error("❌ [Moderation Access Logs] Error:", err);
+      return res.status(500).json({ error: err?.message || "Erişim kayıtları alınamadı." });
+    }
+  });
+}
+
+function sanitizePublicModerationReason(raw: any, fallback: string): string {
+  const str = typeof raw === "string" ? raw.trim() : "";
+  if (!str) return fallback;
+  // IPv4, IPv6 ve HWID sızıntı kalıplarını temizle
+  const cleaned = str
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[gizli-ağ]")
+    .replace(/\bHWID[:\s-]*[A-Za-z0-9_-]{4,}\b/gi, "[gizli-cihaz]")
+    .trim();
+  return cleaned || fallback;
+}
+
+function toDateValue(val: any, fallback: Date = new Date()): Date {
+  const ms = toTimestampMs(val);
+  return ms !== null ? new Date(ms) : fallback;
+}
+
+let inFlightHistoricalSync: Promise<boolean> | null = null;
+let lastHistoricalSyncAtMs = 0;
+const HISTORICAL_SYNC_TTL_MS = 3 * 60_000;
+
+export async function ensureHistoricalModerationSynced(
+  idToken?: string,
+  isMainAdmin: boolean = false
+): Promise<boolean> {
+  if (getApps().length === 0 && (!isMainAdmin || !idToken)) {
+    return false;
+  }
+  const nowMs = Date.now();
+  if (nowMs - lastHistoricalSyncAtMs < HISTORICAL_SYNC_TTL_MS) {
+    return true;
+  }
+  if (inFlightHistoricalSync) {
+    return inFlightHistoricalSync;
+  }
+  inFlightHistoricalSync = syncHistoricalModerationRecords(idToken, isMainAdmin)
+    .then((ok) => {
+      if (ok) lastHistoricalSyncAtMs = Date.now();
+      return ok;
+    })
+    .finally(() => {
+      inFlightHistoricalSync = null;
+    });
+  return inFlightHistoricalSync;
+}
+
+// Geçmiş ve harici ban/susturma/doğrulama/kanal/şikayet/yetki moderasyon işlemlerini moderationLogs koleksiyonuna senkronize et
+export async function syncHistoricalModerationRecords(
+  idToken?: string,
+  isMainAdmin: boolean = false
+): Promise<boolean> {
+  const hasAdminSdk = getApps().length > 0;
+  if (!hasAdminSdk && (!isMainAdmin || !idToken)) {
+    return false;
+  }
+
+  const effectiveToken = hasAdminSdk ? undefined : idToken;
+
+  try {
+    const existingLogs = await dbListCollection("moderationLogs", effectiveToken, 300, 5000).catch(
+      () => []
+    );
+    const existingDocIds = new Set<string>();
+    const existingActionKeys = new Set<string>();
+    const existingReportIds = new Set<string>();
+    const existingMirrorIndex = new Map<string, number[]>();
+
+    for (const data of existingLogs) {
+      if (data.id) existingDocIds.add(String(data.id));
+      if (data.targetUid && data.actionType) {
+        existingActionKeys.add(`${data.targetUid}__${data.actionType}`);
+      }
+      if (data.reportId) {
+        existingReportIds.add(String(data.reportId));
+      }
+      if (data.id && !String(data.id).startsWith("modlog_sync_")) {
+        const mirrorKey = `${data.targetUid || ""}__${data.actionType || ""}`;
+        const ms = toTimestampMs(data.createdAt);
+        if (ms !== null) {
+          const list = existingMirrorIndex.get(mirrorKey) || [];
+          list.push(ms);
+          existingMirrorIndex.set(mirrorKey, list);
+        }
+      }
+    }
+
+    const pendingWrites: Array<{ docId: string; payload: Record<string, any> }> = [];
+
+    const queueLog = (docId: string, payload: Record<string, any>) => {
+      if (existingDocIds.has(docId)) return;
+      existingDocIds.add(docId);
+      if (payload.targetUid && payload.actionType) {
+        existingActionKeys.add(`${payload.targetUid}__${payload.actionType}`);
+      }
+      if (payload.reportId) {
+        existingReportIds.add(String(payload.reportId));
+      }
+      pendingWrites.push({ docId, payload });
+    };
+
+    const [
+      usersList,
+      convsList,
+      verifsList,
+      grantsList,
+      channelsList,
+      userReportsList,
+      modReportsList,
+      bannedDevicesList,
+      adminLogsList,
+    ] = await Promise.all([
+      dbListCollection("users", effectiveToken, 300, 3000).catch(() => []),
+      dbListCollection("conversations", effectiveToken, 300, 3000).catch(() => []),
+      dbListCollection("verificationRequests", effectiveToken, 300, 2000).catch(() => []),
+      dbListCollection("moderatorGrants", effectiveToken, 100, 500).catch(() => []),
+      dbListCollection("channels", effectiveToken, 300, 2000).catch(() => []),
+      dbListCollection("userReports", effectiveToken, 300, 3000).catch(() => []),
+      dbListCollection("moderationReports", effectiveToken, 300, 3000).catch(() => []),
+      dbListCollection("banned_devices", effectiveToken, 300, 2000).catch(() => []),
+      dbListCollection("adminLogs", effectiveToken, 300, 5000).catch(() => []),
+    ]);
+
+    // 1. users koleksiyonu: aktif banlı, susturulmuş ve e-posta incelemesindeki kullanıcılar
+    for (const u of usersList) {
+      const uid = String(u.id || u.uid || "");
+      if (!uid) continue;
+
+      if (u.isBanned) {
+        const actionType = u.banType === "temporary" ? "temp_ban" : "perm_ban";
+        const docId = `modlog_legacy_ban_${uid}`;
+        const key = `${uid}__${actionType}`;
+        if (!existingDocIds.has(docId) && !existingActionKeys.has(key)) {
+          const bannedTime = toDateValue(u.bannedAt || u.updatedAt || u.createdAt);
+          queueLog(docId, {
+            id: docId,
+            actorUid: u.bannedByUid || "CHYM2vRB8aTyu3a8iPzbGD31Fj63",
+            actorEmail: null,
+            actorUsername: "Sukuna (Admin)",
+            actorRole: "admin",
+            targetUid: uid,
+            targetUsername: u.username || uid,
+            actionType,
+            reason: sanitizePublicModerationReason(u.banReason, "Admin tarafından askıya alındı"),
+            startsAt: bannedTime,
+            endsAt: u.banExpiresAt ? toDateValue(u.banExpiresAt) : null,
+            durationMinutes: null,
+            reportId: null,
+            createdAt: bannedTime,
+          });
+        }
+      }
+
+      if (u.isMuted) {
+        const actionType = u.muteType === "temporary" ? "temp_mute" : "perm_mute";
+        const docId = `modlog_legacy_mute_${uid}`;
+        const key = `${uid}__${actionType}`;
+        if (!existingDocIds.has(docId) && !existingActionKeys.has(key)) {
+          const mutedTime = toDateValue(u.mutedAt || u.updatedAt || u.createdAt);
+          queueLog(docId, {
+            id: docId,
+            actorUid: u.mutedByUid || "CHYM2vRB8aTyu3a8iPzbGD31Fj63",
+            actorEmail: null,
+            actorUsername: "Sukuna (Admin)",
+            actorRole: "admin",
+            targetUid: uid,
+            targetUsername: u.username || uid,
+            actionType,
+            reason: sanitizePublicModerationReason(u.muteReason, "Admin tarafından susturuldu"),
+            startsAt: mutedTime,
+            endsAt: u.muteExpiresAt ? toDateValue(u.muteExpiresAt) : null,
+            durationMinutes: null,
+            reportId: null,
+            createdAt: mutedTime,
+          });
+        }
+      }
+
+      if (u.isEmailInReview) {
+        const docId = `modlog_legacy_email_review_${uid}`;
+        const key = `${uid}__email_in_review`;
+        if (!existingDocIds.has(docId) && !existingActionKeys.has(key)) {
+          const reviewTime = toDateValue(u.emailInReviewAt || u.updatedAt || u.createdAt);
+          queueLog(docId, {
+            id: docId,
+            actorUid: u.emailInReviewBy || "CHYM2vRB8aTyu3a8iPzbGD31Fj63",
+            actorEmail: null,
+            actorUsername: "Sukuna (Admin)",
+            actorRole: "admin",
+            targetUid: uid,
+            targetUsername: u.username || uid,
+            actionType: "email_in_review",
+            reason: "Şüpheli alan adı / tek kullanımlık e-posta incelemesi",
+            startsAt: reviewTime,
+            endsAt: null,
+            durationMinutes: null,
+            reportId: null,
+            createdAt: reviewTime,
+          });
+        }
+      }
+    }
+
+    // 2. Kötüye kullanım / güvenlik bayrağı bulunan sohbetler
+    for (const c of convsList) {
+      const cid = String(c.id || "");
+      if (!cid) continue;
+      if (c.securityStatus === "terminated" || (Number(c.abusiveCount) || 0) > 0) {
+        const docId = `modlog_legacy_abuse_${cid}`;
+        const pIds: string[] = Array.isArray(c.participantIds) ? c.participantIds : [];
+        const targetUid = pIds.find((uid) => uid !== "system_redchat_ai") || cid;
+        const key = `${targetUid}__abusive_chat_flagged`;
+        if (!existingDocIds.has(docId) && !existingActionKeys.has(key)) {
+          const flagTime = toDateValue(c.updatedAt || c.lastMessageTimestamp || c.createdAt);
+          queueLog(docId, {
+            id: docId,
+            actorUid: "system_redchat_ai",
+            actorEmail: null,
+            actorUsername: "DeepRed AI Moderatör",
+            actorRole: "system",
+            targetUid,
+            targetUsername: targetUid.slice(0, 12),
+            actionType: "abusive_chat_flagged",
+            reason: `Sohbette otomatik güvenlik ihlali ve kötüye kullanım tespiti (${c.abusiveCount || 1} ihlal)`,
+            startsAt: flagTime,
+            endsAt: null,
+            durationMinutes: null,
+            reportId: null,
+            createdAt: flagTime,
+          });
+        }
+      }
+    }
+
+    // 3. Onaylanan ve reddedilen doğrulama (Mavi Tik) başvuruları
+    for (const v of verifsList) {
+      const vid = String(v.id || "");
+      if (!vid) continue;
+      if (v.status === "rejected" || v.status === "approved") {
+        const actionType =
+          v.status === "approved" ? "verification_approved" : "verification_rejected";
+        const docId = `modlog_legacy_verif_${v.status === "approved" ? "app" : "rej"}_${vid}`;
+        const targetUid = String(v.userId || v.channelId || vid);
+        if (!existingDocIds.has(docId)) {
+          const reqTime = toDateValue(v.reviewedAt || v.updatedAt || v.createdAt);
+          queueLog(docId, {
+            id: docId,
+            actorUid: v.reviewedBy || "CHYM2vRB8aTyu3a8iPzbGD31Fj63",
+            actorEmail: null,
+            actorUsername: "Sukuna (Admin)",
+            actorRole: "admin",
+            targetUid,
+            targetUsername: v.username || v.channelName || targetUid.slice(0, 12),
+            actionType,
+            reason: sanitizePublicModerationReason(
+              v.rejectionReason,
+              v.status === "approved"
+                ? `${v.type === "channel" ? "Kanal" : "Kullanıcı"} mavi tik doğrulama başvurusu onaylandı`
+                : `${v.type === "channel" ? "Kanal" : "Kullanıcı"} doğrulama kriterleri karşılanmadı`
+            ),
+            startsAt: reqTime,
+            endsAt: null,
+            durationMinutes: null,
+            reportId: null,
+            createdAt: reqTime,
+          });
+        }
+      }
+    }
+
+    // 4. Moderatör yetki verme ve kaldırma geçmişi (moderatorGrants)
+    for (const g of grantsList) {
+      const gid = String(g.id || g.uid || "");
+      if (!gid) continue;
+      if (g.grantedAt) {
+        const docId = `modlog_legacy_grant_${gid}`;
+        const grantKey = `${gid}__moderator_role_granted`;
+        if (!existingDocIds.has(docId) && !existingActionKeys.has(grantKey)) {
+          const grantedTime = toDateValue(g.grantedAt || g.updatedAt);
+          queueLog(docId, {
+            id: docId,
+            actorUid: g.grantedByUid || "CHYM2vRB8aTyu3a8iPzbGD31Fj63",
+            actorEmail: null,
+            actorUsername: g.grantedByEmail || "Sukuna (Admin)",
+            actorRole: "admin",
+            targetUid: gid,
+            targetUsername: g.email ? String(g.email).split("@")[0] : gid,
+            actionType: "moderator_role_granted",
+            reason: "Ana yönetici tarafından moderatör yetkisi verildi",
+            startsAt: grantedTime,
+            endsAt: null,
+            durationMinutes: null,
+            reportId: null,
+            createdAt: grantedTime,
+          });
+        }
+      }
+      if (g.revokedAt || g.active === false) {
+        const docId = `modlog_legacy_revoke_${gid}`;
+        const revokeKey = `${gid}__moderator_role_revoked`;
+        if (!existingDocIds.has(docId) && !existingActionKeys.has(revokeKey)) {
+          const revokedTime = toDateValue(g.revokedAt || g.updatedAt);
+          queueLog(docId, {
+            id: docId,
+            actorUid: g.revokedByUid || "CHYM2vRB8aTyu3a8iPzbGD31Fj63",
+            actorEmail: null,
+            actorUsername: "Sukuna (Admin)",
+            actorRole: "admin",
+            targetUid: gid,
+            targetUsername: g.email ? String(g.email).split("@")[0] : gid,
+            actionType: "moderator_role_revoked",
+            reason: "Ana yönetici tarafından moderatör yetkisi kaldırıldı",
+            startsAt: revokedTime,
+            endsAt: null,
+            durationMinutes: null,
+            reportId: null,
+            createdAt: revokedTime,
+          });
+        }
+      }
+    }
+
+    // 5. Devre dışı bırakılmış kanallar
+    for (const ch of channelsList) {
+      const chId = String(ch.id || "");
+      if (!chId) continue;
+      if (ch.disabled === true) {
+        const docId = `modlog_legacy_ch_dis_${chId}`;
+        const key = `${chId}__channel_disabled`;
+        if (!existingDocIds.has(docId) && !existingActionKeys.has(key)) {
+          const chTime = toDateValue(ch.updatedAt || ch.createdAt);
+          queueLog(docId, {
+            id: docId,
+            actorUid: ch.disabledByUid || "CHYM2vRB8aTyu3a8iPzbGD31Fj63",
+            actorEmail: null,
+            actorUsername: "Sukuna (Admin)",
+            actorRole: "admin",
+            targetUid: chId,
+            targetUsername: ch.name || chId,
+            actionType: "channel_disabled",
+            reason: `Kanal yönetici tarafından devre dışı bırakıldı: ${ch.name || chId}`,
+            startsAt: chTime,
+            endsAt: null,
+            durationMinutes: null,
+            reportId: null,
+            createdAt: chTime,
+          });
+        }
+      }
+    }
+
+    // 6. İncelenmiş kullanıcı şikâyetleri ve moderasyon raporları
+    for (const r of userReportsList) {
+      const rid = String(r.id || "");
+      if (!rid) continue;
+      if (r.status === "resolved" || r.status === "dismissed" || Boolean(r.reviewedByUid)) {
+        const docId = `modlog_legacy_urep_${rid}`;
+        if (!existingDocIds.has(docId) && !existingReportIds.has(rid)) {
+          const repTime = toDateValue(r.updatedAt || r.createdAt);
+          queueLog(docId, {
+            id: docId,
+            actorUid: r.reviewedByUid || "CHYM2vRB8aTyu3a8iPzbGD31Fj63",
+            actorEmail: null,
+            actorUsername: "Moderasyon",
+            actorRole: r.reviewedByUid === MUSE_MODERATOR_UID ? "moderator" : "admin",
+            targetUid: String(r.reportedUid || rid),
+            targetUsername: r.reportedUsername || null,
+            actionType: "report_reviewed",
+            reason: sanitizePublicModerationReason(
+              r.resolutionNote || r.reason,
+              `Kullanıcı şikâyeti incelendi (${r.status})`
+            ),
+            startsAt: repTime,
+            endsAt: null,
+            durationMinutes: null,
+            reportId: rid,
+            createdAt: repTime,
+          });
+        }
+      }
+    }
+
+    for (const mr of modReportsList) {
+      const mrid = String(mr.id || "");
+      if (!mrid) continue;
+      const docId = `modlog_legacy_mrep_${mrid}`;
+      if (!existingDocIds.has(docId) && !existingReportIds.has(mrid)) {
+        const repTime = toDateValue(mr.createdAt);
+        const riskPrefix = mr.riskLevel ? `[${String(mr.riskLevel).toUpperCase()}] ` : "";
+        queueLog(docId, {
+          id: docId,
+          actorUid: mr.authorUid || "CHYM2vRB8aTyu3a8iPzbGD31Fj63",
+          actorEmail: null,
+          actorUsername: mr.authorUsername || "Moderasyon",
+          actorRole: mr.authorRole === "moderator" ? "moderator" : "admin",
+          targetUid: String(mr.targetUid || mrid),
+          targetUsername: mr.targetUsername || null,
+          actionType: "report_reviewed",
+          reason: sanitizePublicModerationReason(
+            `${riskPrefix}${mr.title || mr.summary || "Moderasyon inceleme raporu"}`,
+            "Moderasyon inceleme raporu"
+          ),
+          startsAt: repTime,
+          endsAt: null,
+          durationMinutes: null,
+          reportId: mrid,
+          createdAt: repTime,
+        });
+      }
+    }
+
+    // 7. Kalıcı engellenen cihaz/hesap kayıtları (IP, HWID ve donanım kimliği KESİNLİKLE kopyalanmaz!)
+    for (const b of bannedDevicesList) {
+      const bid = String(b.id || "");
+      if (!bid) continue;
+      const docId = `modlog_legacy_devban_${bid}`;
+      if (!existingDocIds.has(docId)) {
+        const banTime = toDateValue(b.bannedAt || b.createdAt);
+        queueLog(docId, {
+          id: docId,
+          actorUid: b.bannedByUid || "CHYM2vRB8aTyu3a8iPzbGD31Fj63",
+          actorEmail: null,
+          actorUsername: b.bannedBy || "Sukuna (Admin)",
+          actorRole: "admin",
+          targetUid: String(b.targetUid || `device_${bid}`),
+          targetUsername: b.targetUsername || b.targetDisplayName || null,
+          actionType: "perm_ban",
+          reason: sanitizePublicModerationReason(b.reason, "Kalıcı hesap ve erişim engeli"),
+          startsAt: banTime,
+          endsAt: null,
+          durationMinutes: null,
+          reportId: null,
+          createdAt: banTime,
+        });
+      }
+    }
+
+    // 8. adminLogs içindeki YALNIZCA category === 'moderation' kayıtlarını aktar
+    // (security_session, IP, e-posta inceleme sistem detayları KESİNLİKLE aktarılmaz)
+    for (const al of adminLogsList) {
+      if (al.category !== "moderation") continue;
+      const alId = String(al.id || "");
+      if (!alId) continue;
+
+      const docId = `modlog_sync_${alId}`;
+      if (existingDocIds.has(docId)) continue;
+
+      const actionType = al.metadata?.actionType || al.action || "report_reviewed";
+      const targetUid = String(al.targetUid || "system");
+      const createdAt = toDateValue(al.createdAt);
+
+      // Eğer canlı moderationLogs kaydının exact birebir aynasıysa (+/- 15sn), çift göstermeyi önle
+      const mirrorKey = `${targetUid}__${actionType}`;
+      const timestamps = existingMirrorIndex.get(mirrorKey) || [];
+      const isLiveMirror = timestamps.some((ts) => Math.abs(ts - createdAt.getTime()) <= 15_000);
+      if (isLiveMirror) continue;
+
+      queueLog(docId, {
+        id: docId,
+        actorUid: al.actorUid || "CHYM2vRB8aTyu3a8iPzbGD31Fj63",
+        actorEmail: null,
+        actorUsername: al.actorName || "admin",
+        actorRole: "admin",
+        targetUid,
+        targetUsername: al.targetUsername || null,
+        actionType,
+        reason: sanitizePublicModerationReason(
+          al.details || al.reason,
+          "Yönetici moderasyon işlemi"
+        ),
+        startsAt: createdAt,
+        endsAt: al.metadata?.endsAt ? toDateValue(al.metadata.endsAt) : null,
+        durationMinutes: al.metadata?.durationMinutes ?? null,
+        reportId: null,
+        createdAt,
+      });
+    }
+
+    // Bekleyen tüm senkronizasyon kayıtlarını güvenli paketler halinde yaz
+    const BATCH_SIZE = 20;
+    for (let i = 0; i < pendingWrites.length; i += BATCH_SIZE) {
+      const slice = pendingWrites.slice(i, i + BATCH_SIZE);
+      await Promise.all(
+        slice.map((item) => dbSetDoc("moderationLogs", item.docId, item.payload, effectiveToken))
+      );
+    }
+
+    return true;
+  } catch (err) {
+    console.warn("[Moderation Sync] warning:", err);
+    return false;
+  }
 }
 
 // Sunucu arka planında süresi dolan geçici ban ve susturmaları temizle (Admin SDK aktifse)
@@ -1451,6 +2350,12 @@ export function startModerationExpirySweep() {
     }
   };
 
-  setTimeout(runSweep, 5000);
+  // Başlangıçta geçmiş kayıtları senkronize et ve süresi dolanları tara
+  setTimeout(async () => {
+    await syncHistoricalModerationRecords();
+    await runSweep();
+  }, 3000);
+
   setInterval(runSweep, 60_000);
 }
+

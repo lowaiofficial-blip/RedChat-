@@ -1218,6 +1218,7 @@ export default function App() {
             >
               {activeChannelId && activeChannel ? (
                 <ChannelView
+                  key={activeChannel.id}
                   channel={activeChannel}
                   currentUser={currentUserProfile}
                   isOwner={isCurrentChannelOwner}
@@ -1239,6 +1240,7 @@ export default function App() {
                 />
               ) : activeConversationId ? (
                 <ChatWindow
+                  key={activeConversationId}
                   conversation={activeConversation}
                   currentUser={currentUserProfile}
                   allUsers={displayedUsers}

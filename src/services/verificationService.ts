@@ -1,4 +1,4 @@
-import { db } from './firebase';
+import { db, auth } from './firebase';
 import { 
   collection, 
   doc, 
@@ -12,7 +12,8 @@ import {
   orderBy,
   onSnapshot
 } from 'firebase/firestore';
-import type { VerificationRequest } from '../types';
+import type { VerificationRequest, UserProfile } from '../types';
+import { recordModerationAuditLogClient } from './adminService';
 
 export async function submitVerificationRequest(data: Omit<VerificationRequest, 'id' | 'status' | 'createdAt' | 'updatedAt'>): Promise<void> {
   if (!db) throw new Error('Firestore hazır değil');
@@ -103,7 +104,8 @@ export function subscribeToAllVerificationRequests(
 export async function updateVerificationRequestStatus(
   requestId: string,
   status: 'approved' | 'rejected',
-  rejectionReason?: string
+  rejectionReason?: string,
+  adminActor?: UserProfile | null
 ): Promise<void> {
   if (!db) throw new Error('Firestore hazır değil');
   
@@ -119,6 +121,8 @@ export async function updateVerificationRequestStatus(
   await updateDoc(reqRef, {
     status,
     rejectionReason: rejectionReason || null,
+    reviewedBy: adminActor?.uid || auth?.currentUser?.uid || null,
+    reviewedAt: serverTimestamp(),
     updatedAt: serverTimestamp()
   });
 
@@ -135,4 +139,21 @@ export async function updateVerificationRequestStatus(
       });
     }
   }
+
+  const targetUid = data.type === 'channel' ? (data.channelId || requestId) : (data.userId || requestId);
+  const targetUsername = data.type === 'channel'
+    ? (data.channelName || targetUid)
+    : (data.username || data.displayName || targetUid);
+
+  await recordModerationAuditLogClient({
+    actor: adminActor || null,
+    targetUid,
+    targetUsername,
+    actionType: status === 'approved' ? 'verification_approved' : 'verification_rejected',
+    reason: rejectionReason?.trim()
+      ? rejectionReason.trim()
+      : status === 'approved'
+      ? `${data.type === 'channel' ? 'Kanal' : 'Kullanıcı'} mavi tik başvurusu onaylandı`
+      : `${data.type === 'channel' ? 'Kanal' : 'Kullanıcı'} mavi tik başvurusu reddedildi`,
+  });
 }

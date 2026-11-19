@@ -3,6 +3,7 @@ import {
   doc,
   onSnapshot,
   query,
+  where,
   orderBy,
   limit,
   getDocs,
@@ -23,6 +24,9 @@ import type {
   UserReportCategory,
   ModerationReport,
   Conversation,
+  Channel,
+  ChannelPost,
+  ModerationAccessLog,
 } from '../types';
 
 export const MUSE_MODERATOR_UID = 'GnQk5MbPQdS4GDl4cohFzRlKNw22';
@@ -263,12 +267,25 @@ export async function checkModerationExpiry(
   return data;
 }
 
-export async function fetchScopedConversationsForModeration(): Promise<{
+export interface ScopedConversationsPageResponse {
   scope: 'all' | 'moderation_only';
   conversations: ScopedConversationItem[];
-}> {
+  totalCount: number;
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+export async function fetchScopedConversationsForModeration(params?: {
+  limit?: number;
+  cursor?: string | null;
+}): Promise<ScopedConversationsPageResponse> {
   const headers = await getBearerHeaders();
-  const res = await fetch('/api/moderation/scoped-conversations', {
+  const qs = new URLSearchParams();
+  qs.set('limit', String(params?.limit ?? 30));
+  if (params?.cursor) {
+    qs.set('cursor', params.cursor);
+  }
+  const res = await fetch(`/api/moderation/scoped-conversations?${qs.toString()}`, {
     method: 'GET',
     headers,
   });
@@ -276,24 +293,175 @@ export async function fetchScopedConversationsForModeration(): Promise<{
   if (!res.ok) {
     throw new Error(data?.error || 'Kapsamlı sohbet listesi alınamadı.');
   }
-  return data;
+  const conversations = Array.isArray(data?.conversations) ? data.conversations : [];
+  return {
+    scope: data?.scope === 'all' ? 'all' : 'moderation_only',
+    conversations,
+    totalCount:
+      typeof data?.totalCount === 'number' ? data.totalCount : conversations.length,
+    hasMore: Boolean(data?.hasMore),
+    nextCursor: typeof data?.nextCursor === 'string' ? data.nextCursor : null,
+  };
 }
 
-export async function fetchScopedMessagesForModeration(conversationId: string): Promise<{
+export function subscribeToModeratorScopedConversationTriggers(
+  onTrigger: () => void
+): () => void {
+  if (!db) return () => {};
+
+  let disposed = false;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const scheduleRefresh = () => {
+    if (disposed) return;
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      if (!disposed) onTrigger();
+    }, 450);
+  };
+
+  const attachTriggerQuery = (q: ReturnType<typeof query>, label: string) => {
+    let initialized = false;
+    return onSnapshot(
+      q,
+      (snap) => {
+        if (!initialized) {
+          initialized = true;
+          return;
+        }
+        if (snap.docChanges().length > 0) {
+          scheduleRefresh();
+        }
+      },
+      (err) => {
+        logFirestoreError('list', label, err);
+      }
+    );
+  };
+
+    attachTriggerQuery(
+      query(collection(db, 'conversations'), orderBy('updatedAt', 'desc'), limit(30)),
+      'conversations_updatedAt_trigger'
+    ),
+    attachTriggerQuery(
+      query(collection(db, 'conversations'), orderBy('createdAt', 'desc'), limit(30)),
+      'conversations_createdAt_trigger'
+    ),
+    attachTriggerQuery(
+      query(collection(db, 'userReports'), orderBy('updatedAt', 'desc'), limit(20)),
+      'userReports_trigger'
+    ),
+    attachTriggerQuery(
+      query(collection(db, 'moderationReports'), orderBy('createdAt', 'desc'), limit(20)),
+      'moderationReports_trigger'
+    ),
+    attachTriggerQuery(
+      query(
+        collection(db, 'conversations'),
+        where('securityStatus', '==', 'terminated'),
+        limit(20)
+      ),
+      'conversations_terminated_trigger'
+    ),
+    attachTriggerQuery(
+      query(collection(db, 'conversations'), where('abusiveCount', '>', 0), limit(20)),
+      'conversations_abusive_trigger'
+    ),
+    attachTriggerQuery(
+      query(collection(db, 'users'), where('isBanned', '==', true), limit(20)),
+      'users_banned_trigger'
+    ),
+    attachTriggerQuery(
+      query(collection(db, 'users'), where('isMuted', '==', true), limit(20)),
+      'users_muted_trigger'
+    ),
+    attachTriggerQuery(
+      query(collection(db, 'users'), where('isEmailInReview', '==', true), limit(20)),
+      'users_email_review_trigger'
+    ),
+  ];
+
+  return () => {
+    disposed = true;
+    if (debounceTimer) clearTimeout(debounceTimer);
+    unsubs.forEach((u) => {
+      try {
+        u();
+      } catch {
+        // noop
+      }
+    });
+  };
+}
+
+export async function fetchScopedMessagesForModeration(
+  conversationId: string,
+  options?: { refresh?: boolean }
+): Promise<{
   conversationId: string;
   scope: 'full' | 'moderation_scoped';
   messages: ScopedMessageItem[];
 }> {
   const headers = await getBearerHeaders();
-  const res = await fetch(`/api/moderation/scoped-messages/${encodeURIComponent(conversationId)}`, {
-    method: 'GET',
-    headers,
-  });
+  const qs = options?.refresh ? '?refresh=1' : '';
+  const res = await fetch(
+    `/api/moderation/scoped-messages/${encodeURIComponent(conversationId)}${qs}`,
+    {
+      method: 'GET',
+      headers,
+    }
+  );
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(data?.error || 'Kapsamlı mesajlar okunamadı.');
   }
   return data;
+}
+
+export async function fetchChannelsForModeration(): Promise<Channel[]> {
+  const headers = await getBearerHeaders();
+  const res = await fetch('/api/moderation/channels', {
+    method: 'GET',
+    headers,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || 'Kanallar yüklenemedi.');
+  }
+  return Array.isArray(data?.channels) ? data.channels : [];
+}
+
+export async function fetchChannelPostsForModeration(
+  channelId: string,
+  options?: { refresh?: boolean }
+): Promise<ChannelPost[]> {
+  const headers = await getBearerHeaders();
+  const qs = options?.refresh ? '?refresh=1' : '';
+  const res = await fetch(
+    `/api/moderation/channel-posts/${encodeURIComponent(channelId)}${qs}`,
+    {
+      method: 'GET',
+      headers,
+    }
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || 'Kanal gönderileri yüklenemedi.');
+  }
+  return Array.isArray(data?.posts) ? data.posts : [];
+}
+
+export async function fetchModerationAccessLogsForAdmin(): Promise<ModerationAccessLog[]> {
+  const headers = await getBearerHeaders();
+  const res = await fetch('/api/admin/moderation/access-logs', {
+    method: 'GET',
+    headers,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || 'Erişim kayıtları alınamadı.');
+  }
+  return Array.isArray(data?.logs) ? data.logs : [];
 }
 
 export async function submitModerationReport(params: {
@@ -567,7 +735,7 @@ function createLivePaginatedSubscription<T extends { id: string; createdAt?: any
 
 export function subscribeToModerationLogsPaginated(
   onState: (state: PaginatedCollectionState<ModerationLogEntry>) => void,
-  pageSize: number = 25
+  pageSize: number = 10
 ): PaginatedSubscriptionHandle {
   return createLivePaginatedSubscription<ModerationLogEntry>('moderationLogs', pageSize, onState);
 }
@@ -584,6 +752,13 @@ export function subscribeToModerationReportsPaginated(
   pageSize: number = 50
 ): PaginatedSubscriptionHandle {
   return createLivePaginatedSubscription<ModerationReport>('moderationReports', pageSize, onState);
+}
+
+export function subscribeToModerationAccessLogsPaginated(
+  onState: (state: PaginatedCollectionState<ModerationAccessLog>) => void,
+  pageSize: number = 30
+): PaginatedSubscriptionHandle {
+  return createLivePaginatedSubscription<ModerationAccessLog>('moderationAccessLogs', pageSize, onState);
 }
 
 export function subscribeToModerationLogs(
