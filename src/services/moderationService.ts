@@ -104,7 +104,16 @@ export function toTimestampMs(val: any): number | null {
   if (val instanceof Date) return val.getTime();
   if (typeof val?.toDate === 'function') return val.toDate().getTime();
   if (typeof val?.toMillis === 'function') return val.toMillis();
-  if (typeof val?.seconds === 'number') return val.seconds * 1000;
+  // Firestore Timestamp values returned by the moderation API may be JSON-serialized
+  // with underscored fields instead of the client Timestamp methods.
+  if (typeof val?._seconds === 'number') {
+    const nanos = typeof val?._nanoseconds === 'number' ? val._nanoseconds : 0;
+    return val._seconds * 1000 + nanos / 1_000_000;
+  }
+  if (typeof val?.seconds === 'number') {
+    const nanos = typeof val?.nanoseconds === 'number' ? val.nanoseconds : 0;
+    return val.seconds * 1000 + nanos / 1_000_000;
+  }
   if (typeof val === 'string') {
     const ms = Date.parse(val);
     return Number.isNaN(ms) ? null : ms;
