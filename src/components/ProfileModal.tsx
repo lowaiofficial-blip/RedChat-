@@ -6,7 +6,7 @@ import { createPortal } from 'react-dom';
 import type { UserProfile } from '../types';
 import { updateUserProfileDetails, logoutUser, updateUserPrivacySettings } from '../services/authService';
 import { formatLastSeen } from '../services/chatService';
-import { uploadProfilePhoto, isValidHostedImageUrl, verifyHostedImageIsRenderable } from '../services/imageUploadService';
+import { uploadProfilePhoto, isValidHostedImageUrl } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
 import { isRedChatAI } from '../services/aiService';
@@ -357,10 +357,6 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       if (!isValidHostedImageUrl(downloadUrl)) {
         throw new Error('Yüklenen görsel için geçerli bir URL alınamadı.');
       }
-
-      // Do not replace the user's working avatar with a URL that the browser
-      // cannot actually render. This prevents the "blank avatar" failure mode.
-      await verifyHostedImageIsRenderable(downloadUrl);
 
       const updatedProfile = await updateUserProfileDetails(user.uid, {
         photoURL: downloadUrl,
