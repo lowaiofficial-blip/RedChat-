@@ -690,7 +690,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
               const username = isAi
                 ? 'deepred_ai'
                 : (otherUserObj?.username || otherInfo?.username || '');
-              const photoURL = otherUserObj?.photoURL || otherInfo?.photoURL || null;
+              const photoURL = otherUserObj ? (otherUserObj.photoURL || null) : (otherInfo?.photoURL || null);
               const isVerified = isAi ? true : Boolean(otherUserObj?.isVerified);
 
               return (
@@ -733,7 +733,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                           user={{
                             displayName,
                             username,
-                            photoURL: otherUserObj?.photoURL || otherInfo?.photoURL || null,
+                            photoURL,
                           }}
                         />
                       </div>

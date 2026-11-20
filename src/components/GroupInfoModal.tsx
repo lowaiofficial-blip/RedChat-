@@ -122,7 +122,7 @@ export const GroupInfoModal: React.FC<GroupInfoModalProps> = ({
 
       const displayName = getSafeUserName(userObj || participantInfo, 'Kullanıcı');
       const username = userObj?.username || participantInfo?.username || 'kullanici';
-      const photoURL = userObj?.photoURL || participantInfo?.photoURL || null;
+      const photoURL = userObj ? (userObj.photoURL || null) : (participantInfo?.photoURL || null);
       const isOnline = userObj?.isOnline ?? false;
       const lastSeen = userObj?.lastSeen || null;
       const isCurrent = currentUser.uid === uid;

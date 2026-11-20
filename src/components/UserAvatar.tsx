@@ -81,6 +81,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
         className={`relative overflow-hidden shrink-0 bg-gradient-to-br from-red-600 to-red-700 flex items-center justify-center ${shapeClass} ${sizeClass} ${className}`}
       >
         <img
+          key={validPhotoURL}
           src={validPhotoURL}
           alt={cleanName || cleanUsername || 'Avatar'}
           className="w-full h-full object-cover"

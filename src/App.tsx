@@ -1038,10 +1038,21 @@ export default function App() {
   // DeepRed AI hesabını kullanıcı listesine dahil et (Tüm kullanıcılar görebilsin ve doğrudan sohbet başlatabilsin)
   const displayedUsers = React.useMemo(() => {
     const aiUser = getRedChatAIProfile(appSettings?.aiProfilePhotoUrl);
-    const existingAiIndex = allUsers.findIndex((u) => u.uid === aiUser.uid);
+    const list = allUsers.map((u) =>
+      currentUserProfile && u.uid === currentUserProfile.uid
+        ? { ...u, ...currentUserProfile }
+        : u
+    );
+    if (
+      currentUserProfile &&
+      currentUserProfile.uid !== aiUser.uid &&
+      !list.some((u) => u.uid === currentUserProfile.uid)
+    ) {
+      list.unshift(currentUserProfile);
+    }
+    const existingAiIndex = list.findIndex((u) => u.uid === aiUser.uid);
     if (existingAiIndex >= 0) {
       // Eğer veritabanında varsa ve appSettings fotoğrafı tanımlıysa birleştir
-      const list = [...allUsers];
       list[existingAiIndex] = {
         ...list[existingAiIndex],
         displayName: aiUser.displayName,
@@ -1053,8 +1064,8 @@ export default function App() {
       };
       return list;
     }
-    return [aiUser, ...allUsers];
-  }, [allUsers, appSettings?.aiProfilePhotoUrl]);
+    return [aiUser, ...list];
+  }, [allUsers, appSettings?.aiProfilePhotoUrl, currentUserProfile]);
 
   // Sohbet başlatma (Kullanıcı seçildiğinde)
   const handleSelectUser = async (targetUser: UserProfile) => {
@@ -1605,6 +1616,15 @@ export default function App() {
             initialTab={modalTab}
             badgeUrl={appSettings?.verifiedBadgeUrl}
             onClose={() => setInspectingUser(null)}
+            onProfileUpdated={(updatedUser) => {
+              setCurrentUserProfile(updatedUser);
+              setAllUsers((prev) =>
+                prev.map((u) => (u.uid === updatedUser.uid ? { ...u, ...updatedUser } : u))
+              );
+              setInspectingUser((prev) =>
+                prev && prev.uid === updatedUser.uid ? updatedUser : prev
+              );
+            }}
             onStartChat={(target) => {
               handleSelectUser(target);
               setInspectingUser(null);

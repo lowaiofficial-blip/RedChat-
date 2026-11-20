@@ -428,7 +428,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const username = isDirectAIChat
     ? 'deepred_ai'
     : (otherUserObj?.username || otherParticipantInfo?.username || '');
-  const photoURL = otherUserObj?.photoURL || otherParticipantInfo?.photoURL || null;
+  const photoURL = otherUserObj ? (otherUserObj.photoURL || null) : (otherParticipantInfo?.photoURL || null);
   const isOnline = isDirectAIChat
     ? true
     : (otherUserObj?.isEmailInReview || isUserEffectivelyBanned(otherUserObj) ? false : (otherUserObj?.isOnline ?? false));
@@ -1020,7 +1020,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             displayName:
               uObj?.displayName || pInfo?.displayName || uObj?.username || pInfo?.username || 'Kullanıcı',
             username: uObj?.username || pInfo?.username || '',
-            photoURL: uObj?.photoURL || pInfo?.photoURL || null,
+            photoURL: uObj ? (uObj.photoURL || null) : (pInfo?.photoURL || null),
             isAi: false,
             isVerified: Boolean(uObj?.isVerified),
           });
@@ -2088,9 +2088,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
             const isHighlighted = highlightedMessageId === msg.id;
 
             // Gerçek gönderen profil bilgileri (Firestore users/{uid} & participants haritasından)
-            const senderUser = allUsers.find((u) => u.uid === msg.senderId) || (isMe ? currentUser : null);
+            const senderUser = isMe ? currentUser : (allUsers.find((u) => u.uid === msg.senderId) || null);
             const senderParticipant = conversation?.participants?.[msg.senderId];
-            const senderPhotoURL = senderUser?.photoURL || senderParticipant?.photoURL || null;
+            const senderPhotoURL = senderUser ? (senderUser.photoURL || null) : (senderParticipant?.photoURL || null);
             const senderDisplayName =
               senderUser?.displayName ||
               senderParticipant?.displayName ||

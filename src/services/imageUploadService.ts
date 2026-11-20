@@ -367,11 +367,11 @@ export async function uploadProfilePhoto(file: File): Promise<string> {
           canvas.width = targetSize;
           canvas.height = targetSize;
           const ctx = canvas.getContext('2d');
-          const cleanName = sanitizeFileName(file.name);
+          const cleanName = sanitizeFileName(file.name.replace(/\.[^/.]+$/, '') + '.jpg');
 
           if (!ctx) {
             const rawFallback = extractRawBase64((e.target?.result as string) || '');
-            resolve({ rawBase64: rawFallback, cleanName });
+            resolve({ rawBase64: rawFallback, cleanName: sanitizeFileName(file.name) });
             return;
           }
 
@@ -385,6 +385,10 @@ export async function uploadProfilePhoto(file: File): Promise<string> {
 
           const optimizedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
           const rawBase64 = extractRawBase64(optimizedDataUrl);
+          if (!rawBase64) {
+            reject(new Error('Görsel işlenemedi.'));
+            return;
+          }
           resolve({ rawBase64, cleanName });
         } catch (canvasErr) {
           reject(canvasErr);
@@ -396,6 +400,10 @@ export async function uploadProfilePhoto(file: File): Promise<string> {
     reader.onerror = () => reject(new Error('Dosya okunamadı.'));
     reader.readAsDataURL(file);
   });
+
+  if (!optimized.rawBase64) {
+    throw new Error('Görsel dosyası okunamadı.');
+  }
 
   return uploadRawBase64WithFallback({
     rawBase64: optimized.rawBase64,

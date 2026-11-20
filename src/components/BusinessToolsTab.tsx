@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import type { UserProfile, BusinessCategory, BusinessProfile } from '../types';
 import { BUSINESS_CATEGORIES } from '../types';
 import { updateBusinessProfile, switchToPersonalAccount } from '../services/authService';
-import { uploadImageToImgBB } from '../services/imageUploadService';
+import { uploadImageToImgBB, isValidHostedImageUrl } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
 import {
   Building2,
@@ -46,7 +46,9 @@ export const BusinessToolsTab: React.FC<BusinessToolsTabProps> = ({
   const [hours, setHours] = useState(business?.hours || '');
 
   // Fotoğraf state'leri
-  const [photoURL, setPhotoURL] = useState<string | null>(business?.photoURL || currentUser?.photoURL || null);
+  const [photoURL, setPhotoURL] = useState<string | null>(
+    currentUser?.photoURL !== undefined ? currentUser.photoURL || null : business?.photoURL || null
+  );
   const [selectedPhotoFile, setSelectedPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -72,7 +74,9 @@ export const BusinessToolsTab: React.FC<BusinessToolsTabProps> = ({
     setPhone(b?.phone || '');
     setLocation(b?.location || '');
     setHours(b?.hours || '');
-    setPhotoURL(b?.photoURL || currentUser?.photoURL || null);
+    setPhotoURL(
+      currentUser?.photoURL !== undefined ? currentUser.photoURL || null : b?.photoURL || null
+    );
   }, [
     currentUser?.uid,
     currentUser?.displayName,
@@ -125,7 +129,11 @@ export const BusinessToolsTab: React.FC<BusinessToolsTabProps> = ({
 
       if (selectedPhotoFile) {
         setUploadingPhoto(true);
-        finalPhotoURL = await uploadImageToImgBB(selectedPhotoFile);
+        const uploaded = await uploadImageToImgBB(selectedPhotoFile);
+        if (!isValidHostedImageUrl(uploaded)) {
+          throw new Error('Yüklenen işletme görseli için geçerli bir URL alınamadı.');
+        }
+        finalPhotoURL = uploaded;
         setUploadingPhoto(false);
       }
 
@@ -146,6 +154,9 @@ export const BusinessToolsTab: React.FC<BusinessToolsTabProps> = ({
       setPhotoURL(finalPhotoURL);
       setSelectedPhotoFile(null);
       setPhotoPreview(null);
+      if (photoInputRef.current) {
+        photoInputRef.current.value = '';
+      }
       setSuccess('İşletme profil bilgileri başarıyla güncellendi.');
       setTimeout(() => setSuccess(null), 4000);
 

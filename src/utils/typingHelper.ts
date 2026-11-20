@@ -59,7 +59,7 @@ export function getTypingInfo(
     participant?.username ||
     'Biri';
   const firstName = rawName.trim();
-  const firstPhoto = userObj?.photoURL || participant?.photoURL || null;
+  const firstPhoto = userObj ? (userObj.photoURL || null) : (participant?.photoURL || null);
 
   if (activeUids.length === 1) {
     return {

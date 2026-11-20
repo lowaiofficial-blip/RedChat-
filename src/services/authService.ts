@@ -10,11 +10,14 @@ import {
 import {
   doc,
   getDoc,
+  getDocFromServer,
+  getDocs,
   setDoc,
   updateDoc,
   collection,
   onSnapshot,
   query,
+  where,
   orderBy,
   limit,
   serverTimestamp,
@@ -313,18 +316,105 @@ export async function updateUserPrivacySettings(
   });
 }
 
+async function readVerifiedUserProfile(uid: string): Promise<UserProfile | null> {
+  if (!db) return null;
+  const userDocRef = doc(db, 'users', uid);
+  try {
+    const serverSnap = await getDocFromServer(userDocRef);
+    return serverSnap.exists() ? (serverSnap.data() as UserProfile) : null;
+  } catch {
+    const cachedSnap = await getDoc(userDocRef);
+    return cachedSnap.exists() ? (cachedSnap.data() as UserProfile) : null;
+  }
+}
+
+export async function syncUserProfileInConversations(
+  uid: string,
+  updates: { photoURL?: string | null; displayName?: string }
+): Promise<void> {
+  if (!db || !uid) return;
+  if (updates.photoURL === undefined && updates.displayName === undefined) return;
+
+  try {
+    const userSnap = await getDoc(doc(db, 'users', uid));
+    const userData = userSnap.exists() ? (userSnap.data() as UserProfile) : null;
+    if (userData?.role === 'moderator') return;
+
+    const convSnap = await getDocs(
+      query(collection(db, 'conversations'), where('participantIds', 'array-contains', uid))
+    );
+
+    const participantPatch: Record<string, any> = {};
+    if (updates.photoURL !== undefined) {
+      participantPatch[`participants.${uid}.photoURL`] = updates.photoURL ?? null;
+    }
+    if (updates.displayName !== undefined) {
+      participantPatch[`participants.${uid}.displayName`] = updates.displayName;
+    }
+
+    const updatePromises: Promise<void>[] = [];
+    convSnap.forEach((convDoc) => {
+      const data = convDoc.data() as any;
+      if (data?.securityStatus === 'terminated') return;
+      updatePromises.push(
+        updateDoc(doc(db, 'conversations', convDoc.id), participantPatch).catch(() => {})
+      );
+    });
+
+    if (updates.photoURL !== undefined) {
+      const followingSnap = await getDocs(collection(db, 'users', uid, 'followingChannels'));
+      followingSnap.forEach((fDoc) => {
+        updatePromises.push(
+          updateDoc(doc(db, 'channels', fDoc.id, 'followers', uid), {
+            photoURL: updates.photoURL ?? null,
+          }).catch(() => {})
+        );
+      });
+    }
+
+    await Promise.all(updatePromises);
+  } catch (err) {
+    console.warn('Sohbet/kanal profil senkronizasyonu uyarısı:', err);
+  }
+}
+
 export async function updateUserProfileDetails(
   uid: string,
   data: { displayName?: string; bio?: string; photoURL?: string | null }
-): Promise<void> {
+): Promise<UserProfile> {
   if (!db) throw new Error('Firestore hazır değil');
+  if (!uid) throw new Error('Kullanıcı kimliği bulunamadı');
+  if (auth?.currentUser && auth.currentUser.uid !== uid) {
+    throw new Error('Yalnızca kendi profilinizi güncelleyebilirsiniz.');
+  }
+
   const userDocRef = doc(db, 'users', uid);
-  await updateDoc(userDocRef, {
+  const existingSnap = await getDoc(userDocRef);
+  const existingData = existingSnap.exists() ? (existingSnap.data() as UserProfile) : null;
+
+  const firestoreUpdates: Record<string, any> = {
     ...data,
     updatedAt: serverTimestamp(),
-  });
+  };
 
-  if (auth?.currentUser) {
+  if (existingData?.accountType === 'business' || existingData?.businessProfile) {
+    if (data.photoURL !== undefined) {
+      firestoreUpdates['businessProfile.photoURL'] = data.photoURL;
+      firestoreUpdates['businessProfile.updatedAt'] = serverTimestamp();
+    }
+    if (data.displayName !== undefined) {
+      firestoreUpdates['businessProfile.businessName'] = data.displayName;
+      firestoreUpdates['businessProfile.updatedAt'] = serverTimestamp();
+    }
+    if (data.bio !== undefined) {
+      firestoreUpdates['businessProfile.description'] = data.bio;
+      firestoreUpdates['businessProfile.updatedAt'] = serverTimestamp();
+    }
+  }
+
+  await updateDoc(userDocRef, firestoreUpdates);
+
+  if (auth?.currentUser && auth.currentUser.uid === uid) {
     const authProfileUpdates: { displayName?: string; photoURL?: string | null } = {};
     if (data.displayName !== undefined) authProfileUpdates.displayName = data.displayName;
     if (data.photoURL !== undefined) authProfileUpdates.photoURL = data.photoURL;
@@ -332,11 +422,27 @@ export async function updateUserProfileDetails(
     if (Object.keys(authProfileUpdates).length > 0) {
       try {
         await updateProfile(auth.currentUser, authProfileUpdates);
+        await auth.currentUser.reload().catch(() => {});
       } catch (authErr) {
         console.warn('Firebase Auth updateProfile uyarısı:', authErr);
       }
     }
   }
+
+  const verifiedProfile = await readVerifiedUserProfile(uid);
+  if (!verifiedProfile) {
+    throw new Error('Kullanıcı profili Firestore üzerinden doğrulanamadı.');
+  }
+  if (data.photoURL !== undefined && (verifiedProfile.photoURL ?? null) !== (data.photoURL ?? null)) {
+    throw new Error('Profil fotoğrafı Firestore belgesine kaydedilemedi. Lütfen tekrar deneyin.');
+  }
+
+  void syncUserProfileInConversations(uid, {
+    photoURL: data.photoURL,
+    displayName: data.displayName,
+  });
+
+  return verifiedProfile;
 }
 
 export function subscribeToUserProfile(
@@ -375,10 +481,9 @@ export function subscribeToAllUsers(
   }
 
   const usersCol = collection(db, 'users');
-  const q = query(usersCol, limit(100));
 
   return onSnapshot(
-    q,
+    usersCol,
     (snapshot) => {
       const users: UserProfile[] = [];
       snapshot.forEach((d) => {
@@ -442,18 +547,24 @@ export async function switchToBusinessAccount(
 
   await updateDoc(userDocRef, updates);
 
-  if (auth?.currentUser) {
+  if (auth?.currentUser && auth.currentUser.uid === uid) {
     try {
       const authUpdates: any = {};
       if (updates.displayName) authUpdates.displayName = updates.displayName;
       if (photoURL !== undefined) authUpdates.photoURL = photoURL;
       if (Object.keys(authUpdates).length > 0) {
         await updateProfile(auth.currentUser, authUpdates);
+        await auth.currentUser.reload().catch(() => {});
       }
     } catch (err) {
       console.warn('Auth profile sync warning:', err);
     }
   }
+
+  void syncUserProfileInConversations(uid, {
+    photoURL: cleanBusinessProfile.photoURL,
+    displayName: updates.displayName,
+  });
 }
 
 /**
@@ -511,17 +622,23 @@ export async function updateBusinessProfile(
 
   await updateDoc(userDocRef, updates);
 
-  if (auth?.currentUser) {
+  if (auth?.currentUser && auth.currentUser.uid === uid) {
     try {
       const authUpdates: any = {};
       if (updates.displayName) authUpdates.displayName = updates.displayName;
       if (photoURL !== undefined) authUpdates.photoURL = photoURL;
       if (Object.keys(authUpdates).length > 0) {
         await updateProfile(auth.currentUser, authUpdates);
+        await auth.currentUser.reload().catch(() => {});
       }
     } catch (err) {
       console.warn('Auth profile sync warning:', err);
     }
   }
+
+  void syncUserProfileInConversations(uid, {
+    photoURL: cleanBusinessProfile.photoURL,
+    displayName: updates.displayName,
+  });
 }
 

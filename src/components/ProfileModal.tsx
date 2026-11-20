@@ -6,7 +6,7 @@ import { createPortal } from 'react-dom';
 import type { UserProfile } from '../types';
 import { updateUserProfileDetails, logoutUser, updateUserPrivacySettings } from '../services/authService';
 import { formatLastSeen } from '../services/chatService';
-import { uploadProfilePhoto } from '../services/imageUploadService';
+import { uploadProfilePhoto, isValidHostedImageUrl } from '../services/imageUploadService';
 import { UserAvatar } from './UserAvatar';
 import { VerifiedBadge } from './VerifiedBadge';
 import { isRedChatAI } from '../services/aiService';
@@ -56,6 +56,7 @@ interface ProfileModalProps {
   isCurrentUser: boolean;
   onClose: () => void;
   onStartChat?: (user: UserProfile) => void;
+  onProfileUpdated?: (updatedUser: UserProfile) => void;
   initialTab?: 'profile' | 'settings' | 'privacy' | 'business_tools';
   badgeUrl?: string | null;
   currentUserId?: string;
@@ -68,6 +69,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   isCurrentUser,
   onClose,
   onStartChat,
+  onProfileUpdated,
   initialTab = 'profile',
   badgeUrl,
   currentUserId,
@@ -217,9 +219,17 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     }
   };
 
+  const resolveEffectivePhoto = (u: UserProfile | null | undefined, biz: boolean, b?: UserProfile['businessProfile']) => {
+    if (!u) return null;
+    if (u.photoURL !== undefined) {
+      return u.photoURL || null;
+    }
+    return biz ? b?.photoURL || null : null;
+  };
+
   // Anlık profil fotoğrafı state'i
   const [currentPhotoURL, setCurrentPhotoURL] = useState<string | null>(
-    (isBusiness ? business?.photoURL : null) || user.photoURL || null
+    resolveEffectivePhoto(user, isBusiness, business)
   );
 
   // Fotoğraf Onay & Yükleme State'leri
@@ -266,7 +276,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
   // Gelen prop değiştiğinde senkronize et
   useEffect(() => {
-    setCurrentPhotoURL((isBusiness ? business?.photoURL : null) || user?.photoURL || null);
+    setCurrentPhotoURL(resolveEffectivePhoto(user, isBusiness, business));
     if (!editing) {
       setDisplayName(
         isBusiness
@@ -337,18 +347,27 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   };
 
   const handleConfirmUpload = async () => {
-    if (!selectedFile || isUploadingPhoto) return;
+    if (!selectedFile || isUploadingPhoto || !isCurrentUser) return;
 
     setIsUploadingPhoto(true);
     setError(null);
+    setPhotoSuccess(null);
     try {
       const downloadUrl = await uploadProfilePhoto(selectedFile);
+      if (!isValidHostedImageUrl(downloadUrl)) {
+        throw new Error('Yüklenen görsel için geçerli bir URL alınamadı.');
+      }
 
-      await updateUserProfileDetails(user.uid, {
+      const updatedProfile = await updateUserProfileDetails(user.uid, {
         photoURL: downloadUrl,
       });
 
-      setCurrentPhotoURL(downloadUrl);
+      if ((updatedProfile.photoURL ?? null) !== downloadUrl) {
+        throw new Error('Profil fotoğrafı kalıcı olarak kaydedilemedi.');
+      }
+
+      onProfileUpdated?.(updatedProfile);
+      setCurrentPhotoURL(updatedProfile.photoURL ?? downloadUrl);
       setShowConfirmModal(false);
       setPhotoSuccess('Profil fotoğrafın güncellendi.');
       setTimeout(() => setPhotoSuccess(null), 4000);
@@ -358,26 +377,28 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       }
       setSelectedFile(null);
       setPreviewUrl(null);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
     } catch (err: any) {
       console.error('Fotoğraf yükleme hatası:', err);
       setError(err?.message || 'Fotoğraf yüklenemedi. Lütfen tekrar deneyin.');
       setShowConfirmModal(false);
     } finally {
       setIsUploadingPhoto(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
   const handleRemovePhoto = async () => {
-    if (isUploadingPhoto) return;
+    if (isUploadingPhoto || !isCurrentUser) return;
     setIsUploadingPhoto(true);
     setError(null);
+    setPhotoSuccess(null);
     try {
-      await updateUserProfileDetails(user.uid, {
+      const updatedProfile = await updateUserProfileDetails(user.uid, {
         photoURL: null,
       });
+      onProfileUpdated?.(updatedProfile);
       setCurrentPhotoURL(null);
       setPhotoSuccess('Profil fotoğrafı kaldırıldı.');
       setTimeout(() => setPhotoSuccess(null), 3000);
@@ -398,10 +419,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     setSaving(true);
     setError(null);
     try {
-      await updateUserProfileDetails(user.uid, {
+      const updatedProfile = await updateUserProfileDetails(user.uid, {
         displayName: displayName.trim(),
         bio: bio.trim(),
       });
+      onProfileUpdated?.(updatedProfile);
       setEditing(false);
       setPhotoSuccess('Profil bilgileri kaydedildi.');
       setTimeout(() => setPhotoSuccess(null), 3000);
@@ -906,7 +928,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     user={{
                       displayName: headerTitle,
                       username: user.username,
-                      photoURL: currentPhotoURL || user.photoURL,
+                      photoURL: currentPhotoURL,
                     }}
                   />
                 </div>
