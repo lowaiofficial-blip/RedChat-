@@ -322,6 +322,34 @@ async function startServer() {
     }
   });
 
+  // ☁️ PROFİL FOTOĞRAFLARI İÇİN CLOUDINARY İMZASI
+  // API Secret yalnızca sunucuda kalır; istemciye imza ve public API Key döndürülür.
+  app.get("/api/cloudinary/profile-signature", (req, res) => {
+    try {
+      const cloudName = process.env.CLOUDINARY_CLOUD_NAME?.trim();
+      const apiKey = process.env.CLOUDINARY_API_KEY?.trim();
+      const apiSecret = process.env.CLOUDINARY_API_SECRET?.trim();
+
+      if (!cloudName || !apiKey || !apiSecret) {
+        return res.status(503).json({
+          error: "Profil fotoğrafı yükleme hizmeti şu anda kullanılamıyor.",
+        });
+      }
+
+      const timestamp = Math.floor(Date.now() / 1000);
+      const folder = "redchat_profile_photos";
+      const paramsToSign = `folder=${folder}&timestamp=${timestamp}`;
+      const signature = crypto.createHash("sha1").update(`${paramsToSign}${apiSecret}`).digest("hex");
+
+      return res.json({ signature, timestamp, cloudName, apiKey, folder });
+    } catch (err: any) {
+      console.error("Cloudinary profile signature error:", err);
+      return res.status(500).json({
+        error: "Profil fotoğrafı yükleme bağlantısı hazırlanamadı.",
+      });
+    }
+  });
+
   // ☁️ CLOUDINARY İMZA (SIGNATURE) ENDPOINT'İ (Güvenli Video Yükleme)
   app.get("/api/cloudinary/signature", (req, res) => {
     try {
