@@ -16,6 +16,7 @@ import {
   verifyBearerIdTokenWithAuthTime,
 } from "./serverSecurity";
 import { registerModerationRoutes, startModerationExpirySweep } from "./serverModeration";
+import { registerImageUploadRoutes, uploadToFreeimageHost } from "./serverImageUpload";
 
 
 dotenv.config();
@@ -58,6 +59,9 @@ async function startServer() {
 
   // 🛡️ Muse Moderatör Yetkilendirme ve Süreli Ban/Susturma Rotaları
   registerModerationRoutes(app);
+
+  // 🖼️ Görsel Yükleme Yedek Proxy Rotaları (Freeimage.host)
+  registerImageUploadRoutes(app);
   startModerationExpirySweep();
 
   // 🌐 İstemci IP ve Cihaz Bilgisi Endpoint'i (IP & Hardware Ban Tespiti için)
@@ -289,31 +293,16 @@ async function startServer() {
         console.warn("Yerel dosya kaydetme hatası, CDN yedeği deneniyor...", fsErr);
       }
 
-      // 2. YEDEK: FreeImage.host CDN Servisi
-      try {
-        const freeImageForm = new URLSearchParams();
-        freeImageForm.append("key", "6d207e02198a847aa98d0a2a901485a5");
-        freeImageForm.append("action", "upload");
-        freeImageForm.append("source", cleanBase64);
-        freeImageForm.append("format", "json");
-
-        const freeImageRes = await fetch("https://freeimage.host/api/1/upload", {
-          method: "POST",
-          body: freeImageForm,
-        });
-
-        if (freeImageRes.ok) {
-          const data: any = await freeImageRes.json();
-          const directUrl = data?.image?.display_url || data?.image?.url;
-          if (directUrl) {
-            return res.json({
-              url: directUrl,
-              provider: "freeimage",
-            });
-          }
+      // 2. YEDEK: FreeImage.host CDN Servisi (yalnızca sunucu ortam değişkeni ile)
+      if (process.env.FREEIMAGE_API_KEY?.trim()) {
+        try {
+          const directUrl = await uploadToFreeimageHost(cleanBase64);
+          return res.json({
+            url: directUrl,
+          });
+        } catch (freeErr) {
+          console.warn("FreeImage isteği sırasında hata:", freeErr);
         }
-      } catch (freeErr) {
-        console.warn("FreeImage isteği sırasında hata:", freeErr);
       }
 
       // 3. YEDEK: Optimize Data URL

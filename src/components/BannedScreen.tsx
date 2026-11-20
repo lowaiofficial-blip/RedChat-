@@ -13,6 +13,8 @@ export const BannedScreen: React.FC<BannedScreenProps> = ({ user, onCheckExpiry,
   const [checking, setChecking] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const autoCheckedRef = React.useRef(false);
+  const onCheckExpiryRef = React.useRef(onCheckExpiry);
+  onCheckExpiryRef.current = onCheckExpiry;
 
   const isTemporaryBan = user.banType === 'temporary' && Boolean(user.banExpiresAt);
   const banExpiresMs = isTemporaryBan ? toTimestampMs(user.banExpiresAt) : 0;
@@ -25,12 +27,12 @@ export const BannedScreen: React.FC<BannedScreenProps> = ({ user, onCheckExpiry,
       setNowMs(current);
       if (current >= banExpiresMs && !autoCheckedRef.current) {
         autoCheckedRef.current = true;
-        onCheckExpiry?.();
+        onCheckExpiryRef.current?.();
       }
     }, 1000);
 
     return () => clearInterval(tick);
-  }, [isTemporaryBan, banExpiresMs, onCheckExpiry]);
+  }, [isTemporaryBan, banExpiresMs]);
 
   const handleRefresh = async () => {
     setChecking(true);

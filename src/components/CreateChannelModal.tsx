@@ -141,6 +141,7 @@ export const CreateChannelModal: React.FC<CreateChannelModalProps> = ({
     } catch (err: any) {
       console.error('Kanal oluşturulurken hata:', err);
       setError(err?.message || 'Kanal oluşturulurken bir hata oluştu.');
+    } finally {
       setCreating(false);
     }
   };

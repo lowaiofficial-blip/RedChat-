@@ -56,6 +56,8 @@ export const WhatsAppNotificationBanner: React.FC<WhatsAppNotificationBannerProp
   const [isExpanded, setIsExpanded] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const lastPlayedAtRef = useRef<number>(0);
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
 
   // Yeni bildirim veya yeni mesaj geldiğinde hafif chime çal
   useEffect(() => {
@@ -68,17 +70,19 @@ export const WhatsAppNotificationBanner: React.FC<WhatsAppNotificationBannerProp
     }
   }, [notification?.updatedAt, notification?.messages.length]);
 
+  const hasNotification = Boolean(notification);
+
   // Otomatik kapanma sayacı (Genişletildiğinde veya üzerine gelindiğinde duraklar)
   useEffect(() => {
-    if (!notification) return;
+    if (!hasNotification) return;
     if (isHovered || isExpanded) return;
 
     const timeout = setTimeout(() => {
-      onDismiss();
+      onDismissRef.current();
     }, 7500);
 
     return () => clearTimeout(timeout);
-  }, [notification, isHovered, isExpanded, onDismiss]);
+  }, [hasNotification, notification?.conversationId, notification?.updatedAt, isHovered, isExpanded]);
 
   if (!notification) return null;
 

@@ -90,14 +90,19 @@ export const BusinessSetupModal: React.FC<BusinessSetupModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
+  const currentUserRef = useRef(currentUser);
+  currentUserRef.current = currentUser;
+
   // Sayfa yenilendiğinde veya modal açıldığında kullanıcının mevcut doğrulama durumunu yükle
   useEffect(() => {
-    if (!isOpen || !currentUser?.uid) return;
+    const uid = currentUserRef.current?.uid;
+    if (!isOpen || !uid) return;
 
     const resumeState = async () => {
       try {
-        const status = await getBusinessVerificationStatus(currentUser.uid);
-        const storedDraft = currentUser.businessVerification?.draftProfile || status.draftProfile;
+        const status = await getBusinessVerificationStatus(uid);
+        const latestUser = currentUserRef.current;
+        const storedDraft = latestUser?.businessVerification?.draftProfile || status.draftProfile;
 
         if (storedDraft) {
           if (storedDraft.businessName) setBusinessName(storedDraft.businessName);
@@ -111,14 +116,14 @@ export const BusinessSetupModal: React.FC<BusinessSetupModalProps> = ({
           if (storedDraft.photoURL) setPhotoURL(storedDraft.photoURL);
         }
 
-        const isStep1Done = currentUser.businessVerification?.step1Verified || status.step1Verified;
-        const isStep2Done = currentUser.businessVerification?.step2Verified || status.step2Verified;
+        const isStep1Done = latestUser?.businessVerification?.step1Verified || status.step1Verified;
+        const isStep2Done = latestUser?.businessVerification?.step2Verified || status.step2Verified;
 
         if (isStep1Done && isStep2Done) {
           setModalStep('completed');
         } else if (isStep1Done && !isStep2Done) {
           setModalStep('step2');
-        } else if (currentUser.businessVerification?.currentStep === 1) {
+        } else if (latestUser?.businessVerification?.currentStep === 1) {
           setModalStep('step1');
         }
       } catch (err) {
@@ -127,7 +132,7 @@ export const BusinessSetupModal: React.FC<BusinessSetupModalProps> = ({
     };
 
     resumeState();
-  }, [isOpen, currentUser]);
+  }, [isOpen, currentUser?.uid]);
 
   // Geri sayım sayacı
   useEffect(() => {
@@ -486,7 +491,7 @@ export const BusinessSetupModal: React.FC<BusinessSetupModalProps> = ({
                   İşletme Profil Fotoğrafı
                 </span>
                 <span className="text-[10px] text-zinc-400 block mb-2">
-                  İsteğe bağlı • ImgBB Kalıcı Depolama
+                  İsteğe bağlı • Kalıcı Depolama
                 </span>
                 <button
                   type="button"

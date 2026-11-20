@@ -756,12 +756,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     try {
       const uploadedUrl = await uploadImageToImgBB(selectedAiPhotoFile);
       if (!uploadedUrl) {
-        throw new Error('ImgBB görsel yükleme başarısız oldu.');
+        throw new Error('Görsel yüklenemedi. Lütfen tekrar deneyin.');
       }
 
       await updateAIProfilePhotoUrl(currentUser, uploadedUrl);
 
-      setAiPhotoActionSuccess('DeepRed AI profil görseli başarıyla ImgBB ve Firestore veritabanına kalıcı olarak kaydedildi!');
+      setAiPhotoActionSuccess('DeepRed AI profil görseli başarıyla kalıcı olarak kaydedildi!');
       setSelectedAiPhotoFile(null);
       setAiPhotoPreviewUrl(null);
       if (aiFileInputRef.current) {
@@ -2699,7 +2699,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
 
                   <p className="text-xs text-zinc-500 dark:text-zinc-400 leading-relaxed">
-                    RedChat üzerindeki Mavi Tik rozet görselini özelleştirin. Yüklenen PNG dosyası doğrudan <strong>ImgBB</strong> sunucusuna yüklenir ve kalıcı HTTPS bağlantısı Firestore <code>settings/app</code> dokümanına kaydedilir.
+                    RedChat üzerindeki Mavi Tik rozet görselini özelleştirin. Yüklenen PNG dosyası güvenli görsel sunucusuna yüklenir ve kalıcı HTTPS bağlantısı Firestore <code>settings/app</code> dokümanına kaydedilir.
                   </p>
 
                   {/* Mevcut Aktif Rozet Durumu */}
@@ -2718,7 +2718,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="text-xs font-semibold text-zinc-900 dark:text-white truncate">
-                          {currentBadgeUrl ? 'Özel ImgBB PNG Rozeti Aktif' : 'Varsayılan RedChat SVG Rozeti'}
+                          {currentBadgeUrl ? 'Özel PNG Rozeti Aktif' : 'Varsayılan RedChat SVG Rozeti'}
                         </div>
                         {currentBadgeUrl && (
                           <a
@@ -2932,7 +2932,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <span>DeepRed AI Resmi Profil Fotoğrafı Yönetimi</span>
                 </h3>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                  DeepRed AI yapay zeka asistanının profil görselini buradan kalıcı olarak ayarlayabilirsiniz. Yüklenen görsel ImgBB CDN'e yüklenir ve Firestore <code className="font-mono text-zinc-700 dark:text-zinc-300">settings/app</code> ve <code className="font-mono text-zinc-700 dark:text-zinc-300">users/system_redchat_ai</code> hesaplarına kaydedilir. Tüm tarayıcı ve cihazlarda anında güncellenir.
+                  DeepRed AI yapay zeka asistanının profil görselini buradan kalıcı olarak ayarlayabilirsiniz. Yüklenen görsel CDN'e yüklenir ve Firestore <code className="font-mono text-zinc-700 dark:text-zinc-300">settings/app</code> ve <code className="font-mono text-zinc-700 dark:text-zinc-300">users/system_redchat_ai</code> hesaplarına kaydedilir. Tüm tarayıcı ve cihazlarda anında güncellenir.
                 </p>
               </div>
 

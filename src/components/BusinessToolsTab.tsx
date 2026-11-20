@@ -73,7 +73,22 @@ export const BusinessToolsTab: React.FC<BusinessToolsTabProps> = ({
     setLocation(b?.location || '');
     setHours(b?.hours || '');
     setPhotoURL(b?.photoURL || currentUser?.photoURL || null);
-  }, [currentUser]);
+  }, [
+    currentUser?.uid,
+    currentUser?.displayName,
+    currentUser?.bio,
+    currentUser?.email,
+    currentUser?.photoURL,
+    business?.businessName,
+    business?.category,
+    business?.description,
+    business?.website,
+    business?.email,
+    business?.phone,
+    business?.location,
+    business?.hours,
+    business?.photoURL,
+  ]);
 
   const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

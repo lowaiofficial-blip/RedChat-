@@ -113,6 +113,9 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
   const isAlreadyStreamed = completedStreamedMessageIds.has(msg.id);
   const shouldStream = isStreaming && !isAlreadyStreamed;
 
+  const onFinishStreamingRef = React.useRef(onFinishStreaming);
+  onFinishStreamingRef.current = onFinishStreaming;
+
   const [displayedLength, setDisplayedLength] = useState(() => (shouldStream ? 0 : fullText.length));
   const [isActivelyStreaming, setIsActivelyStreaming] = useState(shouldStream);
 
@@ -156,11 +159,11 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo((props
     } else if (displayedLength >= fullText.length && fullText.length > 0) {
       setIsActivelyStreaming(false);
       markMessageStreamCompleted(msg.id);
-      if (onFinishStreaming) {
-        onFinishStreaming(msg.id);
+      if (onFinishStreamingRef.current) {
+        onFinishStreamingRef.current(msg.id);
       }
     }
-  }, [isActivelyStreaming, displayedLength, fullText, msg.id, onFinishStreaming]);
+  }, [isActivelyStreaming, displayedLength, fullText, msg.id]);
 
   const isThinking = propIsThinking !== undefined ? propIsThinking : Boolean(msg.isThinking);
   const isMessageStreaming = Boolean(isStreaming || msg.isStreaming || liveText !== undefined || isActivelyStreaming);

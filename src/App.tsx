@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import type { User } from 'firebase/auth';
 import type { UserProfile, Conversation, AppSettings, GroupedNotificationData, GroupedNotificationMessage, Channel, ChannelNotification, SecuritySession } from './types';
 import {
@@ -137,6 +137,30 @@ export default function App() {
   currentSecuritySessionRef.current = currentSecuritySession;
   const currentUserProfileRef = React.useRef<UserProfile | null>(null);
   currentUserProfileRef.current = currentUserProfile;
+  const currentUserAuthRef = React.useRef<User | null>(null);
+  currentUserAuthRef.current = currentUserAuth;
+  const initialPresenceSyncedUidRef = React.useRef<string | null>(null);
+  const lastPresenceWriteRef = React.useRef<{ uid: string; isOnline: boolean; at: number } | null>(null);
+
+  const syncUserOnlineStatus = useCallback(
+    (uid: string, isOnline: boolean, options?: { force?: boolean }) => {
+      if (!uid) return;
+      const now = Date.now();
+      const last = lastPresenceWriteRef.current;
+      if (
+        !options?.force &&
+        last &&
+        last.uid === uid &&
+        last.isOnline === isOnline &&
+        now - last.at < 4000
+      ) {
+        return;
+      }
+      lastPresenceWriteRef.current = { uid, isOnline, at: now };
+      setUserOnlineStatus(uid, isOnline);
+    },
+    []
+  );
 
   // 🛡️ Sunucu Doğrulamalı Yönetici & Moderatör Yetkisi
   const [serverVerifiedModerator, setServerVerifiedModerator] = useState<boolean>(false);
@@ -146,6 +170,8 @@ export default function App() {
 
   // 🚫 Kullanıcı Engelleme State'i (Gerçek Zamanlı & Cihazlar Arası Senkron)
   const [blockedUserIds, setBlockedUserIds] = useState<string[]>([]);
+  const blockedUserIdsRef = React.useRef<string[]>([]);
+  blockedUserIdsRef.current = blockedUserIds;
 
   // 🚫 Gerçek Zamanlı Engellenen Kullanıcılar Dinleyicisi
   useEffect(() => {
@@ -247,6 +273,8 @@ export default function App() {
         setSessionCheckLoading(false);
         setServerMainAdmin(false);
         setAdminSecurityReviewUnlocked(false);
+        initialPresenceSyncedUidRef.current = null;
+        lastPresenceWriteRef.current = null;
       } else {
         setProfileError(null);
         setProfileLoading(true);
@@ -260,8 +288,9 @@ export default function App() {
 
   // 1b. 🌍 Yeni Ülke Girişi & Cihaz Oturum Kaydı + Gerçek Zamanlı İptal Dinleyicisi
   useEffect(() => {
-    if (!currentUserAuth || !isProfileReady) {
-      if (!currentUserAuth) {
+    const authUser = currentUserAuthRef.current;
+    if (!authUser || !isProfileReady) {
+      if (!authUser) {
         setCurrentSecuritySession(null);
       }
       setSessionCheckLoading(false);
@@ -271,28 +300,28 @@ export default function App() {
     let isMounted = true;
     setSessionCheckLoading(true);
 
-    registerOrVerifyDeviceSession(currentUserAuth)
+    registerOrVerifyDeviceSession(authUser)
       .then(async ({ session }) => {
         if (!isMounted) return;
         if (session.status === 'revoked' && session.userResponse !== 'denied_not_me') {
-          clearLocalSessionCredentials(currentUserAuth.uid);
+          clearLocalSessionCredentials(authUser.uid);
           setSessionRevokedNotice('Bu cihazdaki oturumunuz güvenlik nedeniyle sonlandırıldı.');
-          await setUserOnlineStatus(currentUserAuth.uid, false);
+          syncUserOnlineStatus(authUser.uid, false, { force: true });
           await logoutUser();
           return;
         }
         setSessionRevokedNotice(null);
         setCurrentSecuritySession(session);
         if (session.status !== 'active') {
-          setUserOnlineStatus(currentUserAuth.uid, false);
+          syncUserOnlineStatus(authUser.uid, false);
         }
       })
       .catch(async (err: any) => {
         console.warn('Oturum güvenlik doğrulaması hatası:', err);
         if (err?.code === 'TOKEN_REVOKED') {
-          clearLocalSessionCredentials(currentUserAuth.uid);
+          clearLocalSessionCredentials(authUser.uid);
           setSessionRevokedNotice('Oturumunuz güvenlik nedeniyle sonlandırıldı. Lütfen tekrar giriş yapın.');
-          await setUserOnlineStatus(currentUserAuth.uid, false);
+          syncUserOnlineStatus(authUser.uid, false, { force: true });
           await logoutUser();
         }
       })
@@ -303,21 +332,25 @@ export default function App() {
     return () => {
       isMounted = false;
     };
-  }, [currentUserAuth, isProfileReady]);
+  }, [currentUserAuth?.uid, isProfileReady, syncUserOnlineStatus]);
 
   useEffect(() => {
-    if (!currentUserAuth?.uid || !currentSecuritySession?.sessionId) return;
+    const authUid = currentUserAuth?.uid;
+    const sessionId = currentSecuritySession?.sessionId;
+    if (!authUid || !sessionId) return;
 
     const unsubSession = subscribeToSessionStatus(
-      currentSecuritySession.sessionId,
+      sessionId,
       async (updatedSession) => {
         if (!updatedSession) return;
         setCurrentSecuritySession(updatedSession);
 
-        if (updatedSession.status !== 'active') {
-          setUserOnlineStatus(currentUserAuth.uid, false);
-        } else {
-          setUserOnlineStatus(currentUserAuth.uid, true);
+        const profile = currentUserProfileRef.current;
+        const shouldBeOnline =
+          updatedSession.status === 'active' &&
+          !(profile && (profile.isEmailInReview || isUserEffectivelyBanned(profile)));
+        if (!profile || Boolean(profile.isOnline) !== shouldBeOnline) {
+          syncUserOnlineStatus(authUid, shouldBeOnline);
         }
 
         // Yönetici veya başka bir oturum tarafından tekil/toplu kapatıldıysa bu cihazı derhal düşür
@@ -325,13 +358,13 @@ export default function App() {
           updatedSession.status === 'revoked' &&
           updatedSession.userResponse !== 'denied_not_me'
         ) {
-          clearLocalSessionCredentials(currentUserAuth.uid);
+          clearLocalSessionCredentials(authUid);
           setSessionRevokedNotice(
             updatedSession.verificationStatus === 'expired'
               ? 'Oturum süreniz dolduğu için güvenli çıkış yapıldı.'
               : 'Bu cihazdaki oturumunuz güvenlik nedeniyle sonlandırıldı.'
           );
-          await setUserOnlineStatus(currentUserAuth.uid, false);
+          syncUserOnlineStatus(authUid, false, { force: true });
           await logoutUser();
         }
       }
@@ -339,17 +372,19 @@ export default function App() {
 
     // Sunucu tarafında süre dolumu (expiresAt) ve iptal kontrolünü periyodik olarak çalıştır
     const checkServerSession = async () => {
+      const authUser = currentUserAuthRef.current;
+      if (!authUser) return;
       try {
-        const res = await verifyActiveSessionOnServer(currentUserAuth);
+        const res = await verifyActiveSessionOnServer(authUser);
         if (res.reason === 'SESSION_EXPIRED' || (res.status === 'revoked' && res.reason === 'SESSION_REVOKED')) {
           if (currentSecuritySessionRef.current?.userResponse === 'denied_not_me') return;
-          clearLocalSessionCredentials(currentUserAuth.uid);
+          clearLocalSessionCredentials(authUid);
           setSessionRevokedNotice(
             res.reason === 'SESSION_EXPIRED'
               ? 'Oturum süreniz dolduğu için güvenli çıkış yapıldı.'
               : 'Bu cihazdaki oturumunuz güvenlik nedeniyle sonlandırıldı.'
           );
-          await setUserOnlineStatus(currentUserAuth.uid, false);
+          syncUserOnlineStatus(authUid, false, { force: true });
           await logoutUser();
         }
       } catch {
@@ -370,7 +405,7 @@ export default function App() {
       clearInterval(sessionCheckInterval);
       window.removeEventListener('focus', handleFocusSessionCheck);
     };
-  }, [currentUserAuth?.uid, currentSecuritySession?.sessionId]);
+  }, [currentUserAuth?.uid, currentSecuritySession?.sessionId, syncUserOnlineStatus]);
 
   // 1c. Sunucu Taraflı Ana Yönetici Doğrulaması
   useEffect(() => {
@@ -399,7 +434,8 @@ export default function App() {
 
   // 2. Logged-in User Profile Listener
   useEffect(() => {
-    if (!currentUserAuth) {
+    const authUid = currentUserAuth?.uid;
+    if (!authUid) {
       setProfileLoading(false);
       setProfileError(null);
       return;
@@ -426,7 +462,7 @@ export default function App() {
     }, 12000);
 
     const unsubscribeProfile = subscribeToUserProfile(
-      currentUserAuth.uid,
+      authUid,
       (profile) => {
         if (!isMounted) return;
         if (missingCheckTimer) {
@@ -439,10 +475,17 @@ export default function App() {
           setProfileLoading(false);
           setProfileError(null);
           setAuthExternalError(null);
-          if (profile.isEmailInReview || isUserEffectivelyBanned(profile) || (currentSecuritySessionRef.current && currentSecuritySessionRef.current.status !== 'active')) {
-            setUserOnlineStatus(currentUserAuth.uid, false);
-          } else {
-            setUserOnlineStatus(currentUserAuth.uid, true);
+
+          const shouldBeOnline = !(
+            profile.isEmailInReview ||
+            isUserEffectivelyBanned(profile) ||
+            (currentSecuritySessionRef.current && currentSecuritySessionRef.current.status !== 'active')
+          );
+          const needsInitialSync = initialPresenceSyncedUidRef.current !== authUid;
+          const statusDiffers = Boolean(profile.isOnline) !== shouldBeOnline;
+          if (needsInitialSync || statusDiffers) {
+            initialPresenceSyncedUidRef.current = authUid;
+            syncUserOnlineStatus(authUid, shouldBeOnline);
           }
           return;
         }
@@ -457,7 +500,7 @@ export default function App() {
         missingCheckTimer = setTimeout(async () => {
           if (!isMounted || isRegistrationInProgress()) return;
           try {
-            const directProfile = await getUserProfile(currentUserAuth.uid);
+            const directProfile = await getUserProfile(authUid);
             if (!isMounted || isRegistrationInProgress()) return;
             if (directProfile) {
               setCurrentUserProfile(directProfile);
@@ -498,30 +541,30 @@ export default function App() {
     const handleVisibilityChange = () => {
       if (!currentUserProfileRef.current) return;
       if (isLocked()) {
-        setUserOnlineStatus(currentUserAuth.uid, false);
+        syncUserOnlineStatus(authUid, false);
         return;
       }
       if (document.visibilityState === 'visible') {
-        setUserOnlineStatus(currentUserAuth.uid, true);
+        syncUserOnlineStatus(authUid, true);
       } else {
-        setUserOnlineStatus(currentUserAuth.uid, false);
+        syncUserOnlineStatus(authUid, false);
       }
     };
 
     const handleBeforeUnload = () => {
       if (currentUserProfileRef.current) {
-        setUserOnlineStatus(currentUserAuth.uid, false);
+        syncUserOnlineStatus(authUid, false, { force: true });
       }
     };
 
     const heartbeatInterval = setInterval(() => {
       if (!currentUserProfileRef.current) return;
       if (isLocked()) {
-        setUserOnlineStatus(currentUserAuth.uid, false);
+        syncUserOnlineStatus(authUid, false);
         return;
       }
       if (document.visibilityState === 'visible') {
-        setUserOnlineStatus(currentUserAuth.uid, true);
+        syncUserOnlineStatus(authUid, true, { force: true });
       }
     }, 60000);
 
@@ -537,30 +580,31 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [currentUserAuth, profileRetryTick]);
+  }, [currentUserAuth?.uid, profileRetryTick, syncUserOnlineStatus]);
 
 
   // 3. Realtime Users List (All registered users in Firestore)
   useEffect(() => {
-    if (!currentUserAuth || !isProfileReady) return;
+    if (!currentUserAuth?.uid || !isProfileReady) return;
 
     const unsubscribeUsers = subscribeToAllUsers((users) => {
       setAllUsers(users);
     });
 
     return () => unsubscribeUsers();
-  }, [currentUserAuth, isProfileReady]);
+  }, [currentUserAuth?.uid, isProfileReady]);
 
   // 3b. 📢 Realtime Channels & Following Listener
   useEffect(() => {
-    if (!currentUserAuth || !isProfileReady) return;
+    const authUid = currentUserAuth?.uid;
+    if (!authUid || !isProfileReady) return;
 
     const unsubscribeChannels = subscribeToChannels((chs) => {
       setChannels(chs);
     });
 
     const unsubscribeFollowing = subscribeToUserFollowingChannels(
-      currentUserAuth.uid,
+      authUid,
       (followingIds) => {
         setFollowingChannelIds(followingIds);
       }
@@ -570,7 +614,7 @@ export default function App() {
       unsubscribeChannels();
       unsubscribeFollowing();
     };
-  }, [currentUserAuth, isProfileReady]);
+  }, [currentUserAuth?.uid, isProfileReady]);
 
   // 3b2. 🔔 Realtime Channel Notifications Listener
   useEffect(() => {
@@ -600,7 +644,8 @@ export default function App() {
 
   useEffect(() => {
     let isMounted = true;
-    if (!activeChannelId || !currentUserProfile) {
+    const profileUid = currentUserProfile?.uid;
+    if (!activeChannelId || !profileUid) {
       setIsCurrentChannelOwner(false);
       return;
     }
@@ -610,7 +655,7 @@ export default function App() {
       return;
     }
 
-    checkIsChannelOwner(activeChannelId, currentUserProfile.uid, isUserAnAdmin)
+    checkIsChannelOwner(activeChannelId, profileUid, isUserAnAdmin)
       .then((isOwner) => {
         if (isMounted) setIsCurrentChannelOwner(isOwner);
       })
@@ -622,7 +667,7 @@ export default function App() {
     return () => {
       isMounted = false;
     };
-  }, [activeChannelId, currentUserProfile, isUserAnAdmin]);
+  }, [activeChannelId, currentUserProfile?.uid, isUserAnAdmin]);
 
   // Aktif sohbet açıldığında, o sohbete ait açık bildirimi otomatik kapat
   useEffect(() => {
@@ -635,10 +680,11 @@ export default function App() {
 
   // 4. Realtime Conversations Listener
   useEffect(() => {
-    if (!currentUserAuth || !isProfileReady) return;
+    const authUid = currentUserAuth?.uid;
+    if (!authUid || !isProfileReady) return;
 
     const unsubscribeConv = subscribeToConversations(
-      currentUserAuth.uid,
+      authUid,
       async (convs) => {
         setConversations(convs);
 
@@ -673,24 +719,24 @@ export default function App() {
               lastSeenMsgTimestampsRef.current[c.id] = msgTime;
             }
             // Aktif sohbetteyken unreadCount varsa Firestore'da sıfırla
-            const unreadCount = c.unreadCounts?.[currentUserAuth.uid] || 0;
-            if (unreadCount > 0) {
+            const unreadCount = c.unreadCounts?.[authUid] || 0;
+            if (unreadCount > 0 && currentUserProfileRef.current?.role !== 'moderator') {
               updateDoc(doc(db, 'conversations', c.id), {
-                [`unreadCounts.${currentUserAuth.uid}`]: 0,
+                [`unreadCounts.${authUid}`]: 0,
               }).catch(() => {});
             }
             continue;
           }
 
-          const unreadCount = c.unreadCounts?.[currentUserAuth.uid] || 0;
+          const unreadCount = c.unreadCounts?.[authUid] || 0;
           if (unreadCount <= 0) {
             // Başka bir cihazda (telefon, tablet vb.) mesaj okunduysa banner'ı anında kapat!
             setBannerNotification((prev) => (prev?.conversationId === c.id ? null : prev));
             continue;
           }
-          if (!c.lastMessageSenderId || c.lastMessageSenderId === currentUserAuth.uid) continue;
+          if (!c.lastMessageSenderId || c.lastMessageSenderId === authUid) continue;
           // 🚫 Engellenen kullanıcıdan gelen mesajlar için banner ve tarayıcı bildirimi üretme!
-          if (blockedUserIds.includes(c.lastMessageSenderId)) continue;
+          if (blockedUserIdsRef.current.includes(c.lastMessageSenderId)) continue;
 
           const lastSeen = lastSeenMsgTimestampsRef.current[c.id] || 0;
           if (msgTime > lastSeen) {
@@ -699,16 +745,16 @@ export default function App() {
             try {
               const unreadList = await getGroupedUnreadMessages(
                 c.id,
-                currentUserAuth.uid,
+                authUid,
                 c.lastMessageSenderId,
                 c.lastMessageText || 'Yeni mesaj'
               );
 
               // Gerçekte okunmamış mesaj kalmamışsa bildirim üretme ve Firestore'daki tutarsız sayıyı düzelt
               if (unreadList.length === 0) {
-                if (unreadCount > 0) {
+                if (unreadCount > 0 && currentUserProfileRef.current?.role !== 'moderator') {
                   updateDoc(doc(db, 'conversations', c.id), {
-                    [`unreadCounts.${currentUserAuth.uid}`]: 0,
+                    [`unreadCounts.${authUid}`]: 0,
                   }).catch(() => {});
                 }
                 continue;
@@ -781,11 +827,11 @@ export default function App() {
     );
 
     return () => unsubscribeConv();
-  }, [currentUserAuth, activeConversationId]);
+  }, [currentUserAuth?.uid, isProfileReady, activeConversationId]);
 
   // 5. App Settings Listener (Kalıcı Mavi Tik PNG & Genel Ayarlar)
   useEffect(() => {
-    if (!currentUserAuth || !isProfileReady) return;
+    if (!currentUserAuth?.uid || !isProfileReady) return;
 
     const unsubscribeSettings = subscribeToAppSettings((settings) => {
       setAppSettings(settings);
@@ -795,20 +841,21 @@ export default function App() {
     });
 
     return () => unsubscribeSettings();
-  }, [currentUserAuth, isProfileReady]);
+  }, [currentUserAuth?.uid, isProfileReady]);
 
   // 🛡️ Yetkili Admin Otomatik Eşitlemesi (gg00cat73@gmail.com ve robloxenes930@gmail.com)
   useEffect(() => {
-    if (!currentUserAuth?.uid || !currentUserProfile) return;
-    const authEmail = currentUserAuth.email?.trim().toLowerCase();
+    const authUid = currentUserAuth?.uid;
+    const authEmail = currentUserAuth?.email?.trim().toLowerCase();
+    if (!authUid || !currentUserProfile?.uid) return;
     const isSpecialAdmin = authEmail && ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(authEmail);
     if (isSpecialAdmin && currentUserProfile.role !== 'admin') {
-      const userRef = doc(db, 'users', currentUserAuth.uid);
+      const userRef = doc(db, 'users', authUid);
       updateDoc(userRef, { role: 'admin', isVerified: true }).catch((err) => {
         console.warn('Admin rolü senkronizasyonu:', err);
       });
     }
-  }, [currentUserAuth, currentUserProfile]);
+  }, [currentUserAuth?.uid, currentUserAuth?.email, currentUserProfile?.uid, currentUserProfile?.role]);
 
   // 🛡️ Muse Moderatör Yetkisi Gerçek Zamanlı Dinleme & Sunucu Doğrulaması
   useEffect(() => {
@@ -853,15 +900,16 @@ export default function App() {
 
   // Yetkisi kaldırılan moderatör #/admin ekranındaysa anında sohbete döndür
   useEffect(() => {
-    if (!currentUserProfile) return;
+    const profile = currentUserProfileRef.current;
+    if (!profile) return;
     const onAdminHash = currentHash === '#/admin' || currentHash.startsWith('#/admin');
-    if (onAdminHash && !isUserAdmin(currentUserProfile) && !(isUserModerator(currentUserProfile) && serverVerifiedModerator)) {
+    if (onAdminHash && !isUserAdmin(profile) && !(isUserModerator(profile) && serverVerifiedModerator)) {
       // İlk doğrulama henüz tamamlanmadıysa hemen yönlendirme yapma (yalnızca grant kesin kapalıysa veya rolü user'a düştüyse)
-      if (currentUserProfile.role !== 'moderator' || moderatorGrantActive === false) {
+      if (profile.role !== 'moderator' || moderatorGrantActive === false) {
         window.location.hash = '#/';
       }
     }
-  }, [currentHash, currentUserProfile, serverVerifiedModerator, moderatorGrantActive]);
+  }, [currentHash, currentUserProfile?.uid, currentUserProfile?.role, currentUserProfile?.email, serverVerifiedModerator, moderatorGrantActive]);
 
   // ⏱️ Geçici Ban & Susturma Süresi Dolduğunda Otomatik Sunucu Senkronizasyonu
   useEffect(() => {
@@ -905,7 +953,7 @@ export default function App() {
 
   // Foreground Push Notification Listener (WhatsApp Tarzı Gruplama Destekli)
   useEffect(() => {
-    if (!currentUserAuth) return;
+    if (!currentUserAuth?.uid) return;
     
     let unsubscribe: any = null;
     setupForegroundListener((payload) => {
@@ -985,7 +1033,7 @@ export default function App() {
     return () => {
       if (unsubscribe && typeof unsubscribe === 'function') unsubscribe();
     };
-  }, [currentUserAuth, activeConversationId]);
+  }, [currentUserAuth?.uid, activeConversationId]);
 
   // DeepRed AI hesabını kullanıcı listesine dahil et (Tüm kullanıcılar görebilsin ve doğrudan sohbet başlatabilsin)
   const displayedUsers = React.useMemo(() => {
@@ -1055,11 +1103,34 @@ export default function App() {
 
   // Arka planda otomatik FCM token senkronizasyonu
   useEffect(() => {
-    if (currentUserProfile && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+    const uid = currentUserProfile?.uid;
+    if (uid && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
       // Zaten izin verilmişse, sessizce token alıp Firestore'a kaydet
-      requestNotificationPermissionAndToken(currentUserProfile.uid).catch(console.error);
+      requestNotificationPermissionAndToken(uid).catch(console.error);
     }
-  }, [currentUserProfile]);
+  }, [currentUserProfile?.uid]);
+
+  const handleBanCheckExpiry = useCallback(async () => {
+    await checkModerationExpiry();
+  }, []);
+
+  const handleOpenChatFromBanner = useCallback((convId: string) => {
+    setActiveConversationId(convId);
+    setBannerNotification(null);
+  }, []);
+
+  const handleDismissBanner = useCallback(() => {
+    setBannerNotification(null);
+  }, []);
+
+  const handleBackFromChat = useCallback(() => {
+    setActiveConversationId(null);
+  }, []);
+
+  const handleOpenChatProfile = useCallback((u: UserProfile) => {
+    setInspectingUser(u);
+    setModalTab('profile');
+  }, []);
 
   if (authLoading) {
     return (
@@ -1220,9 +1291,7 @@ export default function App() {
     return (
       <BannedScreen
         user={currentUserProfile}
-        onCheckExpiry={async () => {
-          await checkModerationExpiry();
-        }}
+        onCheckExpiry={handleBanCheckExpiry}
         onLogout={logoutUser}
       />
     );
@@ -1319,11 +1388,8 @@ export default function App() {
       {/* 🟢 WhatsApp Tarzı Açılır Gruplanmış Bildirim Kartı */}
       <WhatsAppNotificationBanner
         notification={bannerNotification}
-        onOpenChat={(convId) => {
-          setActiveConversationId(convId);
-          setBannerNotification(null);
-        }}
-        onDismiss={() => setBannerNotification(null)}
+        onOpenChat={handleOpenChatFromBanner}
+        onDismiss={handleDismissBanner}
       />
 
       {showNotifBanner && (
@@ -1428,11 +1494,8 @@ export default function App() {
                   blockedUserIds={blockedUserIds}
                   badgeUrl={appSettings?.verifiedBadgeUrl}
                   aiProfilePhotoUrl={appSettings?.aiProfilePhotoUrl}
-                  onBack={() => setActiveConversationId(null)}
-                  onOpenProfile={(u) => {
-                    setInspectingUser(u);
-                    setModalTab('profile');
-                  }}
+                  onBack={handleBackFromChat}
+                  onOpenProfile={handleOpenChatProfile}
                   onUnblockUser={handleUnblockUser}
                 />
               ) : (

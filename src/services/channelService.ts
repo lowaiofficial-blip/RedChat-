@@ -444,6 +444,7 @@ export function subscribeToChannelFollowers(
   }
 
   const colRef = collection(db, 'channels', channelId, 'followers');
+  let lastSyncedFollowerCount: number | null = null;
   return onSnapshot(
     colRef,
     (snapshot) => {
@@ -452,8 +453,9 @@ export function subscribeToChannelFollowers(
         list.push(docSnap.data() as ChannelFollower);
       });
 
-      // Gerçek takipçi listesi boyutunu kanal ana dokümanıyla otomatik senkronize et
-      if (channelId && db) {
+      // Gerçek takipçi listesi boyutunu yalnızca değiştiğinde kanal ana dokümanıyla senkronize et
+      if (channelId && db && lastSyncedFollowerCount !== list.length) {
+        lastSyncedFollowerCount = list.length;
         const channelRef = doc(db, 'channels', channelId);
         updateDoc(channelRef, {
           followerCount: list.length,

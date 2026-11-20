@@ -59,6 +59,7 @@ import {
   checkModerationExpiry,
   submitUserComplaint,
 } from '../services/moderationService';
+import { isUserModerator } from '../services/adminService';
 import { SecurityTerminationAlert, SECURITY_TERMINATION_MESSAGE_TEXT } from './SecurityTerminationAlert';
 import { updateAbusiveCount, terminateAIConversation } from '../services/chatService';
 import {
@@ -340,6 +341,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isLongPressActiveRef = useRef(false);
   const sendLockRef = useRef(false);
+  const readMarkInFlightRef = useRef(false);
+  const lastReadMarkKeyRef = useRef('');
 
   useEffect(() => {
     activeConvIdRef.current = conversation?.id;
@@ -568,6 +571,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   // Mesajları kademeli (30'ar) dinle + sayfalama imleci & sohbet değişim sıfırlaması
   useEffect(() => {
     sendLockRef.current = false;
+    readMarkInFlightRef.current = false;
+    lastReadMarkKeyRef.current = '';
     setSending(false);
     setIsUploadingImage(false);
     setIsUploadingVideo(false);
@@ -700,17 +705,13 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     }
   }, [hasMoreOlder, loadingOlder, loadOlderMessages]);
 
-  // Sohbet açıldığında unreadCount varsa anında sıfırla
-  useEffect(() => {
-    if (!conversation?.id) return;
-    if ((conversation.unreadCounts?.[currentUser.uid] || 0) > 0) {
-      markMessagesAsRead(conversation.id, currentUser.uid);
-    }
-  }, [conversation?.id, currentUser.uid]);
+  const myUnreadCount = conversation?.unreadCounts?.[currentUser.uid] || 0;
+  const isReadOnlyModerator = isUserModerator(currentUser);
 
-  // Sohbet açıkken gelen/var olan okunmamış mesajları ekranda görünüyorsa okundu olarak işaretle
-  useEffect(() => {
-    if (!conversation?.id) return;
+  const attemptMarkMessagesAsRead = useCallback(() => {
+    const convId = conversation?.id;
+    if (!convId || isReadOnlyModerator) return;
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
 
     const unreadIds = messages
       .filter((m) => {
@@ -721,13 +722,30 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       })
       .map((m) => m.id);
 
-    const hasUnreadCount = (conversation.unreadCounts?.[currentUser.uid] || 0) > 0;
-
-    // Kullanıcı bu sohbette ve ekran görünür durumdaysa Firestore'da okundu yap
-    if ((unreadIds.length > 0 || hasUnreadCount) && typeof document !== 'undefined' && document.visibilityState === 'visible') {
-      markMessagesAsRead(conversation.id, currentUser.uid, unreadIds);
+    const hasUnreadCount = myUnreadCount > 0;
+    if (unreadIds.length === 0 && !hasUnreadCount) {
+      lastReadMarkKeyRef.current = '';
+      return;
     }
-  }, [conversation?.id, conversation?.isGroup, conversation?.unreadCounts, messages, currentUser.uid]);
+
+    const readKey = `${convId}|${myUnreadCount}|${unreadIds.join(',')}`;
+    if (readMarkInFlightRef.current || lastReadMarkKeyRef.current === readKey) {
+      return;
+    }
+
+    lastReadMarkKeyRef.current = readKey;
+    readMarkInFlightRef.current = true;
+    markMessagesAsRead(convId, currentUser.uid, unreadIds)
+      .catch(() => {})
+      .finally(() => {
+        readMarkInFlightRef.current = false;
+      });
+  }, [conversation?.id, conversation?.isGroup, myUnreadCount, messages, currentUser.uid, isReadOnlyModerator]);
+
+  // Sohbet açıkken gelen/var olan okunmamış mesajları ekranda görünüyorsa okundu olarak işaretle
+  useEffect(() => {
+    attemptMarkMessagesAsRead();
+  }, [attemptMarkMessagesAsRead]);
 
   // Sekme arka plandan ön plana geldiğinde veya pencereye odaklanıldığında okunmamış mesajları kontrol et
   useEffect(() => {
@@ -735,20 +753,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
-        const unreadIds = messages
-          .filter((m) => {
-            if (m.senderId === currentUser.uid) return false;
-            if (m.readBy && m.readBy[currentUser.uid] === true) return false;
-            if (!conversation.isGroup && (m.isRead === true || m.status === 'read')) return false;
-            return true;
-          })
-          .map((m) => m.id);
-
-        const hasUnreadCount = (conversation.unreadCounts?.[currentUser.uid] || 0) > 0;
-
-        if (unreadIds.length > 0 || hasUnreadCount) {
-          markMessagesAsRead(conversation.id, currentUser.uid, unreadIds);
-        }
+        attemptMarkMessagesAsRead();
       }
     };
 
@@ -759,7 +764,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
       window.removeEventListener('focus', handleVisibilityOrFocus);
     };
-  }, [conversation?.id, conversation?.isGroup, conversation?.unreadCounts, messages, currentUser.uid]);
+  }, [conversation?.id, attemptMarkMessagesAsRead]);
 
   // Eski mesaj eklenince kaydırma konumunu koru; yeni mesajda yalnızca en alttaysa kaydır
   useLayoutEffect(() => {
@@ -1758,6 +1763,10 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     setSelectedActionMessage(msg);
   }, []);
 
+  const handleFinishStreaming = useCallback((id: string) => {
+    setStreamingMessageId((curr) => (curr === id ? null : curr));
+  }, []);
+
   // Hiçbir sohbet seçili değilse boş durum
   if (!conversation) {
     return (
@@ -2113,10 +2122,10 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                 isStreaming={activeAiStream?.messageId === msg.id ? true : Boolean(msg.isStreaming || msg.id === streamingMessageId)}
                 isThinking={activeAiStream?.messageId === msg.id ? activeAiStream.isThinking : Boolean(msg.isThinking)}
                 liveText={activeAiStream?.messageId === msg.id ? activeAiStream.text : undefined}
-                onFinishStreaming={(id) => setStreamingMessageId((curr) => (curr === id ? null : curr))}
+                onFinishStreaming={handleFinishStreaming}
                 onOpenProfile={onOpenProfile}
                 onSelectImage={setLightboxImage}
-                onSelectVideo={(data) => setLightboxVideo(data)}
+                onSelectVideo={setLightboxVideo}
                 onStartReply={handleStartReply}
                 onSelectActionMessage={setSelectedActionMessage}
                 onReaction={handleReaction}

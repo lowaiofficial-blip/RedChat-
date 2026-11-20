@@ -149,11 +149,28 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
   const [now, setNow] = useState<number>(Date.now());
   const [recentActivityMap, setRecentActivityMap] = useState<Record<string, { recentPostCount: number; lastActiveTimestamp: number }>>({});
 
+  const channelsRef = useRef(channels);
+  channelsRef.current = channels;
+  const channelsActivityKey = useMemo(
+    () =>
+      channels
+        .map((c) => {
+          const ts = c.lastPostTimestamp?.toMillis
+            ? c.lastPostTimestamp.toMillis()
+            : c.lastPostTimestamp
+            ? new Date(c.lastPostTimestamp).getTime()
+            : 0;
+          return `${c.id}:${c.postCount || 0}:${ts}`;
+        })
+        .join('|'),
+    [channels]
+  );
+
   // ⚡ Kanalların Son 7 Günde Gönderilen Mesaj / Gönderi Sayılarını Hesapla
   useEffect(() => {
     let isMounted = true;
-    if (activeTab === 'channels' && channels.length > 0) {
-      fetchChannelsRecentActivity(channels).then((data) => {
+    if (activeTab === 'channels' && channelsRef.current.length > 0) {
+      fetchChannelsRecentActivity(channelsRef.current).then((data) => {
         if (isMounted) {
           setRecentActivityMap(data);
         }
@@ -162,7 +179,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [channels, activeTab, channelSort]);
+  }, [channelsActivityKey, activeTab, channelSort]);
 
   // Yazıyor durumlarını periyodik kontrol etmek için 1 sn ticker
   useEffect(() => {

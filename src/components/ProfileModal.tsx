@@ -103,7 +103,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       setDmPrivacy(user.allowDirectMessages || 'everyone');
       setGroupPrivacy(user.allowGroupAdditions || 'everyone');
     }
-  }, [user]);
+  }, [user?.uid, user?.allowDirectMessages, user?.allowGroupAdditions]);
 
   const handleUpdateDmPrivacy = async (val: 'everyone' | 'none') => {
     if (!isCurrentUser || !user?.uid || savingPrivacy) return;
@@ -238,6 +238,9 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     applyTheme(mode);
   };
 
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   // ESC tuşu ile modalı kapatma desteği
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -253,13 +256,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         } else if (showBusinessSetupModal) {
           setShowBusinessSetupModal(false);
         } else {
-          onClose();
+          onCloseRef.current();
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, showBlockConfirmModal, blockLoading, showConfirmModal, isUploadingPhoto, showBusinessSetupModal]);
+  }, [showBlockConfirmModal, blockLoading, showConfirmModal, isUploadingPhoto, showBusinessSetupModal]);
 
   // Gelen prop değiştiğinde senkronize et
   useEffect(() => {
@@ -272,7 +275,18 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       );
       setBio(isBusiness ? business?.description || user?.bio || '' : user?.bio || '');
     }
-  }, [user, isBusiness, business, editing]);
+  }, [
+    user?.uid,
+    user?.photoURL,
+    user?.displayName,
+    user?.username,
+    user?.bio,
+    isBusiness,
+    business?.businessName,
+    business?.description,
+    business?.photoURL,
+    editing,
+  ]);
 
   // ObjectURL cleanup
   useEffect(() => {
