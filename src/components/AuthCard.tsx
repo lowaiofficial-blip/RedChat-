@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   registerWithEmailAndUsername,
   loginWithEmail,
   validateUsername,
   isUsernameTaken,
+  formatAuthErrorMessage,
 } from '../services/authService';
 import { checkDeviceBanNow } from '../services/deviceService';
 import { ForgotPasswordModal } from './ForgotPasswordModal';
@@ -23,13 +24,28 @@ import {
 interface AuthCardProps {
   onAuthSuccess: () => void;
   securityNotice?: string | null;
+  externalError?: string | null;
+  onClearExternalError?: () => void;
 }
 
-export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess, securityNotice }) => {
+export const AuthCard: React.FC<AuthCardProps> = ({
+  onAuthSuccess,
+  securityNotice,
+  externalError,
+  onClearExternalError,
+}) => {
   const [isLogin, setIsLogin] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showForgotPasswordModal, setShowForgotPasswordModal] = useState(false);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   // Form Fields
   const [displayName, setDisplayName] = useState('');
@@ -38,6 +54,8 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess, securityNotic
   const [password, setPassword] = useState('');
   const [usernameChecking, setUsernameChecking] = useState(false);
   const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(null);
+
+  const displayedError = error || externalError || null;
 
   const handleUsernameBlur = async () => {
     if (isLogin || !username.trim()) {
@@ -53,22 +71,31 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess, securityNotic
 
     setUsernameChecking(true);
     setError(null);
+    onClearExternalError?.();
     try {
       const taken = await isUsernameTaken(username);
+      if (!isMountedRef.current) return;
       setUsernameAvailable(!taken);
       if (taken) {
         setError(`@${username} kullanıcı adı zaten alınmış.`);
       }
     } catch (err: any) {
       console.error('Username check error:', err);
+      if (isMountedRef.current) {
+        setUsernameAvailable(null);
+        setError(formatAuthErrorMessage(err, 'Kullanıcı adı kontrol edilemedi. Lütfen tekrar deneyin.'));
+      }
     } finally {
-      setUsernameChecking(false);
+      if (isMountedRef.current) {
+        setUsernameChecking(false);
+      }
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    onClearExternalError?.();
     setLoading(true);
 
     try {
@@ -93,7 +120,7 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess, securityNotic
         if (password.length < 6) {
           throw new Error('Şifreniz en az 6 karakter olmalıdır.');
         }
-        
+
         await registerWithEmailAndUsername({
           email,
           password,
@@ -105,21 +132,14 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess, securityNotic
       }
     } catch (err: any) {
       console.error('Auth error:', err);
-      let msg = err?.message || 'Bir hata oluştu.';
-      if (msg.includes('auth/email-already-in-use')) {
-        msg = 'Bu e-posta adresi ile zaten bir hesap bulunuyor.';
-      } else if (msg.includes('auth/invalid-email')) {
-        msg = 'Lütfen geçerli bir e-posta adresi girin.';
-      } else if (msg.includes('auth/wrong-password') || msg.includes('auth/invalid-credential')) {
-        msg = 'E-posta veya şifre hatalı.';
-      } else if (msg.includes('auth/user-not-found')) {
-        msg = 'Bu e-posta ile kayıtlı kullanıcı bulunamadı.';
-      } else if (msg.includes('auth/weak-password')) {
-        msg = 'Şifre çok zayıf. En az 6 karakter olmalı.';
+      const msg = formatAuthErrorMessage(err, 'İşlem sırasında bir hata oluştu.');
+      if (isMountedRef.current) {
+        setError(msg);
       }
-      setError(msg);
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -147,10 +167,10 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess, securityNotic
       )}
 
       {/* Feedback Alert */}
-      {error && (
+      {displayedError && (
         <div className="mb-4 p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200/80 dark:border-rose-900/50 rounded-xl flex items-start gap-2.5 text-xs text-rose-700 dark:text-rose-300">
           <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-          <span>{error}</span>
+          <span>{displayedError}</span>
         </div>
       )}
 
@@ -297,6 +317,7 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess, securityNotic
               onClick={() => {
                 setIsLogin(false);
                 setError(null);
+                onClearExternalError?.();
               }}
               className="text-red-600 hover:text-red-700 font-bold hover:underline cursor-pointer"
             >
@@ -311,6 +332,7 @@ export const AuthCard: React.FC<AuthCardProps> = ({ onAuthSuccess, securityNotic
               onClick={() => {
                 setIsLogin(true);
                 setError(null);
+                onClearExternalError?.();
               }}
               className="text-red-600 hover:text-red-700 font-bold hover:underline cursor-pointer"
             >

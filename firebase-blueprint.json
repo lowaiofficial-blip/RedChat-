@@ -37,6 +37,8 @@
       "path": "usernames/{usernameLower}",
       "fields": {
         "uid": { "type": "string", "description": "Referenced user UID" },
+        "username": { "type": "string", "description": "Original display username" },
+        "usernameLower": { "type": "string", "description": "Lowercased username matching document ID" },
         "createdAt": { "type": "timestamp", "description": "Claim timestamp" }
       }
     },

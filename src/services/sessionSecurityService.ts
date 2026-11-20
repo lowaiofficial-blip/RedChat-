@@ -171,6 +171,7 @@ export async function registerOrVerifyDeviceSession(user: User): Promise<{
   const resp = await fetch('/api/security/sessions/register', {
     method: 'POST',
     credentials: 'include',
+    signal: AbortSignal.timeout(12000),
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${idToken}`,
@@ -186,7 +187,7 @@ export async function registerOrVerifyDeviceSession(user: User): Promise<{
     }),
   });
 
-  const data = await resp.json();
+  const data = await resp.json().catch(() => ({}));
   if (!resp.ok || !data?.session) {
     const err: any = new Error(data?.error || 'Oturum güvenlik kontrolü başlatılamadı.');
     if (data?.code) err.code = data.code;

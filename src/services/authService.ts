@@ -4,6 +4,7 @@ import {
   signOut,
   updateProfile,
   onAuthStateChanged,
+  deleteUser,
   type User,
 } from 'firebase/auth';
 import {
@@ -25,6 +26,57 @@ import {
   markFreshLoginPending,
   clearLocalSessionCredentials,
 } from './sessionSecurityService';
+
+let activeRegistrationsCount = 0;
+
+export function isRegistrationInProgress(): boolean {
+  return activeRegistrationsCount > 0;
+}
+
+export function formatAuthErrorMessage(err: any, fallback = 'Bir hata oluştu.'): string {
+  const code = String(err?.code || '').toLowerCase();
+  const rawMessage = String(err?.message || '');
+  const combined = `${code} ${rawMessage}`.toLowerCase();
+
+  if (combined.includes('auth/email-already-in-use')) {
+    return 'Bu e-posta adresi ile zaten bir hesap bulunuyor.';
+  }
+  if (combined.includes('auth/invalid-email')) {
+    return 'Lütfen geçerli bir e-posta adresi girin.';
+  }
+  if (combined.includes('auth/wrong-password') || combined.includes('auth/invalid-credential')) {
+    return 'E-posta veya şifre hatalı.';
+  }
+  if (combined.includes('auth/user-not-found')) {
+    return 'Bu e-posta ile kayıtlı kullanıcı bulunamadı.';
+  }
+  if (combined.includes('auth/weak-password')) {
+    return 'Şifre çok zayıf. En az 6 karakter olmalı.';
+  }
+  if (combined.includes('auth/too-many-requests')) {
+    return 'Çok fazla başarısız deneme yapıldı. Lütfen biraz bekleyip tekrar deneyin.';
+  }
+  if (combined.includes('auth/user-disabled')) {
+    return 'Bu hesap yönetici tarafından devre dışı bırakılmış.';
+  }
+  if (combined.includes('auth/network-request-failed')) {
+    return 'Ağ bağlantısı kurulamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.';
+  }
+  if (combined.includes('permission-denied') || combined.includes('missing or insufficient permissions')) {
+    return 'Firestore güvenlik kuralları bu işlemi reddetti. Lütfen kullanıcı profili ve kullanıcı adı alanlarını veya yönetici ayarlarını kontrol edin.';
+  }
+  if (combined.includes('unavailable') || combined.includes('failed to get document')) {
+    return 'Sunucu veya veritabanına şu anda ulaşılamıyor. Lütfen tekrar deneyin.';
+  }
+  if (combined.includes('deadline-exceeded') || combined.includes('timeout')) {
+    return 'İşlem zaman aşımına uğradı. Lütfen bağlantınızı kontrol edip tekrar deneyin.';
+  }
+  if (combined.includes('already-exists')) {
+    return 'Bu kullanıcı adı veya kayıt zaten mevcut.';
+  }
+
+  return rawMessage || fallback;
+}
 
 export function validateUsername(username: string): { valid: boolean; error?: string } {
   const clean = username.trim();
@@ -60,67 +112,95 @@ export async function registerWithEmailAndUsername(params: {
   }
 
   const { email, password, username, displayName } = params;
+  const cleanUsername = username.trim();
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanDisplayName = displayName.trim() || cleanUsername;
 
   // 1. Validate username format
-  const validation = validateUsername(username);
+  const validation = validateUsername(cleanUsername);
   if (!validation.valid) {
     throw new Error(validation.error);
   }
 
-  const usernameLower = username.trim().toLowerCase();
+  const usernameLower = cleanUsername.toLowerCase();
 
   // 2. Check Firestore for username uniqueness (Single Source of Truth)
   const usernameDocRef = doc(db, 'usernames', usernameLower);
   const usernameSnap = await getDoc(usernameDocRef);
   if (usernameSnap.exists()) {
-    throw new Error(`"@${username}" kullanıcı adı zaten başka bir kullanıcı tarafından alınmış.`);
+    throw new Error(`"@${cleanUsername}" kullanıcı adı zaten başka bir kullanıcı tarafından alınmış.`);
   }
 
-  // 3. Create user in Firebase Auth
-  markFreshLoginPending();
-  const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-  const authUser = userCredential.user;
+  activeRegistrationsCount += 1;
+  let createdAuthUser: User | null = null;
 
-  // 4. Update Firebase Auth displayName
-  await updateProfile(authUser, {
-    displayName: displayName.trim() || username.trim(),
-  });
+  try {
+    // 3. Create user in Firebase Auth
+    markFreshLoginPending();
+    const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+    const authUser = userCredential.user;
+    createdAuthUser = authUser;
 
-  // 5. Atomic Batch write to Firestore: users/{uid} AND usernames/{usernameLower}
-  const batch = writeBatch(db);
+    // 4. Update Firebase Auth displayName
+    await updateProfile(authUser, {
+      displayName: cleanDisplayName,
+    });
 
-  const userDocRef = doc(db, 'users', authUser.uid);
-  const newProfileData: any = {
-    uid: authUser.uid,
-    username: username.trim(),
-    usernameLower,
-    email: email.trim().toLowerCase(),
-    displayName: (displayName.trim() || username.trim()),
-    photoURL: authUser.photoURL || null,
-    bio: 'RedChat kullanıcısı',
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-    isOnline: true,
-    lastSeen: serverTimestamp(),
-  };
+    // 5. Atomic Batch write to Firestore: users/{uid} AND usernames/{usernameLower}
+    const batch = writeBatch(db);
 
-  batch.set(userDocRef, newProfileData);
-  batch.set(usernameDocRef, {
-    uid: authUser.uid,
-    username: username.trim(),
-    createdAt: serverTimestamp(),
-  });
+    const userDocRef = doc(db, 'users', authUser.uid);
+    const newProfileData: any = {
+      uid: authUser.uid,
+      username: cleanUsername,
+      usernameLower,
+      email: cleanEmail,
+      displayName: cleanDisplayName,
+      photoURL: authUser.photoURL || null,
+      bio: 'RedChat kullanıcısı',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      isOnline: true,
+      lastSeen: serverTimestamp(),
+    };
 
-  await batch.commit();
+    batch.set(userDocRef, newProfileData);
+    batch.set(usernameDocRef, {
+      uid: authUser.uid,
+      username: cleanUsername,
+      usernameLower,
+      createdAt: serverTimestamp(),
+    });
 
-  console.log(`✅ [RedChat Auth] Yeni kullanıcı Firestore ve Auth'a kaydedildi. UID: ${authUser.uid}`);
+    await batch.commit();
 
-  return {
-    ...newProfileData,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    lastSeen: new Date(),
-  };
+    console.log(`✅ [RedChat Auth] Yeni kullanıcı Firestore ve Auth'a kaydedildi. UID: ${authUser.uid}`);
+
+    return {
+      ...newProfileData,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastSeen: new Date(),
+    };
+  } catch (err: any) {
+    // Auth kullanıcısı oluşturulup Firestore profil kaydı başarısız olursa sahipsiz Auth kaydı bırakma
+    if (createdAuthUser) {
+      clearLocalSessionCredentials(createdAuthUser.uid);
+      try {
+        await deleteUser(createdAuthUser);
+      } catch (rollbackErr) {
+        console.warn('Kısmi Auth kaydı silinemedi, oturum kapatılıyor:', rollbackErr);
+        try {
+          await signOut(auth);
+        } catch {
+          // noop
+        }
+      }
+    }
+    throw new Error(formatAuthErrorMessage(err, 'Kayıt işlemi tamamlanamadı. Lütfen tekrar deneyin.'));
+  } finally {
+    activeRegistrationsCount = Math.max(0, activeRegistrationsCount - 1);
+  }
 }
 
 export async function setUserOnlineStatus(uid: string, isOnline: boolean): Promise<void> {
@@ -145,15 +225,35 @@ export async function loginWithEmail(email: string, password: string): Promise<U
   const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
   const user = userCredential.user;
 
-  // Update online status in Firestore
+  // Verify user profile exists & is readable in Firestore before completing login
   try {
     const userDocRef = doc(db, 'users', user.uid);
-    await updateDoc(userDocRef, {
-      isOnline: true,
-      lastSeen: serverTimestamp(),
-    });
-  } catch (err) {
-    console.warn('Could not update online status during login:', err);
+    const profileSnap = await getDoc(userDocRef);
+    if (!profileSnap.exists()) {
+      clearLocalSessionCredentials(user.uid);
+      await signOut(auth).catch(() => {});
+      throw new Error(
+        'Hesabınız doğrulandı ancak Firestore kullanıcı profiliniz bulunamadı. Kayıt işlemi tamamlanmamış olabilir; lütfen yeniden kayıt olun veya yöneticiyle iletişime geçin.'
+      );
+    }
+
+    try {
+      await updateDoc(userDocRef, {
+        isOnline: true,
+        lastSeen: serverTimestamp(),
+      });
+    } catch (presenceErr) {
+      console.warn('Could not update online status during login:', presenceErr);
+    }
+  } catch (err: any) {
+    if (err?.message?.includes('Firestore kullanıcı profiliniz bulunamadı')) {
+      throw err;
+    }
+    clearLocalSessionCredentials(user.uid);
+    await signOut(auth).catch(() => {});
+    throw new Error(
+      formatAuthErrorMessage(err, 'Kullanıcı profili okunamadığı için giriş tamamlanamadı.')
+    );
   }
 
   return user;
@@ -241,7 +341,8 @@ export async function updateUserProfileDetails(
 
 export function subscribeToUserProfile(
   uid: string,
-  callback: (profile: UserProfile | null) => void
+  callback: (profile: UserProfile | null) => void,
+  onError?: (error: any) => void
 ): () => void {
   if (!db) {
     callback(null);
@@ -260,6 +361,7 @@ export function subscribeToUserProfile(
     },
     (err) => {
       console.error('Error in user profile onSnapshot listener:', err);
+      onError?.(err);
     }
   );
 }

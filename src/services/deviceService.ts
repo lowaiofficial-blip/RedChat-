@@ -378,10 +378,13 @@ export async function checkDeviceBanNow(): Promise<BannedDevice | null> {
   try {
     const myDeviceId = getHardwareDeviceId();
     const myFingerprint = getHardwareFingerprint();
-    const currentIp = await getClientIp();
-
     const bannedCol = collection(db, 'banned_devices');
-    const snap = await getDocs(bannedCol);
+
+    const [snap, currentIp] = await Promise.all([
+      getDocs(bannedCol),
+      getClientIp().catch(() => '127.0.0.1'),
+    ]);
+
     const activeBans = snap.docs
       .map((d) => ({ id: d.id, ...d.data() } as BannedDevice))
       .filter((b) => b.isActive !== false);
@@ -394,8 +397,12 @@ export async function checkDeviceBanNow(): Promise<BannedDevice | null> {
     });
 
     return match || null;
-  } catch (err) {
-    console.error('checkDeviceBanNow hatası:', err);
+  } catch (err: any) {
+    if (err?.code === 'permission-denied') {
+      console.warn('checkDeviceBanNow: banned_devices okuma izni kısıtlı, atlandı.');
+    } else {
+      console.warn('checkDeviceBanNow hatası:', err);
+    }
     return null;
   }
 }

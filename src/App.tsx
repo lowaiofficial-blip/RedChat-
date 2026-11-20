@@ -5,6 +5,9 @@ import {
   subscribeToAuthState,
   subscribeToUserProfile,
   subscribeToAllUsers,
+  getUserProfile,
+  isRegistrationInProgress,
+  formatAuthErrorMessage,
   logoutUser,
   setUserOnlineStatus,
 } from './services/authService';
@@ -68,7 +71,7 @@ import { subscribeToBlockedUsers, unblockUser } from './services/blockService';
 import type { BannedDevice } from './types';
 import { WhatsAppNotificationBanner } from './components/WhatsAppNotificationBanner';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { Loader2, Bell, X, Radio } from 'lucide-react';
+import { Loader2, Bell, X, Radio, AlertCircle, RefreshCw, LogOut } from 'lucide-react';
 
 export default function App() {
   const [currentUserAuth, setCurrentUserAuth] = useState<User | null>(null);
@@ -110,6 +113,10 @@ export default function App() {
   const [modalTab, setModalTab] = useState<'profile' | 'settings'>('profile');
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [authExternalError, setAuthExternalError] = useState<string | null>(null);
+  const [profileRetryTick, setProfileRetryTick] = useState(0);
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
   const [currentHash, setCurrentHash] = useState<string>(window.location.hash || '#/');
   const [bannerNotification, setBannerNotification] = useState<GroupedNotificationData | null>(null);
@@ -128,6 +135,8 @@ export default function App() {
   const [sessionRevokedNotice, setSessionRevokedNotice] = useState<string | null>(null);
   const currentSecuritySessionRef = React.useRef<SecuritySession | null>(null);
   currentSecuritySessionRef.current = currentSecuritySession;
+  const currentUserProfileRef = React.useRef<UserProfile | null>(null);
+  currentUserProfileRef.current = currentUserProfile;
 
   // 🛡️ Sunucu Doğrulamalı Yönetici & Moderatör Yetkisi
   const [serverVerifiedModerator, setServerVerifiedModerator] = useState<boolean>(false);
@@ -178,10 +187,10 @@ export default function App() {
 
   // Cihaz parmak izi ve IP bilgisini kullanıcı profiliyle eşleştir
   useEffect(() => {
-    if (currentUserAuth?.uid) {
+    if (currentUserAuth?.uid && currentUserProfile?.uid) {
       syncCurrentDeviceInfo(currentUserAuth.uid);
     }
-  }, [currentUserAuth?.uid]);
+  }, [currentUserAuth?.uid, currentUserProfile?.uid]);
 
   // 0. Hash Router Listener (/#/admin desteği)
   useEffect(() => {
@@ -231,21 +240,30 @@ export default function App() {
       setAuthLoading(false);
       if (!user) {
         setCurrentUserProfile(null);
+        setProfileLoading(false);
+        setProfileError(null);
         setActiveConversationId(null);
         setCurrentSecuritySession(null);
         setSessionCheckLoading(false);
         setServerMainAdmin(false);
         setAdminSecurityReviewUnlocked(false);
+      } else {
+        setProfileError(null);
+        setProfileLoading(true);
       }
     });
 
     return () => unsubscribeAuth();
   }, []);
 
+  const isProfileReady = Boolean(currentUserProfile?.uid);
+
   // 1b. 🌍 Yeni Ülke Girişi & Cihaz Oturum Kaydı + Gerçek Zamanlı İptal Dinleyicisi
   useEffect(() => {
-    if (!currentUserAuth) {
-      setCurrentSecuritySession(null);
+    if (!currentUserAuth || !isProfileReady) {
+      if (!currentUserAuth) {
+        setCurrentSecuritySession(null);
+      }
       setSessionCheckLoading(false);
       return;
     }
@@ -285,7 +303,7 @@ export default function App() {
     return () => {
       isMounted = false;
     };
-  }, [currentUserAuth]);
+  }, [currentUserAuth, isProfileReady]);
 
   useEffect(() => {
     if (!currentUserAuth?.uid || !currentSecuritySession?.sessionId) return;
@@ -381,35 +399,104 @@ export default function App() {
 
   // 2. Logged-in User Profile Listener
   useEffect(() => {
-    if (!currentUserAuth) return;
+    if (!currentUserAuth) {
+      setProfileLoading(false);
+      setProfileError(null);
+      return;
+    }
 
-    const userProfileRef = { current: currentUserProfile };
-    userProfileRef.current = currentUserProfile;
+    let isMounted = true;
+    let missingCheckTimer: ReturnType<typeof setTimeout> | null = null;
+    setProfileLoading(true);
+    setProfileError(null);
 
     const isLocked = () => {
-      const p = userProfileRef.current;
+      const p = currentUserProfileRef.current;
       const s = currentSecuritySessionRef.current;
-      return Boolean(p?.isEmailInReview || isUserEffectivelyBanned(p) || (s && s.status !== 'active'));
+      return Boolean(!p || p.isEmailInReview || isUserEffectivelyBanned(p) || (s && s.status !== 'active'));
     };
+
+    const loadTimeout = setTimeout(() => {
+      if (!isMounted) return;
+      if (!currentUserProfileRef.current && !isRegistrationInProgress()) {
+        setProfileLoading(false);
+        setSessionCheckLoading(false);
+        setProfileError('Kullanıcı profiliniz yüklenirken zaman aşımı oluştu. Bağlantınızı kontrol edip tekrar deneyin.');
+      }
+    }, 12000);
 
     const unsubscribeProfile = subscribeToUserProfile(
       currentUserAuth.uid,
       (profile) => {
-        setCurrentUserProfile(profile);
-        if (profile?.isEmailInReview || isUserEffectivelyBanned(profile) || (currentSecuritySessionRef.current && currentSecuritySessionRef.current.status !== 'active')) {
-          setUserOnlineStatus(currentUserAuth.uid, false);
+        if (!isMounted) return;
+        if (missingCheckTimer) {
+          clearTimeout(missingCheckTimer);
+          missingCheckTimer = null;
         }
+
+        if (profile) {
+          setCurrentUserProfile(profile);
+          setProfileLoading(false);
+          setProfileError(null);
+          setAuthExternalError(null);
+          if (profile.isEmailInReview || isUserEffectivelyBanned(profile) || (currentSecuritySessionRef.current && currentSecuritySessionRef.current.status !== 'active')) {
+            setUserOnlineStatus(currentUserAuth.uid, false);
+          } else {
+            setUserOnlineStatus(currentUserAuth.uid, true);
+          }
+          return;
+        }
+
+        setCurrentUserProfile(null);
+        // Kayıt batch işlemi devam ediyorsa profil yazılmasını bekle
+        if (isRegistrationInProgress()) {
+          return;
+        }
+
+        // Profil dokümanı eksikse kısa bir doğrulamanın ardından sonsuz Loading'e düşmeden çıkış yap ve hata göster
+        missingCheckTimer = setTimeout(async () => {
+          if (!isMounted || isRegistrationInProgress()) return;
+          try {
+            const directProfile = await getUserProfile(currentUserAuth.uid);
+            if (!isMounted || isRegistrationInProgress()) return;
+            if (directProfile) {
+              setCurrentUserProfile(directProfile);
+              setProfileLoading(false);
+              setProfileError(null);
+              return;
+            }
+            setProfileLoading(false);
+            setSessionCheckLoading(false);
+            setAuthExternalError(
+              'Hesabınız Firebase Authentication ile doğrulandı ancak Firestore kullanıcı profiliniz bulunamadı. Kayıt işlemi tamamlanmamış olabilir; lütfen yeniden kayıt olun.'
+            );
+            await logoutUser().catch(() => {});
+          } catch (verifyErr: any) {
+            if (!isMounted) return;
+            setProfileLoading(false);
+            setSessionCheckLoading(false);
+            setProfileError(
+              formatAuthErrorMessage(verifyErr, 'Kullanıcı profiliniz Firestore\'dan okunamadı.')
+            );
+          }
+        }, 450);
+      },
+      (err) => {
+        if (!isMounted) return;
+        if (missingCheckTimer) {
+          clearTimeout(missingCheckTimer);
+          missingCheckTimer = null;
+        }
+        setProfileLoading(false);
+        setSessionCheckLoading(false);
+        setProfileError(
+          formatAuthErrorMessage(err, 'Kullanıcı profiliniz okunurken bir hata oluştu.')
+        );
       }
     );
 
-    // Kullanıcı online durumunu ayarla ve pencere olaylarını dinle (İncelemede/banlı/güvenlik kontrolünde değilse)
-    if (!isLocked()) {
-      setUserOnlineStatus(currentUserAuth.uid, true);
-    } else {
-      setUserOnlineStatus(currentUserAuth.uid, false);
-    }
-
     const handleVisibilityChange = () => {
+      if (!currentUserProfileRef.current) return;
       if (isLocked()) {
         setUserOnlineStatus(currentUserAuth.uid, false);
         return;
@@ -422,10 +509,13 @@ export default function App() {
     };
 
     const handleBeforeUnload = () => {
-      setUserOnlineStatus(currentUserAuth.uid, false);
+      if (currentUserProfileRef.current) {
+        setUserOnlineStatus(currentUserAuth.uid, false);
+      }
     };
 
     const heartbeatInterval = setInterval(() => {
+      if (!currentUserProfileRef.current) return;
       if (isLocked()) {
         setUserOnlineStatus(currentUserAuth.uid, false);
         return;
@@ -439,28 +529,31 @@ export default function App() {
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
+      isMounted = false;
+      clearTimeout(loadTimeout);
+      if (missingCheckTimer) clearTimeout(missingCheckTimer);
       unsubscribeProfile();
       clearInterval(heartbeatInterval);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [currentUserAuth]);
+  }, [currentUserAuth, profileRetryTick]);
 
 
   // 3. Realtime Users List (All registered users in Firestore)
   useEffect(() => {
-    if (!currentUserAuth) return;
+    if (!currentUserAuth || !isProfileReady) return;
 
     const unsubscribeUsers = subscribeToAllUsers((users) => {
       setAllUsers(users);
     });
 
     return () => unsubscribeUsers();
-  }, [currentUserAuth]);
+  }, [currentUserAuth, isProfileReady]);
 
   // 3b. 📢 Realtime Channels & Following Listener
   useEffect(() => {
-    if (!currentUserAuth) return;
+    if (!currentUserAuth || !isProfileReady) return;
 
     const unsubscribeChannels = subscribeToChannels((chs) => {
       setChannels(chs);
@@ -477,7 +570,7 @@ export default function App() {
       unsubscribeChannels();
       unsubscribeFollowing();
     };
-  }, [currentUserAuth]);
+  }, [currentUserAuth, isProfileReady]);
 
   // 3b2. 🔔 Realtime Channel Notifications Listener
   useEffect(() => {
@@ -542,7 +635,7 @@ export default function App() {
 
   // 4. Realtime Conversations Listener
   useEffect(() => {
-    if (!currentUserAuth) return;
+    if (!currentUserAuth || !isProfileReady) return;
 
     const unsubscribeConv = subscribeToConversations(
       currentUserAuth.uid,
@@ -692,7 +785,7 @@ export default function App() {
 
   // 5. App Settings Listener (Kalıcı Mavi Tik PNG & Genel Ayarlar)
   useEffect(() => {
-    if (!currentUserAuth) return;
+    if (!currentUserAuth || !isProfileReady) return;
 
     const unsubscribeSettings = subscribeToAppSettings((settings) => {
       setAppSettings(settings);
@@ -702,7 +795,7 @@ export default function App() {
     });
 
     return () => unsubscribeSettings();
-  }, [currentUserAuth]);
+  }, [currentUserAuth, isProfileReady]);
 
   // 🛡️ Yetkili Admin Otomatik Eşitlemesi (gg00cat73@gmail.com ve robloxenes930@gmail.com)
   useEffect(() => {
@@ -1023,12 +1116,100 @@ export default function App() {
   }
 
   // Giriş Yapılmamışsa -> Auth Formu Göster
-  if (!currentUserAuth || !currentUserProfile) {
+  if (!currentUserAuth || (!currentUserProfile && isRegistrationInProgress())) {
     return (
       <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950 flex flex-col items-center justify-center p-4">
         <AuthCard
           securityNotice={sessionRevokedNotice}
-          onAuthSuccess={() => setSessionRevokedNotice(null)}
+          externalError={authExternalError}
+          onClearExternalError={() => setAuthExternalError(null)}
+          onAuthSuccess={() => {
+            setSessionRevokedNotice(null);
+            setAuthExternalError(null);
+          }}
+        />
+      </div>
+    );
+  }
+
+  // Kimlik doğrulanmış ancak profil yüklenememiş / eksik ise sonsuz Loading yerine net hata veya kontrollü yükleme ekranı göster
+  if (!currentUserProfile) {
+    if (profileError) {
+      return (
+        <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950 flex flex-col items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl p-6 shadow-xl max-w-md w-full text-center space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 text-rose-500 flex items-center justify-center mx-auto">
+              <AlertCircle className="w-6 h-6" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-zinc-900 dark:text-zinc-100">
+                Kullanıcı Profili Yüklenemedi
+              </h2>
+              <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-1.5 leading-relaxed">
+                {profileError}
+              </p>
+            </div>
+            <div className="flex items-center justify-center gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setProfileError(null);
+                  setProfileLoading(true);
+                  setProfileRetryTick((t) => t + 1);
+                }}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Tekrar Dene</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setProfileError(null);
+                  logoutUser().catch(() => {});
+                }}
+                className="px-4 py-2 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Çıkış Yap</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (profileLoading) {
+      return (
+        <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950 flex flex-col items-center justify-center gap-4 p-4">
+          <div className="flex items-center gap-2.5 text-xs font-medium text-zinc-600 dark:text-zinc-400">
+            <Loader2 className="w-5 h-5 animate-spin text-red-600" />
+            <span>Profiliniz yükleniyor...</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => logoutUser().catch(() => {})}
+            className="text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 underline cursor-pointer"
+          >
+            İptal Et ve Giriş Ekranına Dön
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950 flex flex-col items-center justify-center p-4">
+        <AuthCard
+          securityNotice={sessionRevokedNotice}
+          externalError={
+            authExternalError ||
+            'Kullanıcı profiliniz bulunamadı veya okunamadı. Lütfen tekrar giriş yapın.'
+          }
+          onClearExternalError={() => setAuthExternalError(null)}
+          onAuthSuccess={() => {
+            setSessionRevokedNotice(null);
+            setAuthExternalError(null);
+          }}
         />
       </div>
     );
