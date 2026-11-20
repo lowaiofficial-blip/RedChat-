@@ -354,25 +354,10 @@ export function subscribeToChannel(
   }
 
   const docRef = doc(db, 'channels', channelId);
-  const followersCol = collection(db, 'channels', channelId, 'followers');
 
-  // Gerçek takipçi dokümanlarını sayıp gerekirse senkronize et
-  getDocs(followersCol)
-    .then((snap) => {
-      const actualCount = snap.size;
-      getDoc(docRef)
-        .then((docSnap) => {
-          if (docSnap.exists()) {
-            const data = docSnap.data() as Channel;
-            if (data.followerCount !== actualCount) {
-              updateDoc(docRef, { followerCount: actualCount }).catch(() => {});
-            }
-          }
-        })
-        .catch(() => {});
-    })
-    .catch(() => {});
-
+  // Takipçi sayısı followChannel/unfollowChannel işlemlerinde transaction ile
+  // güncellenir. Kanal her açıldığında followers koleksiyonunu baştan okumak
+  // gereksiz ve yüksek maliyetli olduğundan burada yeniden sayım yapılmaz.
   return onSnapshot(
     docRef,
     (docSnap) => {
