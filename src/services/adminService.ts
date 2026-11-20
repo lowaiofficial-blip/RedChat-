@@ -673,13 +673,8 @@ export async function fetchRealAdminStats(): Promise<AdminStats> {
   // 1. Toplam Kullanıcı Sayısı
   try {
     const usersCol = collection(db, 'users');
-    try {
-      const userCountSnap = await getCountFromServer(usersCol);
-      totalUsers = userCountSnap.data().count;
-    } catch {
-      const usersSnap = await getDocs(usersCol);
-      totalUsers = usersSnap.size;
-    }
+    const userCountSnap = await getCountFromServer(usersCol);
+    totalUsers = userCountSnap.data().count;
   } catch (e) {
     console.warn('Users count fetch warning:', e);
   }
@@ -688,13 +683,8 @@ export async function fetchRealAdminStats(): Promise<AdminStats> {
   try {
     const usersCol = collection(db, 'users');
     const onlineQuery = query(usersCol, where('isOnline', '==', true));
-    try {
-      const onlineCountSnap = await getCountFromServer(onlineQuery);
-      onlineUsers = onlineCountSnap.data().count;
-    } catch {
-      const onlineSnap = await getDocs(onlineQuery);
-      onlineUsers = onlineSnap.size;
-    }
+    const onlineCountSnap = await getCountFromServer(onlineQuery);
+    onlineUsers = onlineCountSnap.data().count;
   } catch (e) {
     console.warn('Online users count fetch warning:', e);
   }
@@ -702,8 +692,8 @@ export async function fetchRealAdminStats(): Promise<AdminStats> {
   // 3. Konuşmalar Sayısı
   try {
     const convCol = collection(db, 'conversations');
-    const convSnap = await getDocs(convCol);
-    totalConversations = convSnap.size;
+    const convCountSnap = await getCountFromServer(convCol);
+    totalConversations = convCountSnap.data().count;
   } catch (e) {
     console.warn('Conversations count fetch warning:', e);
   }
@@ -760,20 +750,10 @@ export async function fetchRealAdminStats(): Promise<AdminStats> {
     const msgGroup = collectionGroup(db, 'messages');
     const msgCountSnap = await getCountFromServer(msgGroup);
     totalMessages = msgCountSnap.data().count;
-  } catch {
-    try {
-      const convCol = collection(db, 'conversations');
-      const convSnap = await getDocs(convCol);
-      let msgSum = 0;
-      for (const convDoc of convSnap.docs) {
-        const msgsCol = collection(db, 'conversations', convDoc.id, 'messages');
-        const msgsSnap = await getDocs(msgsCol);
-        msgSum += msgsSnap.size;
-      }
-      totalMessages = msgSum;
-    } catch (e) {
-      console.warn('Messages count fetch warning:', e);
-    }
+  } catch (e) {
+    // Kota veya aggregate sorgu hatasında tüm sohbetleri ve mesajları tek tek
+    // okumaya düşme. Bu fallback, kota sorununu daha da büyütebilirdi.
+    console.warn('Messages count fetch warning:', e);
   }
 
   return {
