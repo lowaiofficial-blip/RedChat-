@@ -10,7 +10,6 @@ import {
 import {
   doc,
   getDoc,
-  getDocFromServer,
   setDoc,
   updateDoc,
   collection,
@@ -311,15 +310,6 @@ export async function updateUserPrivacySettings(
   });
 }
 
-async function readVerifiedUserProfile(uid: string): Promise<UserProfile | null> {
-  if (!db) return null;
-  const userDocRef = doc(db, 'users', uid);
-  // A profile update must be verified against the server, not a possibly stale
-  // local cache. If the server cannot confirm it, fail without reporting success.
-  const serverSnap = await getDocFromServer(userDocRef);
-  return serverSnap.exists() ? (serverSnap.data() as UserProfile) : null;
-}
-
 export async function updateUserProfileDetails(
   uid: string,
   data: { displayName?: string; bio?: string; photoURL?: string | null }
@@ -371,14 +361,27 @@ export async function updateUserProfileDetails(
     }
   }
 
-  const verifiedProfile = await readVerifiedUserProfile(uid);
-  if (!verifiedProfile) {
-    throw new Error('Kullanıcı profili Firestore üzerinden doğrulanamadı.');
+  // updateDoc resolves only after Firestore has accepted the write. Avoid an
+  // immediate getDocFromServer read here: it duplicates a read for every profile
+  // update and can turn a successful write into a user-visible failure when the
+  // project is near its read quota.
+  const updatedProfile = {
+    ...(existingData || {}),
+    ...data,
+    updatedAt: new Date(),
+  } as UserProfile;
+
+  if (existingData?.accountType === 'business' || existingData?.businessProfile) {
+    updatedProfile.businessProfile = {
+      ...(existingData?.businessProfile || {}),
+      ...(data.photoURL !== undefined ? { photoURL: data.photoURL } : {}),
+      ...(data.displayName !== undefined ? { businessName: data.displayName } : {}),
+      ...(data.bio !== undefined ? { description: data.bio } : {}),
+      updatedAt: new Date(),
+    } as any;
   }
-  if (data.photoURL !== undefined && (verifiedProfile.photoURL ?? null) !== (data.photoURL ?? null)) {
-    throw new Error('Profil fotoğrafı Firestore belgesine kaydedilemedi. Lütfen tekrar deneyin.');
-  }
-  return verifiedProfile;
+
+  return updatedProfile;
 }
 
 export function subscribeToUserProfile(
