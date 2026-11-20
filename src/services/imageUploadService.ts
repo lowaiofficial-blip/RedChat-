@@ -408,6 +408,64 @@ export async function compressImage(
   });
 }
 
+async function uploadProfilePhotoToCloudinary(file: File): Promise<string> {
+  const signatureResponse = await fetch('/api/cloudinary/profile-signature');
+  if (!signatureResponse.ok) {
+    const errorData = await signatureResponse.json().catch(() => ({}));
+    throw new Error(errorData?.error || 'Cloudinary imza servisine ulaşılamadı.');
+  }
+
+  const config = await signatureResponse.json();
+  const { signature, timestamp, cloudName, apiKey, folder } = config || {};
+  if (!signature || !timestamp || !cloudName || !apiKey || folder !== 'redchat_profile_photos') {
+    throw new Error('Cloudinary profil fotoğrafı ayarları eksik veya geçersiz.');
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('api_key', apiKey);
+  formData.append('timestamp', String(timestamp));
+  formData.append('folder', folder);
+  formData.append('signature', signature);
+
+  const responseData = await new Promise<any>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `https://api.cloudinary.com/v1_1/${encodeURIComponent(cloudName)}/image/upload`);
+    xhr.timeout = 45_000;
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          reject(new Error('Cloudinary yanıtı okunamadı.'));
+        }
+        return;
+      }
+
+      try {
+        const errorData = JSON.parse(xhr.responseText);
+        reject(new Error(errorData?.error?.message || `Görsel yükleme başarısız (HTTP ${xhr.status}).`));
+      } catch {
+        reject(new Error(`Görsel yükleme başarısız (HTTP ${xhr.status}).`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Cloudinary sunucusuna bağlanılamadı. İnternet bağlantınızı kontrol edin.'));
+    xhr.ontimeout = () => reject(new Error('Görsel yükleme zaman aşımına uğradı.'));
+    xhr.onabort = () => reject(new Error('Görsel yükleme iptal edildi.'));
+    xhr.send(formData);
+  });
+
+  const secureUrl = responseData?.secure_url;
+  if (!isValidHostedImageUrl(secureUrl) || responseData?.resource_type !== 'image') {
+    throw new Error('Cloudinary geçerli bir profil fotoğrafı bağlantısı döndürmedi.');
+  }
+
+  // Cloudinary yanıtından gelen URL'nin tarayıcıda gerçekten açılabildiğini doğrula.
+  await verifyHostedImageIsRenderable(secureUrl);
+  return secureUrl;
+}
+
 export async function uploadProfilePhoto(file: File): Promise<string> {
   validateImageFile(file, 'Lütfen geçerli bir görsel dosyası seçin (PNG, JPG, WEBP).');
 
@@ -460,11 +518,16 @@ export async function uploadProfilePhoto(file: File): Promise<string> {
     throw new Error('Görsel dosyası okunamadı.');
   }
 
-  return uploadRawBase64WithFallback({
-    rawBase64: optimized.rawBase64,
-    fileName: `avatar_${optimized.cleanName}`,
-    variant: 'avatar',
+  // Profil fotoğrafları imzalı Cloudinary yüklemesini kullanır.
+  const binary = atob(optimized.rawBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  const cloudinaryFile = new File([new Blob([bytes], { type: 'image/jpeg' })], optimized.cleanName, {
+    type: 'image/jpeg',
   });
+  return uploadProfilePhotoToCloudinary(cloudinaryFile);
 }
 
 export async function uploadImageToImgBB(file: File): Promise<string> {
