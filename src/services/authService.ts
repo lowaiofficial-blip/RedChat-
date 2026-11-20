@@ -1,528 +1,570 @@
-export const IMGBB_TIMEOUT_MS = 15_000;
-export const FALLBACK_UPLOAD_TIMEOUT_MS = 15_000;
-export const MAX_IMAGE_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
-const RECENT_UPLOAD_CACHE_TTL_MS = 10 * 60 * 1000; // 10 dakika
-const RECENT_UPLOAD_CACHE_MAX_ENTRIES = 50;
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile,
+  onAuthStateChanged,
+  deleteUser,
+  type User,
+} from 'firebase/auth';
+import {
+  doc,
+  getDoc,
+  getDocFromServer,
+  setDoc,
+  updateDoc,
+  collection,
+  onSnapshot,
+  serverTimestamp,
+  writeBatch,
+} from 'firebase/firestore';
+import { auth, db } from './firebase';
+import type { UserProfile, BusinessProfile } from '../types';
+import {
+  markFreshLoginPending,
+  clearLocalSessionCredentials,
+} from './sessionSecurityService';
 
-export const GENERIC_IMAGE_UPLOAD_ERROR =
-  'Görsel yüklenemedi. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.';
+let activeRegistrationsCount = 0;
 
-export interface UploadTransportDeps {
-  imgbbApiKey?: string;
-  fetchFn?: typeof fetch;
-  imgbbTimeoutMs?: number;
-  fallbackTimeoutMs?: number;
-  fallbackEndpoint?: string;
+export function isRegistrationInProgress(): boolean {
+  return activeRegistrationsCount > 0;
 }
 
-const inFlightUploads = new Map<string, Promise<string>>();
-const recentUploadCache = new Map<string, { url: string; expiresAt: number }>();
+export function formatAuthErrorMessage(err: any, fallback = 'Bir hata oluştu.'): string {
+  const code = String(err?.code || '').toLowerCase();
+  const rawMessage = String(err?.message || '');
+  const combined = `${code} ${rawMessage}`.toLowerCase();
 
-export function clearImageUploadDeduplicationCache(): void {
-  inFlightUploads.clear();
-  recentUploadCache.clear();
-}
-
-export function isValidHostedImageUrl(value: unknown): value is string {
-  if (typeof value !== 'string') return false;
-  const trimmed = value.trim();
-  if (!trimmed) return false;
-  try {
-    const parsed = new URL(trimmed);
-    return parsed.protocol === 'https:' && Boolean(parsed.hostname);
-  } catch {
-    return false;
+  if (combined.includes('auth/email-already-in-use')) {
+    return 'Bu e-posta adresi ile zaten bir hesap bulunuyor.';
   }
-}
-
-export async function verifyHostedImageIsRenderable(
-  imageUrl: string,
-  timeoutMs = 12_000
-): Promise<void> {
-  if (!isValidHostedImageUrl(imageUrl)) {
-    throw new Error('Görsel bağlantısı geçerli değil.');
+  if (combined.includes('auth/invalid-email')) {
+    return 'Lütfen geçerli bir e-posta adresi girin.';
+  }
+  if (combined.includes('auth/wrong-password') || combined.includes('auth/invalid-credential')) {
+    return 'E-posta veya şifre hatalı.';
+  }
+  if (combined.includes('auth/user-not-found')) {
+    return 'Bu e-posta ile kayıtlı kullanıcı bulunamadı.';
+  }
+  if (combined.includes('auth/weak-password')) {
+    return 'Şifre çok zayıf. En az 6 karakter olmalı.';
+  }
+  if (combined.includes('auth/too-many-requests')) {
+    return 'Çok fazla başarısız deneme yapıldı. Lütfen biraz bekleyip tekrar deneyin.';
+  }
+  if (combined.includes('auth/user-disabled')) {
+    return 'Bu hesap yönetici tarafından devre dışı bırakılmış.';
+  }
+  if (combined.includes('auth/network-request-failed')) {
+    return 'Ağ bağlantısı kurulamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.';
+  }
+  if (combined.includes('permission-denied') || combined.includes('missing or insufficient permissions')) {
+    return 'Firestore güvenlik kuralları bu işlemi reddetti. Lütfen kullanıcı profili ve kullanıcı adı alanlarını veya yönetici ayarlarını kontrol edin.';
+  }
+  if (combined.includes('unavailable') || combined.includes('failed to get document')) {
+    return 'Sunucu veya veritabanına şu anda ulaşılamıyor. Lütfen tekrar deneyin.';
+  }
+  if (combined.includes('deadline-exceeded') || combined.includes('timeout')) {
+    return 'İşlem zaman aşımına uğradı. Lütfen bağlantınızı kontrol edip tekrar deneyin.';
+  }
+  if (combined.includes('already-exists')) {
+    return 'Bu kullanıcı adı veya kayıt zaten mevcut.';
   }
 
-  await new Promise<void>((resolve, reject) => {
-    const image = new Image();
-    let settled = false;
-    const timeoutId = window.setTimeout(() => {
-      finish(new Error('Yüklenen görsel görüntülenemedi. Lütfen tekrar deneyin.'));
-    }, timeoutMs);
-
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timeoutId);
-      image.onload = null;
-      image.onerror = null;
-      if (error) reject(error);
-      else resolve();
-    };
-
-    image.onload = () => {
-      if (image.naturalWidth > 0 && image.naturalHeight > 0) finish();
-      else finish(new Error('Yüklenen görsel geçerli bir görüntü değil.'));
-    };
-    image.onerror = () => finish(new Error('Yüklenen görsel sunucudan görüntülenemedi.'));
-    image.src = imageUrl;
-  });
+  return rawMessage || fallback;
 }
 
-function validateImageFile(file: File, invalidTypeMessage: string): void {
-  if (!file || !file.type || !file.type.startsWith('image/')) {
-    throw new Error(invalidTypeMessage);
+export function validateUsername(username: string): { valid: boolean; error?: string } {
+  const clean = username.trim();
+  if (clean.length < 3) {
+    return { valid: false, error: 'Kullanıcı adı en az 3 karakter olmalıdır.' };
   }
-  if (file.size > MAX_IMAGE_FILE_SIZE_BYTES) {
-    throw new Error('Görsel boyutu en fazla 10MB olabilir.');
+  if (clean.length > 20) {
+    return { valid: false, error: 'Kullanıcı adı en fazla 20 karakter olabilir.' };
   }
+  const regex = /^[a-zA-Z0-9_]+$/;
+  if (!regex.test(clean)) {
+    return { valid: false, error: 'Kullanıcı adı sadece harf, rakam ve alt çizgi (_) içerebilir.' };
+  }
+  return { valid: true };
 }
 
-function sanitizeFileName(name: string): string {
-  const ext = name.split('.').pop() || 'jpg';
-  const cleanExt = ext.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'jpg';
-  return `image_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.${cleanExt}`;
+export async function isUsernameTaken(username: string): Promise<boolean> {
+  if (!db) return false;
+  const usernameLower = username.trim().toLowerCase();
+  const usernameDocRef = doc(db, 'usernames', usernameLower);
+  const snap = await getDoc(usernameDocRef);
+  return snap.exists();
 }
 
-function extractRawBase64(dataUrlOrBase64: string): string {
-  const trimmed = (dataUrlOrBase64 || '').trim();
-  if (!trimmed) return '';
-  if (trimmed.includes(',')) {
-    return (trimmed.split(',')[1] || '').trim();
+export async function registerWithEmailAndUsername(params: {
+  email: string;
+  password: string;
+  username: string;
+  displayName: string;
+}): Promise<UserProfile> {
+  if (!auth || !db) {
+    throw new Error('Firebase bağlantısı henüz hazır değil. Lütfen Firebase ayarlarını kontrol edin.');
   }
-  return trimmed;
-}
 
-function computeContentFingerprint(variant: 'avatar' | 'image' | 'badge', rawBase64: string): string {
-  // Hızlı, deterministik 64-bit benzeri çift FNV-1a özeti (birebir aynı görsel verisini ayırt etmek için)
-  let h1 = 0x811c9dc5;
-  let h2 = 0x811c9dc5;
-  const len = rawBase64.length;
-  for (let i = 0; i < len; i++) {
-    const code = rawBase64.charCodeAt(i);
-    h1 ^= code;
-    h1 = Math.imul(h1, 0x01000193);
-    h2 ^= code ^ ((i + 1) & 0xff);
-    h2 = Math.imul(h2, 0x01000193);
-  }
-  return `${variant}:${len}:${(h1 >>> 0).toString(36)}_${(h2 >>> 0).toString(36)}`;
-}
+  const { email, password, username, displayName } = params;
+  const cleanUsername = username.trim();
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanDisplayName = displayName.trim() || cleanUsername;
 
-function getCachedUploadedUrl(fingerprint: string): string | null {
-  const cached = recentUploadCache.get(fingerprint);
-  if (!cached) return null;
-  if (Date.now() > cached.expiresAt) {
-    recentUploadCache.delete(fingerprint);
-    return null;
+  // 1. Validate username format
+  const validation = validateUsername(cleanUsername);
+  if (!validation.valid) {
+    throw new Error(validation.error);
   }
-  return cached.url;
-}
 
-function setCachedUploadedUrl(fingerprint: string, url: string): void {
-  const now = Date.now();
-  for (const [key, entry] of recentUploadCache.entries()) {
-    if (now > entry.expiresAt) {
-      recentUploadCache.delete(key);
-    }
-  }
-  if (recentUploadCache.size >= RECENT_UPLOAD_CACHE_MAX_ENTRIES) {
-    const oldestKey = recentUploadCache.keys().next().value;
-    if (oldestKey) {
-      recentUploadCache.delete(oldestKey);
-    }
-  }
-  recentUploadCache.set(fingerprint, {
-    url,
-    expiresAt: now + RECENT_UPLOAD_CACHE_TTL_MS,
-  });
-}
+  const usernameLower = cleanUsername.toLowerCase();
 
-async function fetchWithTimeout(
-  fetchImpl: typeof fetch,
-  url: string,
-  init: RequestInit,
-  timeoutMs: number
-): Promise<Response> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    controller.abort();
-  }, timeoutMs);
+  // 2. Check Firestore for username uniqueness (Single Source of Truth)
+  const usernameDocRef = doc(db, 'usernames', usernameLower);
+  const usernameSnap = await getDoc(usernameDocRef);
+  if (usernameSnap.exists()) {
+    throw new Error(`"@${cleanUsername}" kullanıcı adı zaten başka bir kullanıcı tarafından alınmış.`);
+  }
+
+  activeRegistrationsCount += 1;
+  let createdAuthUser: User | null = null;
 
   try {
-    return await fetchImpl(url, {
-      ...init,
-      signal: controller.signal,
+    // 3. Create user in Firebase Auth
+    markFreshLoginPending();
+    const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
+    const authUser = userCredential.user;
+    createdAuthUser = authUser;
+
+    // 4. Update Firebase Auth displayName
+    await updateProfile(authUser, {
+      displayName: cleanDisplayName,
     });
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
 
-async function tryUploadToImgbb(
-  rawBase64: string,
-  fileName: string,
-  imgbbApiKey: string,
-  fetchImpl: typeof fetch,
-  timeoutMs: number
-): Promise<string | null> {
-  if (!imgbbApiKey || !rawBase64) return null;
+    // 5. Atomic Batch write to Firestore: users/{uid} AND usernames/{usernameLower}
+    const batch = writeBatch(db);
 
-  try {
-    const formData = new FormData();
-    formData.append('image', rawBase64);
-    formData.append('name', fileName);
+    const userDocRef = doc(db, 'users', authUser.uid);
+    const newProfileData: any = {
+      uid: authUser.uid,
+      username: cleanUsername,
+      usernameLower,
+      email: cleanEmail,
+      displayName: cleanDisplayName,
+      photoURL: authUser.photoURL || null,
+      bio: 'RedChat kullanıcısı',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      isOnline: true,
+      lastSeen: serverTimestamp(),
+    };
 
-    const response = await fetchWithTimeout(
-      fetchImpl,
-      `https://api.imgbb.com/1/upload?key=${encodeURIComponent(imgbbApiKey)}`,
-      {
-        method: 'POST',
-        body: formData,
-      },
-      timeoutMs
-    );
+    batch.set(userDocRef, newProfileData);
+    batch.set(usernameDocRef, {
+      uid: authUser.uid,
+      username: cleanUsername,
+      usernameLower,
+      createdAt: serverTimestamp(),
+    });
 
-    if (!response.ok) {
-      return null;
-    }
+    await batch.commit();
 
-    const data: any = await response.json();
-    if (data?.success === false) {
-      return null;
-    }
+    console.log(`✅ [RedChat Auth] Yeni kullanıcı Firestore ve Auth'a kaydedildi. UID: ${authUser.uid}`);
 
-    const candidateUrl = [data?.data?.url, data?.data?.display_url].find((url) =>
-      isValidHostedImageUrl(url)
-    );
-
-    return candidateUrl ? candidateUrl.trim() : null;
-  } catch {
-    return null;
-  }
-}
-
-async function tryUploadToFreeimageFallback(
-  rawBase64: string,
-  fileName: string,
-  fetchImpl: typeof fetch,
-  timeoutMs: number,
-  endpoint: string
-): Promise<string | null> {
-  if (!rawBase64) return null;
-
-  try {
-    const response = await fetchWithTimeout(
-      fetchImpl,
-      endpoint,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          image: rawBase64,
-          name: fileName,
-        }),
-      },
-      timeoutMs
-    );
-
-    if (!response.ok) {
-      return null;
-    }
-
-    const data: any = await response.json();
-    if (!isValidHostedImageUrl(data?.url)) {
-      return null;
-    }
-
-    return data.url.trim();
-  } catch {
-    return null;
-  }
-}
-
-function getDefaultImgbbApiKey(): string {
-  try {
-    return ((import.meta as any)?.env?.VITE_IMGBB_API_KEY || '').trim();
-  } catch {
-    return '';
-  }
-}
-
-export async function uploadRawBase64WithFallback(
-  params: {
-    rawBase64: string;
-    fileName: string;
-    variant: 'avatar' | 'image' | 'badge';
-  },
-  deps?: UploadTransportDeps
-): Promise<string> {
-  const cleanRawBase64 = extractRawBase64(params.rawBase64);
-  if (!cleanRawBase64) {
-    throw new Error('Görsel dosyası okunamadı.');
-  }
-
-  const fingerprint = computeContentFingerprint(params.variant, cleanRawBase64);
-
-  const cachedUrl = getCachedUploadedUrl(fingerprint);
-  if (cachedUrl) {
-    return cachedUrl;
-  }
-
-  const existingInFlight = inFlightUploads.get(fingerprint);
-  if (existingInFlight) {
-    return existingInFlight;
-  }
-
-  const fetchImpl = deps?.fetchFn ?? fetch;
-  const imgbbApiKey = (deps?.imgbbApiKey ?? getDefaultImgbbApiKey()).trim();
-  const imgbbTimeoutMs = deps?.imgbbTimeoutMs ?? IMGBB_TIMEOUT_MS;
-  const fallbackTimeoutMs = deps?.fallbackTimeoutMs ?? FALLBACK_UPLOAD_TIMEOUT_MS;
-  const fallbackEndpoint = deps?.fallbackEndpoint ?? '/api/upload/freeimage';
-
-  const uploadPromise = (async (): Promise<string> => {
-    // 1. Ana sağlayıcı: ImgBB (maksimum 15 saniye zaman aşımı)
-    if (imgbbApiKey) {
-      const primaryUrl = await tryUploadToImgbb(
-        cleanRawBase64,
-        params.fileName,
-        imgbbApiKey,
-        fetchImpl,
-        imgbbTimeoutMs
-      );
-      if (primaryUrl) {
-        setCachedUploadedUrl(fingerprint, primaryUrl);
-        return primaryUrl;
+    return {
+      ...newProfileData,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastSeen: new Date(),
+    };
+  } catch (err: any) {
+    // Auth kullanıcısı oluşturulup Firestore profil kaydı başarısız olursa sahipsiz Auth kaydı bırakma
+    if (createdAuthUser) {
+      clearLocalSessionCredentials(createdAuthUser.uid);
+      try {
+        await deleteUser(createdAuthUser);
+      } catch (rollbackErr) {
+        console.warn('Kısmi Auth kaydı silinemedi, oturum kapatılıyor:', rollbackErr);
+        try {
+          await signOut(auth);
+        } catch {
+          // noop
+        }
       }
     }
-
-    // 2. Yedek sağlayıcı: Freeimage.host (güvenli sunucu proxy'si üzerinden)
-    const fallbackUrl = await tryUploadToFreeimageFallback(
-      cleanRawBase64,
-      params.fileName,
-      fetchImpl,
-      fallbackTimeoutMs,
-      fallbackEndpoint
-    );
-    if (fallbackUrl) {
-      setCachedUploadedUrl(fingerprint, fallbackUrl);
-      return fallbackUrl;
-    }
-
-    // 3. Her iki sağlayıcı da başarısız olduğunda kullanıcı dostu hata
-    throw new Error(GENERIC_IMAGE_UPLOAD_ERROR);
-  })();
-
-  inFlightUploads.set(fingerprint, uploadPromise);
-
-  try {
-    return await uploadPromise;
+    throw new Error(formatAuthErrorMessage(err, 'Kayıt işlemi tamamlanamadı. Lütfen tekrar deneyin.'));
   } finally {
-    if (inFlightUploads.get(fingerprint) === uploadPromise) {
-      inFlightUploads.delete(fingerprint);
+    activeRegistrationsCount = Math.max(0, activeRegistrationsCount - 1);
+  }
+}
+
+export async function setUserOnlineStatus(uid: string, isOnline: boolean): Promise<void> {
+  if (!db || !uid) return;
+  try {
+    const userDocRef = doc(db, 'users', uid);
+    await updateDoc(userDocRef, {
+      isOnline,
+      lastSeen: serverTimestamp(),
+    });
+  } catch (err) {
+    console.warn('Could not update presence status in Firestore:', err);
+  }
+}
+
+export async function loginWithEmail(email: string, password: string): Promise<User> {
+  if (!auth || !db) {
+    throw new Error('Firebase bağlantısı henüz hazır değil.');
+  }
+
+  markFreshLoginPending();
+  const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
+  const user = userCredential.user;
+
+  // Verify user profile exists & is readable in Firestore before completing login
+  try {
+    const userDocRef = doc(db, 'users', user.uid);
+    const profileSnap = await getDoc(userDocRef);
+    if (!profileSnap.exists()) {
+      clearLocalSessionCredentials(user.uid);
+      await signOut(auth).catch(() => {});
+      throw new Error(
+        'Hesabınız doğrulandı ancak Firestore kullanıcı profiliniz bulunamadı. Kayıt işlemi tamamlanmamış olabilir; lütfen yeniden kayıt olun veya yöneticiyle iletişime geçin.'
+      );
+    }
+
+    try {
+      await updateDoc(userDocRef, {
+        isOnline: true,
+        lastSeen: serverTimestamp(),
+      });
+    } catch (presenceErr) {
+      console.warn('Could not update online status during login:', presenceErr);
+    }
+  } catch (err: any) {
+    if (err?.message?.includes('Firestore kullanıcı profiliniz bulunamadı')) {
+      throw err;
+    }
+    clearLocalSessionCredentials(user.uid);
+    await signOut(auth).catch(() => {});
+    throw new Error(
+      formatAuthErrorMessage(err, 'Kullanıcı profili okunamadığı için giriş tamamlanamadı.')
+    );
+  }
+
+  return user;
+}
+
+export async function logoutUser(): Promise<void> {
+  if (!auth) return;
+
+  const currentUser = auth.currentUser;
+  clearLocalSessionCredentials(currentUser?.uid);
+  if (currentUser && db) {
+    try {
+      const userDocRef = doc(db, 'users', currentUser.uid);
+      await updateDoc(userDocRef, {
+        isOnline: false,
+        lastSeen: serverTimestamp(),
+      });
+    } catch (err) {
+      console.warn('Could not update offline status during logout:', err);
+    }
+  }
+
+  await signOut(auth);
+}
+
+export async function getUserProfile(uid: string): Promise<UserProfile | null> {
+  if (!db) return null;
+  const userDocRef = doc(db, 'users', uid);
+  const snap = await getDoc(userDocRef);
+  if (snap.exists()) {
+    return snap.data() as UserProfile;
+  }
+  return null;
+}
+
+export async function updateUserBio(uid: string, bio: string): Promise<void> {
+  if (!db) throw new Error('Firestore hazır değil');
+  const userDocRef = doc(db, 'users', uid);
+  await updateDoc(userDocRef, {
+    bio: bio.trim(),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function updateUserPrivacySettings(
+  uid: string,
+  settings: {
+    allowDirectMessages?: 'everyone' | 'none';
+    allowGroupAdditions?: 'everyone' | 'none';
+  }
+): Promise<void> {
+  if (!db) throw new Error('Firestore hazır değil');
+  const userDocRef = doc(db, 'users', uid);
+  await updateDoc(userDocRef, {
+    ...settings,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+async function readVerifiedUserProfile(uid: string): Promise<UserProfile | null> {
+  if (!db) return null;
+  const userDocRef = doc(db, 'users', uid);
+  // A profile update must be verified against the server, not a possibly stale
+  // local cache. If the server cannot confirm it, fail without reporting success.
+  const serverSnap = await getDocFromServer(userDocRef);
+  return serverSnap.exists() ? (serverSnap.data() as UserProfile) : null;
+}
+
+export async function updateUserProfileDetails(
+  uid: string,
+  data: { displayName?: string; bio?: string; photoURL?: string | null }
+): Promise<UserProfile> {
+  if (!db) throw new Error('Firestore hazır değil');
+  if (!uid) throw new Error('Kullanıcı kimliği bulunamadı');
+  if (auth?.currentUser && auth.currentUser.uid !== uid) {
+    throw new Error('Yalnızca kendi profilinizi güncelleyebilirsiniz.');
+  }
+
+  const userDocRef = doc(db, 'users', uid);
+  const existingSnap = await getDoc(userDocRef);
+  const existingData = existingSnap.exists() ? (existingSnap.data() as UserProfile) : null;
+
+  const firestoreUpdates: Record<string, any> = {
+    ...data,
+    updatedAt: serverTimestamp(),
+  };
+
+  if (existingData?.accountType === 'business' || existingData?.businessProfile) {
+    if (data.photoURL !== undefined) {
+      firestoreUpdates['businessProfile.photoURL'] = data.photoURL;
+      firestoreUpdates['businessProfile.updatedAt'] = serverTimestamp();
+    }
+    if (data.displayName !== undefined) {
+      firestoreUpdates['businessProfile.businessName'] = data.displayName;
+      firestoreUpdates['businessProfile.updatedAt'] = serverTimestamp();
+    }
+    if (data.bio !== undefined) {
+      firestoreUpdates['businessProfile.description'] = data.bio;
+      firestoreUpdates['businessProfile.updatedAt'] = serverTimestamp();
+    }
+  }
+
+  await updateDoc(userDocRef, firestoreUpdates);
+
+  if (auth?.currentUser && auth.currentUser.uid === uid) {
+    const authProfileUpdates: { displayName?: string; photoURL?: string | null } = {};
+    if (data.displayName !== undefined) authProfileUpdates.displayName = data.displayName;
+    if (data.photoURL !== undefined) authProfileUpdates.photoURL = data.photoURL;
+
+    if (Object.keys(authProfileUpdates).length > 0) {
+      try {
+        await updateProfile(auth.currentUser, authProfileUpdates);
+        await auth.currentUser.reload().catch(() => {});
+      } catch (authErr) {
+        console.warn('Firebase Auth updateProfile uyarısı:', authErr);
+      }
+    }
+  }
+
+  const verifiedProfile = await readVerifiedUserProfile(uid);
+  if (!verifiedProfile) {
+    throw new Error('Kullanıcı profili Firestore üzerinden doğrulanamadı.');
+  }
+  if (data.photoURL !== undefined && (verifiedProfile.photoURL ?? null) !== (data.photoURL ?? null)) {
+    throw new Error('Profil fotoğrafı Firestore belgesine kaydedilemedi. Lütfen tekrar deneyin.');
+  }
+  return verifiedProfile;
+}
+
+export function subscribeToUserProfile(
+  uid: string,
+  callback: (profile: UserProfile | null) => void,
+  onError?: (error: any) => void
+): () => void {
+  if (!db) {
+    callback(null);
+    return () => {};
+  }
+
+  const userDocRef = doc(db, 'users', uid);
+  return onSnapshot(
+    userDocRef,
+    (snap) => {
+      if (snap.exists()) {
+        callback(snap.data() as UserProfile);
+      } else {
+        callback(null);
+      }
+    },
+    (err) => {
+      console.error('Error in user profile onSnapshot listener:', err);
+      onError?.(err);
+    }
+  );
+}
+
+export function subscribeToAllUsers(
+  callback: (users: UserProfile[]) => void
+): () => void {
+  if (!db) {
+    callback([]);
+    return () => {};
+  }
+
+  const usersCol = collection(db, 'users');
+
+  return onSnapshot(
+    usersCol,
+    (snapshot) => {
+      const users: UserProfile[] = [];
+      snapshot.forEach((d) => {
+        users.push(d.data() as UserProfile);
+      });
+      callback(users);
+    },
+    (err) => {
+      console.error('Error in all users onSnapshot listener:', err);
+    }
+  );
+}
+
+export function subscribeToAuthState(callback: (user: User | null) => void): () => void {
+  if (!auth) {
+    callback(null);
+    return () => {};
+  }
+  return onAuthStateChanged(auth, callback);
+}
+
+/**
+ * Kullanıcıyı işletme hesabına geçirir ve işletme profil bilgilerini Firestore'a kaydeder.
+ */
+export async function switchToBusinessAccount(
+  uid: string,
+  businessData: BusinessProfile,
+  photoURL?: string | null
+): Promise<void> {
+  if (!db || !uid) throw new Error('Firestore bağlantısı hazır değil');
+
+  const userDocRef = doc(db, 'users', uid);
+  const cleanBusinessProfile: BusinessProfile = {
+    businessName: businessData.businessName?.trim() || '',
+    category: businessData.category?.trim() || 'Diğer',
+    description: businessData.description?.trim() || '',
+    website: businessData.website?.trim() || '',
+    email: businessData.email?.trim() || '',
+    phone: businessData.phone?.trim() || '',
+    location: businessData.location?.trim() || '',
+    hours: businessData.hours?.trim() || '',
+    photoURL: photoURL !== undefined ? photoURL : businessData.photoURL || null,
+    updatedAt: serverTimestamp(),
+  };
+
+  const updates: any = {
+    accountType: 'business',
+    businessProfile: cleanBusinessProfile,
+    updatedAt: serverTimestamp(),
+  };
+
+  if (businessData.businessName?.trim()) {
+    updates.displayName = businessData.businessName.trim();
+  }
+  if (businessData.description?.trim()) {
+    updates.bio = businessData.description.trim();
+  }
+  if (photoURL !== undefined) {
+    updates.photoURL = photoURL;
+  }
+
+  await updateDoc(userDocRef, updates);
+
+  if (auth?.currentUser && auth.currentUser.uid === uid) {
+    try {
+      const authUpdates: any = {};
+      if (updates.displayName) authUpdates.displayName = updates.displayName;
+      if (photoURL !== undefined) authUpdates.photoURL = photoURL;
+      if (Object.keys(authUpdates).length > 0) {
+        await updateProfile(auth.currentUser, authUpdates);
+        await auth.currentUser.reload().catch(() => {});
+      }
+    } catch (err) {
+      console.warn('Auth profile sync warning:', err);
     }
   }
 }
 
-export async function compressImage(
-  file: File,
-  maxDimension = 1400,
-  quality = 0.82
-): Promise<{ base64: string; cleanName: string }> {
-  const cleanName = sanitizeFileName(file.name);
+/**
+ * İşletme hesabından normal (bireysel) hesaba dönüş yapar.
+ * İşletme bilgileri Firestore'da korunur, sadece hesap türü 'personal' yapılır.
+ */
+export async function switchToPersonalAccount(uid: string): Promise<void> {
+  if (!db || !uid) throw new Error('Firestore bağlantısı hazır değil');
 
-  // SVG, GIF, PNG ve WEBP gibi saydam formatları bozmamak için direkt base64 al
-  if (
-    file.size < 3 * 1024 * 1024 ||
-    file.type.includes('svg') ||
-    file.type.includes('gif') ||
-    file.type.includes('png') ||
-    file.type.includes('webp')
-  ) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve({ base64: reader.result as string, cleanName });
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  }
-
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        let { width, height } = img;
-
-        if (width > maxDimension || height > maxDimension) {
-          if (width > height) {
-            height = Math.round((height * maxDimension) / width);
-            width = maxDimension;
-          } else {
-            width = Math.round((width * maxDimension) / height);
-            height = maxDimension;
-          }
-        }
-
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-
-        if (ctx) {
-          ctx.fillStyle = '#FFFFFF';
-          ctx.fillRect(0, 0, width, height);
-          ctx.drawImage(img, 0, 0, width, height);
-          resolve({ base64: canvas.toDataURL('image/jpeg', quality), cleanName });
-        } else {
-          resolve({ base64: (e.target?.result as string) || '', cleanName });
-        }
-      };
-      img.onerror = () => resolve({ base64: (e.target?.result as string) || '', cleanName });
-      img.src = (e.target?.result as string) || '';
-    };
-    reader.onerror = () => resolve({ base64: '', cleanName });
-    reader.readAsDataURL(file);
-  });
-}
-
-export async function uploadProfilePhoto(file: File): Promise<string> {
-  validateImageFile(file, 'Lütfen geçerli bir görsel dosyası seçin (PNG, JPG, WEBP).');
-
-  const optimized = await new Promise<{ rawBase64: string; cleanName: string }>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        try {
-          const targetSize = 320;
-          const canvas = document.createElement('canvas');
-          canvas.width = targetSize;
-          canvas.height = targetSize;
-          const ctx = canvas.getContext('2d');
-          const cleanName = sanitizeFileName(file.name.replace(/\.[^/.]+$/, '') + '.jpg');
-
-          if (!ctx) {
-            const rawFallback = extractRawBase64((e.target?.result as string) || '');
-            resolve({ rawBase64: rawFallback, cleanName: sanitizeFileName(file.name) });
-            return;
-          }
-
-          ctx.fillStyle = '#FFFFFF';
-          ctx.fillRect(0, 0, targetSize, targetSize);
-
-          const minDim = Math.min(img.width, img.height);
-          const sx = (img.width - minDim) / 2;
-          const sy = (img.height - minDim) / 2;
-          ctx.drawImage(img, sx, sy, minDim, minDim, 0, 0, targetSize, targetSize);
-
-          const optimizedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
-          const rawBase64 = extractRawBase64(optimizedDataUrl);
-          if (!rawBase64) {
-            reject(new Error('Görsel işlenemedi.'));
-            return;
-          }
-          resolve({ rawBase64, cleanName });
-        } catch (canvasErr) {
-          reject(canvasErr);
-        }
-      };
-      img.onerror = () => reject(new Error('Görsel açılamadı.'));
-      img.src = (e.target?.result as string) || '';
-    };
-    reader.onerror = () => reject(new Error('Dosya okunamadı.'));
-    reader.readAsDataURL(file);
-  });
-
-  if (!optimized.rawBase64) {
-    throw new Error('Görsel dosyası okunamadı.');
-  }
-
-  return uploadRawBase64WithFallback({
-    rawBase64: optimized.rawBase64,
-    fileName: `avatar_${optimized.cleanName}`,
-    variant: 'avatar',
-  });
-}
-
-export async function uploadImageToImgBB(file: File): Promise<string> {
-  validateImageFile(file, 'Lütfen geçerli bir görsel dosyası seçin (PNG, JPG, WEBP vb.).');
-
-  const { base64: compressedDataUrl, cleanName } = await compressImage(file, 1400, 0.82);
-  const rawBase64 = extractRawBase64(compressedDataUrl);
-
-  if (!rawBase64) {
-    throw new Error('Görsel dosyası okunamadı.');
-  }
-
-  return uploadRawBase64WithFallback({
-    rawBase64,
-    fileName: cleanName,
-    variant: 'image',
+  const userDocRef = doc(db, 'users', uid);
+  await updateDoc(userDocRef, {
+    accountType: 'personal',
+    updatedAt: serverTimestamp(),
   });
 }
 
 /**
- * 🌟 Mavi Tik Rozet PNG görselini saydamlığı koruyarak optimize eder ve yükler.
- * Maksimum 128x128 piksel boyutuna getirir, saydam arka planı (alpha) korur.
+ * İşletme profil bilgilerini günceller.
  */
-export async function uploadBadgeImage(file: File): Promise<string> {
-  validateImageFile(file, 'Lütfen geçerli bir PNG veya görsel dosyası seçin.');
+export async function updateBusinessProfile(
+  uid: string,
+  businessData: BusinessProfile,
+  photoURL?: string | null
+): Promise<void> {
+  if (!db || !uid) throw new Error('Firestore bağlantısı hazır değil');
 
-  const optimized = await new Promise<{ rawBase64: string; cleanName: string }>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        try {
-          const maxDim = 128;
-          let { width, height } = img;
+  const userDocRef = doc(db, 'users', uid);
+  const cleanBusinessProfile: BusinessProfile = {
+    businessName: businessData.businessName?.trim() || '',
+    category: businessData.category?.trim() || 'Diğer',
+    description: businessData.description?.trim() || '',
+    website: businessData.website?.trim() || '',
+    email: businessData.email?.trim() || '',
+    phone: businessData.phone?.trim() || '',
+    location: businessData.location?.trim() || '',
+    hours: businessData.hours?.trim() || '',
+    photoURL: photoURL !== undefined ? photoURL : businessData.photoURL || null,
+    updatedAt: serverTimestamp(),
+  };
 
-          if (width > maxDim || height > maxDim) {
-            if (width > height) {
-              height = Math.round((height * maxDim) / width);
-              width = maxDim;
-            } else {
-              width = Math.round((width * maxDim) / height);
-              height = maxDim;
-            }
-          }
+  const updates: any = {
+    businessProfile: cleanBusinessProfile,
+    updatedAt: serverTimestamp(),
+  };
 
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          const cleanName = sanitizeFileName(file.name.replace(/\.[^/.]+$/, '') + '.png');
+  if (businessData.businessName?.trim()) {
+    updates.displayName = businessData.businessName.trim();
+  }
+  if (businessData.description !== undefined) {
+    updates.bio = businessData.description.trim();
+  }
+  if (photoURL !== undefined) {
+    updates.photoURL = photoURL;
+  }
 
-          if (!ctx) {
-            const rawFallback = extractRawBase64((e.target?.result as string) || '');
-            resolve({ rawBase64: rawFallback, cleanName });
-            return;
-          }
+  await updateDoc(userDocRef, updates);
 
-          // Saydamlığı korumak için arka planı boyama!
-          ctx.clearRect(0, 0, width, height);
-          ctx.drawImage(img, 0, 0, width, height);
-
-          // Saydam PNG formatında dışa aktar
-          const pngDataUrl = canvas.toDataURL('image/png');
-          const rawBase64 = extractRawBase64(pngDataUrl);
-          resolve({ rawBase64, cleanName });
-        } catch (canvasErr) {
-          reject(canvasErr);
-        }
-      };
-      img.onerror = () => reject(new Error('Rozet görseli işlenemedi.'));
-      img.src = (e.target?.result as string) || '';
-    };
-    reader.onerror = () => reject(new Error('Dosya okunamadı.'));
-    reader.readAsDataURL(file);
-  });
-
-  return uploadRawBase64WithFallback({
-    rawBase64: optimized.rawBase64,
-    fileName: `badge_${optimized.cleanName}`,
-    variant: 'badge',
-  });
+  if (auth?.currentUser && auth.currentUser.uid === uid) {
+    try {
+      const authUpdates: any = {};
+      if (updates.displayName) authUpdates.displayName = updates.displayName;
+      if (photoURL !== undefined) authUpdates.photoURL = photoURL;
+      if (Object.keys(authUpdates).length > 0) {
+        await updateProfile(auth.currentUser, authUpdates);
+        await auth.currentUser.reload().catch(() => {});
+      }
+    } catch (err) {
+      console.warn('Auth profile sync warning:', err);
+    }
+  }
 }
+
