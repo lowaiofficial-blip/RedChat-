@@ -118,6 +118,10 @@ function getCachedUploadedUrl(fingerprint: string): string | null {
   return cached.url;
 }
 
+function deleteCachedUploadedUrl(fingerprint: string): void {
+  recentUploadCache.delete(fingerprint);
+}
+
 function setCachedUploadedUrl(fingerprint: string, url: string): void {
   const now = Date.now();
   for (const [key, entry] of recentUploadCache.entries()) {
@@ -267,7 +271,14 @@ export async function uploadRawBase64WithFallback(
 
   const cachedUrl = getCachedUploadedUrl(fingerprint);
   if (cachedUrl) {
-    return cachedUrl;
+    try {
+      // Never reuse a cached URL until the browser confirms that it still
+      // serves an actual image. Broken cached URLs previously blocked fallback.
+      await verifyHostedImageIsRenderable(cachedUrl);
+      return cachedUrl;
+    } catch {
+      deleteCachedUploadedUrl(fingerprint);
+    }
   }
 
   const existingInFlight = inFlightUploads.get(fingerprint);
@@ -292,8 +303,14 @@ export async function uploadRawBase64WithFallback(
         imgbbTimeoutMs
       );
       if (primaryUrl) {
-        setCachedUploadedUrl(fingerprint, primaryUrl);
-        return primaryUrl;
+        try {
+          // A syntactically valid HTTPS URL is not proof that the image exists.
+          await verifyHostedImageIsRenderable(primaryUrl);
+          setCachedUploadedUrl(fingerprint, primaryUrl);
+          return primaryUrl;
+        } catch {
+          // Continue to Freeimage.host instead of returning a broken ImgBB URL.
+        }
       }
     }
 
@@ -306,8 +323,13 @@ export async function uploadRawBase64WithFallback(
       fallbackEndpoint
     );
     if (fallbackUrl) {
-      setCachedUploadedUrl(fingerprint, fallbackUrl);
-      return fallbackUrl;
+      try {
+        await verifyHostedImageIsRenderable(fallbackUrl);
+        setCachedUploadedUrl(fingerprint, fallbackUrl);
+        return fallbackUrl;
+      } catch {
+        // Do not cache or report a fallback URL that the browser cannot render.
+      }
     }
 
     // 3. Her iki sağlayıcı da başarısız olduğunda kullanıcı dostu hata
