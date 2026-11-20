@@ -111,7 +111,7 @@ function computeContentFingerprint(variant: 'avatar' | 'image' | 'badge', rawBas
 function getCachedUploadedUrl(fingerprint: string): string | null {
   const cached = recentUploadCache.get(fingerprint);
   if (!cached) return null;
-  if (Date.now() > cached.expiresAt) {
+  if (Date.now() > cached.expiresAt || !isValidHostedImageUrl(cached.url)) {
     recentUploadCache.delete(fingerprint);
     return null;
   }
@@ -271,9 +271,8 @@ export async function uploadRawBase64WithFallback(
 
   const cachedUrl = getCachedUploadedUrl(fingerprint);
   if (cachedUrl) {
+    // Never reuse a cached URL unless the hosted image still loads in the browser.
     try {
-      // Never reuse a cached URL until the browser confirms that it still
-      // serves an actual image. Broken cached URLs previously blocked fallback.
       await verifyHostedImageIsRenderable(cachedUrl);
       return cachedUrl;
     } catch {
@@ -304,12 +303,12 @@ export async function uploadRawBase64WithFallback(
       );
       if (primaryUrl) {
         try {
-          // A syntactically valid HTTPS URL is not proof that the image exists.
+          // A syntactically valid HTTPS URL is not proof that the image is publicly renderable.
           await verifyHostedImageIsRenderable(primaryUrl);
           setCachedUploadedUrl(fingerprint, primaryUrl);
           return primaryUrl;
         } catch {
-          // Continue to Freeimage.host instead of returning a broken ImgBB URL.
+          // Treat an inaccessible ImgBB result as a failed primary upload and try Freeimage.
         }
       }
     }
@@ -328,7 +327,7 @@ export async function uploadRawBase64WithFallback(
         setCachedUploadedUrl(fingerprint, fallbackUrl);
         return fallbackUrl;
       } catch {
-        // Do not cache or report a fallback URL that the browser cannot render.
+        // Do not cache or return a URL that the client cannot display.
       }
     }
 
