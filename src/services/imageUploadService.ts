@@ -35,6 +35,40 @@ export function isValidHostedImageUrl(value: unknown): value is string {
   }
 }
 
+export async function verifyHostedImageIsRenderable(
+  imageUrl: string,
+  timeoutMs = 12_000
+): Promise<void> {
+  if (!isValidHostedImageUrl(imageUrl)) {
+    throw new Error('Görsel bağlantısı geçerli değil.');
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const image = new Image();
+    let settled = false;
+    const timeoutId = window.setTimeout(() => {
+      finish(new Error('Yüklenen görsel görüntülenemedi. Lütfen tekrar deneyin.'));
+    }, timeoutMs);
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      image.onload = null;
+      image.onerror = null;
+      if (error) reject(error);
+      else resolve();
+    };
+
+    image.onload = () => {
+      if (image.naturalWidth > 0 && image.naturalHeight > 0) finish();
+      else finish(new Error('Yüklenen görsel geçerli bir görüntü değil.'));
+    };
+    image.onerror = () => finish(new Error('Yüklenen görsel sunucudan görüntülenemedi.'));
+    image.src = imageUrl;
+  });
+}
+
 function validateImageFile(file: File, invalidTypeMessage: string): void {
   if (!file || !file.type || !file.type.startsWith('image/')) {
     throw new Error(invalidTypeMessage);
