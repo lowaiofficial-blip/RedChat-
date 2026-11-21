@@ -71,9 +71,19 @@ import { subscribeToBlockedUsers, unblockUser } from './services/blockService';
 import type { BannedDevice } from './types';
 import { WhatsAppNotificationBanner } from './components/WhatsAppNotificationBanner';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { PlatformClosureScreen } from './components/PlatformClosureScreen';
 import { Loader2, Bell, X, Radio, AlertCircle, RefreshCw, LogOut } from 'lucide-react';
 
+const PLATFORM_PERMANENTLY_CLOSED = true;
+
 export default function App() {
+  if (PLATFORM_PERMANENTLY_CLOSED) {
+    return <PlatformClosureScreen />;
+  }
+  return <ActiveRedChatApp />;
+}
+
+function ActiveRedChatApp() {
   const [currentUserAuth, setCurrentUserAuth] = useState<User | null>(null);
   const [currentUserProfile, setCurrentUserProfile] = useState<UserProfile | null>(null);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);

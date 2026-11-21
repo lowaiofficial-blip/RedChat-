@@ -54,6 +54,16 @@ async function startServer() {
   // JSON gövdeleri için middleware (görseller için 20mb limit)
   app.use(express.json({ limit: "20mb" }));
 
+  const PLATFORM_PERMANENTLY_CLOSED = true;
+  if (PLATFORM_PERMANENTLY_CLOSED) {
+    app.use("/api", (_req, res) => {
+      return res.status(410).json({
+        closed: true,
+        message: "RedChat kalıcı olarak kapatıldı. Platform hizmetleri RedChat yönetimi tarafından sonlandırılmıştır.",
+      });
+    });
+  }
+
   // 🌍 Yeni Ülke Girişi ve Oturum Güvenliği Rotaları
   registerSessionSecurityRoutes(app);
 
@@ -62,7 +72,9 @@ async function startServer() {
 
   // 🖼️ Görsel Yükleme Yedek Proxy Rotaları (Freeimage.host)
   registerImageUploadRoutes(app);
-  startModerationExpirySweep();
+  if (!PLATFORM_PERMANENTLY_CLOSED) {
+    startModerationExpirySweep();
+  }
 
   // 🌐 İstemci IP ve Cihaz Bilgisi Endpoint'i (IP & Hardware Ban Tespiti için)
   app.get("/api/client-info", (req, res) => {

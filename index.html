@@ -1,33 +1,22 @@
 <!doctype html>
-<html lang="en">
+<html lang="tr">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>RedChat</title>
-    <meta name="description" content="RedChat real-time messaging and community platform with Firebase Auth and Firestore." />
+    <meta name="description" content="RedChat kalıcı olarak kapatıldı. RedChat platformunun hizmetleri RedChat yönetimi kararıyla sona ermiştir." />
     <meta property="og:title" content="RedChat" />
-    <meta property="og:description" content="RedChat real-time messaging and community platform with Firebase Auth and Firestore." />
+    <meta property="og:description" content="RedChat kalıcı olarak kapatıldı. RedChat platformunun hizmetleri RedChat yönetimi kararıyla sona ermiştir." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
-    <script>
-      (function() {
-        try {
-          var mode = localStorage.getItem('redchat_theme') || 'system';
-          var isDark = mode === 'dark' || (mode === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
-          if (isDark) {
-            document.documentElement.classList.add('dark');
-            document.documentElement.setAttribute('data-theme', 'dark');
-            document.documentElement.style.colorScheme = 'dark';
-          } else {
-            document.documentElement.classList.remove('dark');
-            document.documentElement.setAttribute('data-theme', 'light');
-            document.documentElement.style.colorScheme = 'light';
-          }
-        } catch (e) {}
-      })();
-    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
   </head>
-  <body>
+  <body style="background-color: #202124; color: #F1F3F4;">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

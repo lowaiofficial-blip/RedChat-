@@ -1,14 +1,27 @@
-import {StrictMode} from 'react';
-import {createRoot} from 'react-dom/client';
-import App from './App.tsx';
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
 import './index.css';
-import { initTheme } from './utils/theme.ts';
+import { PlatformClosureScreen } from './components/PlatformClosureScreen';
 
-// Tema tercihini başlat
-initTheme();
+const PLATFORM_PERMANENTLY_CLOSED = true;
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+const rootElement = document.getElementById('root')!;
+
+if (PLATFORM_PERMANENTLY_CLOSED) {
+  createRoot(rootElement).render(
+    <StrictMode>
+      <PlatformClosureScreen />
+    </StrictMode>,
+  );
+} else {
+  Promise.all([import('./utils/theme.ts'), import('./App.tsx')]).then(
+    ([{ initTheme }, { default: App }]) => {
+      initTheme();
+      createRoot(rootElement).render(
+        <StrictMode>
+          <App />
+        </StrictMode>,
+      );
+    },
+  );
+}
